@@ -25,7 +25,7 @@ async function run(argv, fetchImplementation, overrides = {}) {
     fetch: fetchImplementation,
     stdout: stdout.stream,
     stderr: stderr.stream,
-    env: { CODEX_THREAD_ID: "thread-current" },
+    env: { TASKBOARD_SESSION_ID: "thread-current" },
     ...overrides,
   });
   return {
@@ -278,7 +278,7 @@ test("issue move fetches the current version when --if-version is omitted", asyn
   });
 });
 
-test("an explicit --thread-id overrides CODEX_THREAD_ID on issue writes", async () => {
+test("an explicit --thread-id overrides TASKBOARD_SESSION_ID on issue writes", async () => {
   let requestBody;
   const result = await run(
     ["issue", "update", "TASK-1", "--title", "Attributed", "--thread-id", "thread-9", "--if-version", "2"],
@@ -458,14 +458,14 @@ test("context current falls back to the local project", async () => {
   assert.equal(result.stdout.project.id, "local");
 });
 
-test("issue and comment writes require Codex conversation attribution", async () => {
+test("issue and comment writes require conversation attribution", async () => {
   const issueResult = await run(
     ["issue", "update", "TASK-1", "--title", "No attribution", "--if-version", "1"],
     async () => assert.fail("fetch should not be called"),
     { env: {} },
   );
   assert.equal(issueResult.exitCode, 2);
-  assert.match(issueResult.stderr.error.message, /--thread-id or CODEX_THREAD_ID/);
+  assert.match(issueResult.stderr.error.message, /--thread-id or TASKBOARD_SESSION_ID/);
 
   const commentResult = await run(
     ["comment", "add", "TASK-1", "--body", "No attribution"],
@@ -473,7 +473,7 @@ test("issue and comment writes require Codex conversation attribution", async ()
     { env: {} },
   );
   assert.equal(commentResult.exitCode, 2);
-  assert.match(commentResult.stderr.error.message, /--thread-id or CODEX_THREAD_ID/);
+  assert.match(commentResult.stderr.error.message, /--thread-id or TASKBOARD_SESSION_ID/);
 });
 
 test("manual linked-thread options and commands are no longer accepted", async () => {
