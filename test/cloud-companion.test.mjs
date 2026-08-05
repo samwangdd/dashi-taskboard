@@ -153,7 +153,7 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
           id: "REMOTE-1",
           creatorType: "agent",
           creatorId: "codex-agent",
-          creatorName: "Codex Agent",
+          creatorName: "Claude Agent",
         },
       }, 201);
     },
@@ -194,7 +194,7 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
       id: "REMOTE-1",
       creatorType: "agent",
       creatorId: "codex-agent",
-      creatorName: "Codex Agent",
+      creatorName: "Claude Agent",
     },
   });
 });

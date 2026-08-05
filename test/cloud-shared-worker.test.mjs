@@ -100,7 +100,7 @@ test("the Basic username becomes the trusted actor while the shared password gra
   });
   assert.equal(agentTask.response.status, 201);
   assert.equal(agentTask.body.task.creatorType, "agent");
-  assert.match(agentTask.body.task.creatorName, /Codex Agent/);
+  assert.match(agentTask.body.task.creatorName, /Claude Agent/);
   assert.match(agentTask.body.task.creatorName, /Bob/);
 });
 

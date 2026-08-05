@@ -43,10 +43,10 @@ const INLINE_ATTACHMENT_TYPES = new Set([
 ]);
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-"]);
-const CODEX_AGENT_ACTOR = {
+const AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
-  name: "Codex Agent",
+  name: "Claude Agent",
   avatarUrl: null,
 };
 const CONTENT_TYPES = new Map([
@@ -496,7 +496,7 @@ function requestHeader(request, name) {
 
 function actorFromRequest(request) {
   if (request.headers["x-taskboard-client"] === "taskctl") {
-    return CODEX_AGENT_ACTOR;
+    return AGENT_ACTOR;
   }
 
   const rawId = requestHeader(request, "x-taskboard-user-id");
@@ -548,7 +548,7 @@ function parseAssigneeTarget(value) {
 
 function resolveAssignee(target, actor) {
   if (target === undefined) return actor;
-  if (target === "codex-agent") return CODEX_AGENT_ACTOR;
+  if (target === "codex-agent") return AGENT_ACTOR;
   if (actor.type !== "user") {
     throw new ApiError(400, "INVALID_FIELD", "'current-user' requires a user request identity");
   }
