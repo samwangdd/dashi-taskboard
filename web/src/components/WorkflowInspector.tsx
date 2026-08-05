@@ -809,7 +809,7 @@ export function WorkflowInspector({
                   checked={data.recordConversation ?? false}
                   onChange={(event) => onChange({ recordConversation: event.target.checked })}
                 />
-                <span>记录执行该议题的 Codex 对话</span>
+                <span>记录执行该议题的 Claude 会话</span>
               </label>
             </div>
           )}
