@@ -328,6 +328,20 @@ export function normalizeCodexEvent(raw) {
   return normalizedItem(raw.type, raw.item);
 }
 
+export function buildClaudeArgs(thread, addDirectories, imagePaths = []) {
+  // `--output-format stream-json` is rejected under `--print` without `--verbose`.
+  const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  for (const directory of addDirectories) args.push("--add-dir", directory);
+  if (thread.model) args.push("--model", thread.model);
+  if (thread.reasoningEffort) args.push("--effort", thread.reasoningEffort);
+  if (thread.permissionMode) args.push("--permission-mode", thread.permissionMode);
+  args.push(thread.sessionStarted ? "--resume" : "--session-id", thread.sessionId);
+  // Claude Code has no `-i` equivalent; image paths are referenced from the prompt
+  // text instead so the model reads them itself.
+  void imagePaths;
+  return args;
+}
+
 const COMMAND_TOOLS = new Set(["Bash", "BashOutput", "KillShell"]);
 const FILE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
 const WEB_TOOLS = new Set(["WebSearch", "WebFetch"]);

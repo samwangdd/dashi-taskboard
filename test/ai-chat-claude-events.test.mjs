@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 
-import { normalizeClaudeEvent } from "../server/ai-chat-process.mjs";
+import { buildClaudeArgs, normalizeClaudeEvent } from "../server/ai-chat-process.mjs";
 
 async function fixtureEvents() {
   const raw = await readFile(new URL("./fixtures/claude-stream.jsonl", import.meta.url), "utf8");
@@ -114,4 +114,60 @@ test("an error result is reported as an error", () => {
   });
   assert.equal(normalized.kind, "completed");
   assert.equal(normalized.result.isError, true);
+});
+
+test("a first turn pins the session id and always passes --verbose", () => {
+  const args = buildClaudeArgs(
+    {
+      sessionId: "6f1c2d34-5678-4abc-9def-0123456789ab",
+      sessionStarted: false,
+      model: "opus",
+      reasoningEffort: "high",
+      permissionMode: "acceptEdits",
+    },
+    ["/repo/pkg"],
+  );
+
+  assert.ok(args.includes("-p"));
+  assert.equal(args[args.indexOf("--output-format") + 1], "stream-json");
+  assert.ok(args.includes("--verbose"), "stream-json requires --verbose or claude exits with an error");
+  assert.equal(args[args.indexOf("--session-id") + 1], "6f1c2d34-5678-4abc-9def-0123456789ab");
+  assert.ok(!args.includes("--resume"));
+  assert.equal(args[args.indexOf("--model") + 1], "opus");
+  assert.equal(args[args.indexOf("--effort") + 1], "high");
+  assert.equal(args[args.indexOf("--permission-mode") + 1], "acceptEdits");
+  assert.equal(args[args.indexOf("--add-dir") + 1], "/repo/pkg");
+});
+
+test("a follow-up turn resumes the same session id instead of pinning a new one", () => {
+  const args = buildClaudeArgs(
+    { sessionId: "6f1c2d34-5678-4abc-9def-0123456789ab", sessionStarted: true, model: "sonnet" },
+    [],
+  );
+
+  assert.equal(args[args.indexOf("--resume") + 1], "6f1c2d34-5678-4abc-9def-0123456789ab");
+  assert.ok(!args.includes("--session-id"));
+  assert.ok(!args.includes("--effort"), "an unset effort must not emit an empty flag value");
+  assert.ok(!args.includes("--permission-mode"));
+});
+
+test("every add-dir gets its own flag pair", () => {
+  const args = buildClaudeArgs(
+    { sessionId: "6f1c2d34-5678-4abc-9def-0123456789ab", sessionStarted: false },
+    ["/a", "/b"],
+  );
+  const pairs = args.reduce((acc, value, index) => (
+    value === "--add-dir" ? [...acc, args[index + 1]] : acc
+  ), []);
+  assert.deepEqual(pairs, ["/a", "/b"]);
+});
+
+test("image paths never reach the argument list", () => {
+  const args = buildClaudeArgs(
+    { sessionId: "6f1c2d34-5678-4abc-9def-0123456789ab", sessionStarted: false },
+    [],
+    ["/tmp/shot.png"],
+  );
+  assert.ok(!args.includes("-i"));
+  assert.ok(!args.some((value) => value.includes("shot.png")));
 });
