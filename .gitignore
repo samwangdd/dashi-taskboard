@@ -8,3 +8,8 @@ cloud-migration-exports/
 .playwright-cli/
 *.log
 .DS_Store
+
+# Machine-local agent skill distribution (symlinks and copies of an external skill store)
+.agents/
+.cursor/
+.kiro/
