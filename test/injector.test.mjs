@@ -83,6 +83,20 @@ test("attach reconciles the renderer against a hashed current injection source",
 
 test("the injector ignores auxiliary Codex windows", () => {
   assert.match(source, /!target\.url\?\.includes\("initialRoute=%2Fglobal-dictation"\)/);
+  assert.match(source, /!target\.url\?\.includes\("initialRoute=%2Favatar-overlay"\)/);
+});
+
+test("the launcher starts the Codex app binary instead of merging into an existing macOS app session", () => {
+  assert.match(source, /path\.join\(appPath, "Contents", "MacOS", "ChatGPT"\)/);
+  assert.doesNotMatch(source, /"\/usr\/bin\/open",\s*\[\s*"-W"/);
+});
+
+test("the one-command launcher requests a graceful Codex replacement before opening its debug window", () => {
+  assert.match(packageJson.scripts.codex, /--replace/);
+  assert.match(source, /if \(arg === "--replace"\) options\.replace = true/);
+  assert.match(source, /spawnSync\("\/bin\/ps", \["-axo", "pid=,command="\]/);
+  assert.match(source, /await replaceCodex\(options\.appPath\)/);
+  assert.match(source, /process\.kill\(pid, "SIGKILL"\)/);
 });
 
 test("a completed web build refreshes an already-open Codex iframe", () => {

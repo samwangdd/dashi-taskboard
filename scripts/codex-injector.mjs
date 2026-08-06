@@ -50,6 +50,7 @@ function parseArgs(argv) {
     port: defaultCodexDebuggingPort,
     portExplicit: false,
     launch: false,
+    replace: false,
     watch: false,
     open: false,
     refresh: false,
@@ -64,6 +65,7 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--launch") options.launch = true;
+    else if (arg === "--replace") options.replace = true;
     else if (arg === "--watch") options.watch = true;
     else if (arg === "--open") options.open = true;
     else if (arg === "--refresh") options.refresh = true;
@@ -184,18 +186,63 @@ function createTaskboardSupervisor({ detached }) {
   return { ensure, stop };
 }
 
+function codexPids() {
+  const result = spawnSync("/bin/ps", ["-axo", "pid=,command="], {
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.status !== 0) return [];
+  return result.stdout.split("\n").flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(\/Applications\/ChatGPT\.app\/Contents\/MacOS\/ChatGPT)(?:\s|$)/);
+    return match ? [Number(match[1])] : [];
+  });
+}
+
 function codexIsRunning() {
-  return spawnSync("/usr/bin/pgrep", ["-x", "ChatGPT"], { stdio: "ignore" }).status === 0;
+  return codexPids().length > 0;
+}
+
+async function waitForCodexToQuit(timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!codexIsRunning()) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Codex did not quit. Close it completely, then run this command again.");
+}
+
+async function quitCodex(appPath) {
+  const appName = path.basename(appPath, ".app");
+  const result = spawnSync("/usr/bin/osascript", [
+    "-e",
+    `tell application ${JSON.stringify(appName)} to quit`,
+  ], { encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error("Codex did not accept the quit request. Close it completely, then run this command again.");
+  }
+}
+
+async function replaceCodex(appPath) {
+  await quitCodex(appPath);
+  try {
+    await waitForCodexToQuit(5_000);
+    return;
+  } catch (_) {}
+
+  for (const pid of codexPids()) process.kill(pid, "SIGTERM");
+  try {
+    await waitForCodexToQuit(5_000);
+    return;
+  } catch (_) {}
+
+  for (const pid of codexPids()) process.kill(pid, "SIGKILL");
+  await waitForCodexToQuit(5_000);
 }
 
 function launchCodex(appPath, port) {
   return spawn(
-    "/usr/bin/open",
+    path.join(appPath, "Contents", "MacOS", "ChatGPT"),
     [
-      "-W",
-      "-a",
-      appPath,
-      "--args",
       `--remote-debugging-port=${port}`,
       `--remote-allow-origins=http://127.0.0.1:${port}`,
     ],
@@ -306,6 +353,7 @@ async function codexTargets(port) {
       target.type === "page" &&
       target.webSocketDebuggerUrl &&
       !target.url?.includes("initialRoute=%2Fglobal-dictation") &&
+      !target.url?.includes("initialRoute=%2Favatar-overlay") &&
       (target.url?.startsWith("app://") || target.title === "Codex"),
   );
 }
@@ -1249,9 +1297,13 @@ async function main() {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
       }
       if (codexIsRunning()) {
-        throw new Error(
-          "Codex is already running without this CDP port. Quit Codex completely, then run this command again.",
-        );
+        if (options.replace) {
+          await replaceCodex(options.appPath);
+        } else {
+          throw new Error(
+            "Codex is already running without this CDP port. Quit Codex completely, then run this command again.",
+          );
+        }
       }
     }
 
