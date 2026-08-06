@@ -47,6 +47,22 @@ claude -p "Run the bash command: echo hello-fixture. Then reply with just DONE."
 - `--effort` 取值实测为 `low, medium, high, xhigh, max`（比 settings schema 里的 `effortLevel` 多一个 `max`）。
 - `--permission-mode` 取值为 `acceptEdits, auto, bypassPermissions, manual, dontAsk, plan`，替代 Codex 的 `read-only / workspace-write / danger-full-access` 三档 sandbox。
 
+## 执行状态（2026-08-06）
+
+| Task | 状态 | 提交 |
+| --- | --- | --- |
+| 1 stream-json fixture | ✅ | `ec8f89e` |
+| 2 事件归一化 `normalizeClaudeEvent` | ✅ | `b367008` |
+| 3a `buildClaudeArgs` | ✅ | `e1d884e` |
+| 3b `spawnClaudeTurn` + `server/ai-chat.mjs` 重接线 | ⬜ 未开始 | — |
+| 4 Skill / MCP / 模型目录 | ⬜ | — |
+| 5 工作区发现 | ⬜ | — |
+| 6 前端文案 + 全量验收 | ⬜ | — |
+
+**一处有意的计划偏离**：Task 2 原写「替换 `normalizeCodexEvent`」，实际改为**新增 `normalizeClaudeEvent` 与旧函数并存**，`normalizeCodexEvent` 及其测试留到 Task 3b 删除。理由：若在 Task 2 就删旧函数，`test/ai-chat-runner.test.mjs` 会在提交之间处于破损中间态，违背「每个 Task 结束时都是独立可验证的交付物」。同理，新测试独立成 `test/ai-chat-claude-events.test.mjs` 而非追加进 400 行的 `ai-chat-runner.test.mjs`。
+
+Task 1→3a 每一步都实测过「失败集与 `main` 基线逐条一致（18/18）+ typecheck PASS」。
+
 ## Global Constraints
 
 - 沿用 P1/P2 已落地的命名：env 前缀 `TASKBOARD_*`、归属 env `TASKBOARD_SESSION_ID`、显示名 `Claude Agent`。
