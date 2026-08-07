@@ -79,7 +79,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       },
     });
   }
-  const body = (await response.json().catch(() => ({}))) as T & ApiErrorBody;
+  let body: T & ApiErrorBody;
+  try {
+    body = (await response.json()) as T & ApiErrorBody;
+  } catch (error) {
+    // Aborting mid-body rejects the JSON read too; that must stay an abort
+    // instead of resolving as an empty payload. Empty bodies still fall back.
+    if ((error as Error | undefined)?.name === "AbortError") throw error;
+    body = {} as T & ApiErrorBody;
+  }
 
   if (!response.ok) throw new ApiError(response.status, body);
   return body;
