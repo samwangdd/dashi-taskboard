@@ -8,6 +8,7 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
+  CodingWorkflowSettings,
   DevelopmentScan,
   IssueRelationType,
   Project,
@@ -250,6 +251,31 @@ export async function saveWorkflowWorkspace<T>(
     },
   );
   return data.workflow;
+}
+
+export async function getCodingWorkflowSettings(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<CodingWorkflowSettings> {
+  const data = await request<{ settings: CodingWorkflowSettings }>(
+    `/api/local/coding/projects/${encodeURIComponent(projectId)}/settings`,
+    { signal },
+  );
+  return data.settings;
+}
+
+export async function saveCodingWorkflowSettings(
+  settings: CodingWorkflowSettings,
+  changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+): Promise<CodingWorkflowSettings> {
+  const data = await request<{ settings: CodingWorkflowSettings }>(
+    `/api/local/coding/projects/${encodeURIComponent(settings.projectId)}/settings`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ version: settings.version, ...changes }),
+    },
+  );
+  return data.settings;
 }
 
 export async function createProject(input: {

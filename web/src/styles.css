@@ -1237,6 +1237,17 @@ kbd {
   animation: context-menu-in 90ms ease-out both;
 }
 
+.project-automation-menu {
+  max-height: min(720px, calc(100vh - 16px));
+  overflow-y: auto;
+}
+
+.project-coding-heading {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+}
+
 :root[data-theme="dark"] .project-automation-menu {
   box-shadow: 0 20px 52px rgba(0, 0, 0, 0.56), 0 4px 14px rgba(0, 0, 0, 0.34), 0 0 0 0.5px rgba(255, 255, 255, 0.055);
 }

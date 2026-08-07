@@ -17,6 +17,11 @@ import {
 } from "../shared/domain.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
+import { CodingWorkflowService } from "./coding-workflow.mjs";
+import {
+  CODING_WORKFLOW_ID,
+  normalizeCodingWorkflowConfig,
+} from "../shared/coding-workflow.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
   CloudProxyError,
@@ -409,6 +414,83 @@ function parseWorkflowWorkspaceSave(body) {
     version: parseWorkflowVersion(body.version),
     workspace: parseWorkflowWorkspace(body.workspace),
   };
+}
+
+function parseCodingWorkflowSettings(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["version", "defaultWorkflowId", "config"]));
+  if (!Number.isInteger(body.version) || body.version < 0) {
+    throw new ApiError(400, "INVALID_FIELD", "'version' must be a non-negative integer");
+  }
+  assertPlainObject(body.config);
+  let config;
+  try {
+    config = normalizeCodingWorkflowConfig(body.config);
+  } catch (error) {
+    throw new ApiError(400, "INVALID_FIELD", error instanceof Error ? error.message : "Invalid Coding workflow config");
+  }
+  return {
+    version: body.version,
+    defaultWorkflowId: stringField(body.defaultWorkflowId ?? null, "defaultWorkflowId", {
+      nullable: true,
+      maxLength: 128,
+    }),
+    config,
+  };
+}
+
+function parseCodingContract(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["version", "contract"]));
+  if (!Number.isInteger(body.version) || body.version < 1) {
+    throw new ApiError(400, "INVALID_FIELD", "'version' must be a positive integer");
+  }
+  assertPlainObject(body.contract);
+  return { version: body.version, contract: body.contract };
+}
+
+function parseCodingHandoff(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["sourceRole", "targetRole", "body", "metadata"]));
+  if (body.metadata !== undefined) assertPlainObject(body.metadata);
+  return {
+    sourceRole: stringField(body.sourceRole, "sourceRole", { required: true, maxLength: 64 }),
+    targetRole: stringField(body.targetRole, "targetRole", { required: true, maxLength: 64 }),
+    body: stringField(body.body, "body", { required: true, maxLength: 100_000 }),
+    ...(body.metadata === undefined ? {} : { metadata: body.metadata }),
+  };
+}
+
+function parseCodingCheck(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["kind", "command", "files"]));
+  if (!Array.isArray(body.files) || body.files.length > 1_000) {
+    throw new ApiError(400, "INVALID_FIELD", "'files' must be an array with at most 1000 entries");
+  }
+  return {
+    kind: stringField(body.kind, "kind", { required: true, maxLength: 32 }),
+    command: stringField(body.command, "command", { required: true, maxLength: 8_192 }),
+    files: body.files,
+  };
+}
+
+function parseCodingVerdict(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["result", "ui", "body"]));
+  if (typeof body.ui !== "boolean") {
+    throw new ApiError(400, "INVALID_FIELD", "'ui' must be a boolean");
+  }
+  return {
+    result: stringField(body.result, "result", { required: true, maxLength: 32 }),
+    ui: body.ui,
+    body: stringField(body.body, "body", { required: true, maxLength: 100_000 }),
+  };
+}
+
+function parseCodingCommit(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["message"]));
+  return { message: stringField(body.message, "message", { required: true, maxLength: 240 }) };
 }
 
 function parseSortOrder(value) {
@@ -1332,6 +1414,7 @@ export function createTaskboardServer(options = {}) {
     codexStatePath: resolved.codexStatePath,
     manageTaskboardSkillPath: resolved.skillPath,
   });
+  const codingWorkflow = new CodingWorkflowService(database);
   const aiEventResponses = new Set();
 
   const server = createServer(async (request, response) => {
@@ -1341,8 +1424,10 @@ export function createTaskboardServer(options = {}) {
       assertTrustedNetworkRequest(request);
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
-      const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
-      if (isLocalAiRoute) {
+      const isLocalExecutionRoute = pathname === "/api/local/ai"
+        || pathname.startsWith("/api/local/ai/")
+        || pathname.startsWith("/api/local/coding/");
+      if (isLocalExecutionRoute) {
         assertAiLoopbackRequest(request);
       } else if (pathname.startsWith("/api/local/")) {
         assertLoopbackRequest(request);
@@ -1536,6 +1621,112 @@ export function createTaskboardServer(options = {}) {
         await assertEmptyRequestBody(request, "POST /api/local/ai/runs/:id/interrupt");
         const run = await aiChat.interrupt(runId);
         return sendJson(response, 200, { run });
+      }
+
+      const codingSettingsRoute = pathname.match(/^\/api\/local\/coding\/projects\/([^/]+)\/settings$/);
+      if (codingSettingsRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/projects/:id/settings");
+        const projectId = decodeRouteSegment(codingSettingsRoute[1], "Project id");
+        if (request.method === "GET") {
+          return sendJson(response, 200, { settings: database.getCodingWorkflowSettings(projectId) });
+        }
+        if (request.method === "PUT") {
+          const input = parseCodingWorkflowSettings(await readJson(request));
+          const settings = database.saveCodingWorkflowSettings(projectId, input.version, input);
+          events.emit("coding.settings.updated", { projectId, settingsVersion: settings.version });
+          return sendJson(response, 200, { settings });
+        }
+        return methodNotAllowed(response, ["GET", "PUT"]);
+      }
+
+      const codingTaskRunRoute = pathname.match(/^\/api\/local\/coding\/tasks\/([^/]+)\/runs$/);
+      if (codingTaskRunRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/tasks/:id/runs");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await assertEmptyRequestBody(request, "POST /api/local/coding/tasks/:id/runs");
+        const taskId = decodeRouteSegment(codingTaskRunRoute[1], "Task id");
+        const task = database.getTask(taskId);
+        if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${taskId}' does not exist`);
+        if (task.workflowId !== CODING_WORKFLOW_ID) {
+          throw new ApiError(409, "NOT_CODING_WORKFLOW", "Task does not use the Coding workflow");
+        }
+        const run = await codingWorkflow.createOrResumeRun(task);
+        events.emit("coding.run.updated", { task, run });
+        return sendJson(response, 200, { run });
+      }
+
+      const codingRunArtifactsRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/artifacts$/);
+      if (codingRunArtifactsRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/artifacts");
+        const runId = decodeRouteSegment(codingRunArtifactsRoute[1], "Coding run id");
+        if (request.method === "GET") {
+          const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
+          if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+          return sendJson(response, 200, { artifacts: database.listCodingArtifacts(run.id) });
+        }
+        if (request.method === "POST") {
+          const result = await codingWorkflow.addHandoff(runId, parseCodingHandoff(await readJson(request)));
+          events.emit("coding.artifact.created", { runId, artifact: result.artifact });
+          events.emit("coding.run.updated", result);
+          return sendJson(response, 201, result);
+        }
+        return methodNotAllowed(response, ["GET", "POST"]);
+      }
+
+      const codingRunContractRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/contract$/);
+      if (codingRunContractRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/contract");
+        if (request.method !== "PUT") return methodNotAllowed(response, ["PUT"]);
+        const runId = decodeRouteSegment(codingRunContractRoute[1], "Coding run id");
+        const input = parseCodingContract(await readJson(request));
+        const run = database.saveCodingContract(runId, input.version, input.contract);
+        events.emit("coding.run.updated", { run });
+        return sendJson(response, 200, { run });
+      }
+
+      const codingRunCheckRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/checks$/);
+      if (codingRunCheckRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/checks");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunCheckRoute[1], "Coding run id");
+        const result = await codingWorkflow.runScopedCheck(runId, parseCodingCheck(await readJson(request)));
+        events.emit("coding.run.updated", result);
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunVerdictRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/verdicts$/);
+      if (codingRunVerdictRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/verdicts");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunVerdictRoute[1], "Coding run id");
+        const result = await codingWorkflow.recordVerdict(runId, parseCodingVerdict(await readJson(request)));
+        events.emit("coding.run.updated", result);
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunCommitRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/commit$/);
+      if (codingRunCommitRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/commit");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunCommitRoute[1], "Coding run id");
+        const input = parseCodingCommit(await readJson(request));
+        const result = await codingWorkflow.commit(runId, input.message);
+        events.emit("coding.run.updated", result);
+        events.emit("task.moved", { task: result.task });
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)$/);
+      if (codingRunRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id");
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const runId = decodeRouteSegment(codingRunRoute[1], "Coding run id");
+        const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
+        if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+        return sendJson(response, 200, {
+          run,
+          artifacts: database.listCodingArtifacts(run.id),
+        });
       }
 
       if (pathname === "/api/device-workspaces") {
@@ -1997,9 +2188,26 @@ export function createTaskboardServer(options = {}) {
         }
         if (action === "move" && request.method === "POST") {
           const move = parseMove(await readJson(request));
+          const currentTask = database.getTask(id);
+          if (!currentTask) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          const preparedCodingRun = move.status === "in_progress"
+            ? await codingWorkflow.assertClaimable(currentTask)
+            : null;
           const task = database.moveTask(id, move.version, move.status, move.sortOrder, move.threadId);
+          const codingRun = move.status === "in_progress"
+            ? await codingWorkflow.createOrResumeRun(task, preparedCodingRun)
+            : null;
+          const completedCodingRun = move.status === "done"
+            ? database.completeCodingRunForTask(task.id)
+            : null;
           events.emit("task.moved", { task });
-          return sendJson(response, 200, { task });
+          if (codingRun) events.emit("coding.run.updated", { task, run: codingRun });
+          if (completedCodingRun) events.emit("coding.run.updated", { task, run: completedCodingRun });
+          return sendJson(response, 200, {
+            task,
+            ...(codingRun ? { codingRun } : {}),
+            ...(completedCodingRun ? { codingRun: completedCodingRun } : {}),
+          });
         }
         if (action === "archive" && request.method === "POST") {
           const { version, threadId } = parseArchive(await readJson(request));
