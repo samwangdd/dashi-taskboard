@@ -114,8 +114,18 @@ const OPTION_VALUES = new Map([
   ["type", "parent|blocks|blocked_by|related"],
   ["issue", "ISSUE_ID"],
   ["body", "TEXT"],
+  ["body-file", "FILE"],
   ["output", "PATH"],
   ["cwd", "PATH"],
+  ["workflow", "WORKFLOW_ID"],
+  ["contract-file", "FILE"],
+  ["from-role", "ROLE"],
+  ["to-role", "ROLE"],
+  ["kind", "KIND"],
+  ["files", "PATH,PATH"],
+  ["command", "COMMAND"],
+  ["result", "pass|fail"],
+  ["message", "TEXT"],
 ]);
 
 // Operand signature, summary, and required options per command. The optional
@@ -178,6 +188,49 @@ const COMMAND_HELP = new Map([
     },
   ],
   ["context current", { operands: "", summary: "Report the project for the current directory." }],
+  ["coding start", { operands: "ISSUE_ID", summary: "Start a coding workflow run for an issue." }],
+  ["coding get", { operands: "RUN_ID", summary: "Read one coding run." }],
+  ["coding artifacts", { operands: "RUN_ID", summary: "List a coding run's artifacts." }],
+  [
+    "coding contract",
+    {
+      operands: "RUN_ID",
+      summary: "Replace a run's verification contract from a JSON file.",
+      required: ["contract-file", "if-version"],
+    },
+  ],
+  [
+    "coding handoff",
+    {
+      operands: "RUN_ID",
+      summary: "Hand a run off from one workflow role to another.",
+      required: ["from-role", "to-role", "body"],
+    },
+  ],
+  [
+    "coding check",
+    {
+      operands: "RUN_ID",
+      summary: "Record a scoped check and the files it covered.",
+      required: ["kind", "command", "files"],
+    },
+  ],
+  [
+    "coding verdict",
+    {
+      operands: "RUN_ID",
+      summary: "Record a verifier verdict, optionally from the UI verifier.",
+      required: ["result", "body"],
+    },
+  ],
+  [
+    "coding commit",
+    {
+      operands: "RUN_ID",
+      summary: "Commit a run that reached ready_to_commit.",
+      required: ["message"],
+    },
+  ],
 ]);
 
 const EXIT_CODE_NOTES = [

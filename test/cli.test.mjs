@@ -643,6 +643,14 @@ test("--help --json emits a structured help object with schemaVersion", async ()
       "comment delete",
       "attachment download",
       "context current",
+      "coding start",
+      "coding get",
+      "coding artifacts",
+      "coding contract",
+      "coding handoff",
+      "coding check",
+      "coding verdict",
+      "coding commit",
     ],
   );
 
@@ -665,6 +673,7 @@ test("--help --json emits a structured help object with schemaVersion", async ()
     "status",
     "thread-id",
     "title",
+    "workflow",
     "worktree-branch",
     "worktree-path",
   ]);
