@@ -2,6 +2,13 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import {
+  CODING_WORKFLOW_ID,
+  DEFAULT_CODING_WORKFLOW_CONFIG,
+  implementerModelForRound,
+  maximumImplementationRounds,
+  normalizeCodingWorkflowConfig,
+} from "../shared/coding-workflow.mjs";
 
 export class ApiError extends Error {
   constructor(status, code, message, details) {
@@ -121,6 +128,51 @@ function workflowWorkspaceFromRow(row) {
     workspace: JSON.parse(row.workspace),
     version: row.version,
     updatedAt: row.updated_at,
+  };
+}
+
+function codingWorkflowSettingsFromRow(row) {
+  return {
+    projectId: row.project_id,
+    defaultWorkflowId: row.default_workflow_id,
+    config: normalizeCodingWorkflowConfig(JSON.parse(row.config)),
+    version: row.version,
+    updatedAt: row.updated_at,
+  };
+}
+
+function codingRunFromRow(row) {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    phase: row.phase,
+    round: row.round,
+    configSnapshot: JSON.parse(row.config_snapshot),
+    verificationContract: row.verification_contract === null
+      ? null
+      : JSON.parse(row.verification_contract),
+    contractVersion: row.contract_version,
+    startRevision: row.start_revision,
+    changedFiles: JSON.parse(row.changed_files),
+    commitSha: row.commit_sha,
+    result: row.result,
+    version: row.version,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function codingArtifactFromRow(row) {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    kind: row.kind,
+    round: row.round,
+    sourceRole: row.source_role,
+    targetRole: row.target_role,
+    body: row.body,
+    metadata: row.metadata === null ? null : JSON.parse(row.metadata),
+    createdAt: row.created_at,
   };
 }
 
@@ -269,6 +321,56 @@ export class TaskboardDatabase {
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         updated_at TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS coding_workflow_settings (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        default_workflow_id TEXT,
+        config TEXT NOT NULL,
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS coding_runs (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        phase TEXT NOT NULL CHECK (phase IN (
+          'orchestrating', 'implementing', 'verifying', 'ready_to_commit',
+          'committing', 'in_review', 'blocked', 'completed'
+        )),
+        round INTEGER NOT NULL DEFAULT 1 CHECK (round > 0),
+        config_snapshot TEXT NOT NULL,
+        verification_contract TEXT,
+        contract_version INTEGER NOT NULL DEFAULT 0 CHECK (contract_version >= 0),
+        start_revision TEXT NOT NULL,
+        changed_files TEXT NOT NULL DEFAULT '[]',
+        commit_sha TEXT,
+        result TEXT,
+        version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS coding_runs_task_created
+        ON coding_runs(task_id, created_at DESC, id);
+
+      CREATE UNIQUE INDEX IF NOT EXISTS coding_runs_one_active
+        ON coding_runs(task_id)
+        WHERE phase NOT IN ('blocked', 'completed');
+
+      CREATE TABLE IF NOT EXISTS coding_run_artifacts (
+        id TEXT PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES coding_runs(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('handoff', 'check', 'verification', 'event')),
+        round INTEGER NOT NULL CHECK (round > 0),
+        source_role TEXT,
+        target_role TEXT,
+        body TEXT NOT NULL,
+        metadata TEXT,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS coding_run_artifacts_run_created
+        ON coding_run_artifacts(run_id, created_at, id);
 
       CREATE TABLE IF NOT EXISTS ai_chat_threads (
         id TEXT PRIMARY KEY,
@@ -675,6 +777,337 @@ export class TaskboardDatabase {
       throw error;
     }
     return this.getWorkflowWorkspace(projectId);
+  }
+
+  getCodingWorkflowSettings(projectId) {
+    if (!this.database.prepare("SELECT 1 FROM projects WHERE id = ?").get(projectId)) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+    }
+    const row = this.database.prepare(`
+      SELECT * FROM coding_workflow_settings WHERE project_id = ?
+    `).get(projectId);
+    return row
+      ? codingWorkflowSettingsFromRow(row)
+      : {
+          projectId,
+          defaultWorkflowId: null,
+          config: { ...DEFAULT_CODING_WORKFLOW_CONFIG },
+          version: 0,
+          updatedAt: null,
+        };
+  }
+
+  saveCodingWorkflowSettings(projectId, expectedVersion, input) {
+    const timestamp = now();
+    const config = normalizeCodingWorkflowConfig(input.config);
+    const defaultWorkflowId = input.defaultWorkflowId ?? null;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.getCodingWorkflowSettings(projectId);
+      if (current.version !== expectedVersion) {
+        throw new ApiError(409, "VERSION_CONFLICT", "Coding workflow settings changed", {
+          expectedVersion,
+          actualVersion: current.version,
+        });
+      }
+      if (current.version === 0) {
+        this.database.prepare(`
+          INSERT INTO coding_workflow_settings (
+            project_id, default_workflow_id, config, version, updated_at
+          ) VALUES (?, ?, ?, 1, ?)
+        `).run(projectId, defaultWorkflowId, JSON.stringify(config), timestamp);
+      } else {
+        const result = this.database.prepare(`
+          UPDATE coding_workflow_settings
+          SET default_workflow_id = ?, config = ?, version = version + 1, updated_at = ?
+          WHERE project_id = ? AND version = ?
+        `).run(defaultWorkflowId, JSON.stringify(config), timestamp, projectId, expectedVersion);
+        if (result.changes !== 1) {
+          throw new ApiError(409, "VERSION_CONFLICT", "Coding workflow settings changed", {
+            expectedVersion,
+            actualVersion: this.getCodingWorkflowSettings(projectId).version,
+          });
+        }
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getCodingWorkflowSettings(projectId);
+  }
+
+  getCodingRun(runId) {
+    const row = this.database.prepare("SELECT * FROM coding_runs WHERE id = ?").get(runId);
+    return row ? codingRunFromRow(row) : null;
+  }
+
+  getLatestCodingRunForTask(taskId) {
+    const row = this.database.prepare(`
+      SELECT * FROM coding_runs
+      WHERE task_id IN (SELECT id FROM tasks WHERE id = ? OR identifier = ?)
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(taskId, taskId);
+    return row ? codingRunFromRow(row) : null;
+  }
+
+  createOrResumeCodingRun(taskId, startRevision) {
+    const task = this.#requireTask(taskId);
+    if (task.workflowId !== CODING_WORKFLOW_ID) {
+      throw new ApiError(409, "NOT_CODING_WORKFLOW", "Task does not use the Coding workflow");
+    }
+    if (task.status !== "in_progress") {
+      throw new ApiError(409, "TASK_NOT_IN_PROGRESS", "Coding runs require an in_progress task");
+    }
+    if (!task.developmentContext) {
+      throw new ApiError(409, "DEVELOPMENT_CONTEXT_REQUIRED", "Coding workflow requires a branch or worktree");
+    }
+    const existing = this.database.prepare(`
+      SELECT * FROM coding_runs
+      WHERE task_id = ? AND phase NOT IN ('blocked', 'completed')
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(task.id);
+    if (existing) {
+      if (existing.phase === "in_review") {
+        this.database.prepare(`
+          UPDATE coding_runs
+          SET phase = 'orchestrating', round = 1, start_revision = ?, changed_files = '[]',
+              result = NULL, version = version + 1, updated_at = ?
+          WHERE id = ?
+        `).run(startRevision, now(), existing.id);
+      }
+      return this.getCodingRun(existing.id);
+    }
+    const settings = this.getCodingWorkflowSettings(task.projectId);
+    const id = randomUUID();
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO coding_runs (
+        id, task_id, phase, round, config_snapshot, verification_contract,
+        contract_version, start_revision, changed_files, commit_sha, result,
+        version, created_at, updated_at
+      ) VALUES (?, ?, 'orchestrating', 1, ?, NULL, 0, ?, '[]', NULL, NULL, 1, ?, ?)
+    `).run(id, task.id, JSON.stringify(settings.config), startRevision, timestamp, timestamp);
+    return this.getCodingRun(id);
+  }
+
+  saveCodingContract(runId, expectedVersion, contract) {
+    const current = this.getCodingRun(runId);
+    if (!current) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    if (current.version !== expectedVersion) {
+      throw new ApiError(409, "VERSION_CONFLICT", "Coding run changed", {
+        expectedVersion,
+        actualVersion: current.version,
+      });
+    }
+    const result = this.database.prepare(`
+      UPDATE coding_runs
+      SET verification_contract = ?, contract_version = contract_version + 1,
+          phase = 'implementing', version = version + 1, updated_at = ?
+      WHERE id = ? AND version = ?
+    `).run(JSON.stringify(contract), now(), current.id, expectedVersion);
+    if (result.changes !== 1) {
+      const latest = this.getCodingRun(current.id);
+      throw new ApiError(409, "VERSION_CONFLICT", "Coding run changed", {
+        expectedVersion,
+        actualVersion: latest?.version ?? null,
+      });
+    }
+    return this.getCodingRun(current.id);
+  }
+
+  addCodingArtifact(runId, input) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    const id = randomUUID();
+    const transitionsToVerifier = input.kind === "handoff"
+      && ["verifier", "ui-verifier"].includes(input.targetRole);
+    if (transitionsToVerifier) this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare(`
+        INSERT INTO coding_run_artifacts (
+          id, run_id, kind, round, source_role, target_role, body, metadata, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        id,
+        run.id,
+        input.kind,
+        run.round,
+        input.sourceRole ?? null,
+        input.targetRole ?? null,
+        input.body,
+        input.metadata === undefined ? null : JSON.stringify(input.metadata),
+        now(),
+      );
+      if (transitionsToVerifier) {
+        const result = this.database.prepare(`
+          UPDATE coding_runs
+          SET phase = 'verifying', version = version + 1, updated_at = ?
+          WHERE id = ? AND phase = 'implementing'
+        `).run(now(), run.id);
+        if (result.changes !== 1) {
+          throw new ApiError(409, "INVALID_CODING_PHASE", "Verifier handoff requires an implementing run");
+        }
+        this.database.exec("COMMIT");
+      }
+    } catch (error) {
+      if (transitionsToVerifier) this.database.exec("ROLLBACK");
+      throw error;
+    }
+    const row = this.database.prepare("SELECT * FROM coding_run_artifacts WHERE id = ?").get(id);
+    return codingArtifactFromRow(row);
+  }
+
+  listCodingArtifacts(runId) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    return this.database.prepare(`
+      SELECT * FROM coding_run_artifacts WHERE run_id = ? ORDER BY created_at, id
+    `).all(run.id).map(codingArtifactFromRow);
+  }
+
+  setCodingChangedFiles(runId, changedFiles) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    this.database.prepare(`
+      UPDATE coding_runs
+      SET changed_files = ?, version = version + 1, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(changedFiles), now(), run.id);
+    return this.getCodingRun(run.id);
+  }
+
+  recordCodingCheck(runId, artifactInput, changedFiles) {
+    const artifact = this.addCodingArtifact(runId, {
+      ...artifactInput,
+      kind: "check",
+      sourceRole: "implementer",
+      targetRole: "verifier",
+    });
+    this.database.prepare(`
+      UPDATE coding_runs
+      SET changed_files = ?, phase = 'implementing', version = version + 1, updated_at = ?
+      WHERE id = ?
+    `).run(JSON.stringify(changedFiles), now(), artifact.runId);
+    return { run: this.getCodingRun(artifact.runId), artifact };
+  }
+
+  recordCodingVerdict(runId, input) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    if (run.phase !== "verifying") {
+      throw new ApiError(409, "INVALID_CODING_PHASE", "Coding verdict requires a verifying run");
+    }
+    const artifact = this.addCodingArtifact(run.id, {
+      kind: "verification",
+      sourceRole: input.ui ? "ui-verifier" : "verifier",
+      targetRole: input.result === "pass" ? "orchestrator" : "implementer",
+      body: input.body,
+      metadata: { result: input.result, ui: input.ui },
+    });
+    if (input.result === "pass") {
+      this.database.prepare(`
+        UPDATE coding_runs
+        SET phase = 'ready_to_commit', result = 'pass', version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(now(), run.id);
+      return { run: this.getCodingRun(run.id), artifact, blocked: false };
+    }
+
+    const nextRound = run.round + 1;
+    const blocked = nextRound > maximumImplementationRounds(run.configSnapshot);
+    this.database.prepare(`
+      UPDATE coding_runs
+      SET phase = ?, round = ?, result = ?, version = version + 1, updated_at = ?
+      WHERE id = ?
+    `).run(
+      blocked ? "blocked" : "implementing",
+      blocked ? run.round : nextRound,
+      blocked ? "failed" : input.result,
+      now(),
+      run.id,
+    );
+    const updated = this.getCodingRun(run.id);
+    return {
+      run: updated,
+      artifact,
+      blocked,
+      ...(blocked ? {} : { nextImplementerModel: implementerModelForRound(updated.configSnapshot, updated.round) }),
+    };
+  }
+
+  beginCodingCommit(runId, input) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    if (run.phase !== "ready_to_commit") {
+      throw new ApiError(409, "INVALID_CODING_PHASE", "Coding commit requires a passed verification verdict");
+    }
+    const artifactId = randomUUID();
+    const timestamp = now();
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare(`
+        INSERT INTO coding_run_artifacts (
+          id, run_id, kind, round, source_role, target_role, body, metadata, created_at
+        ) VALUES (?, ?, 'event', ?, 'orchestrator', 'engine', 'commit_intent', ?, ?)
+      `).run(artifactId, run.id, run.round, JSON.stringify(input), timestamp);
+      const result = this.database.prepare(`
+        UPDATE coding_runs
+        SET phase = 'committing', version = version + 1, updated_at = ?
+        WHERE id = ? AND phase = 'ready_to_commit'
+      `).run(timestamp, run.id);
+      if (result.changes !== 1) {
+        throw new ApiError(409, "INVALID_CODING_PHASE", "Coding run changed before commit started");
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getCodingRun(run.id);
+  }
+
+  getCodingCommitIntent(runId) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    const row = this.database.prepare(`
+      SELECT metadata FROM coding_run_artifacts
+      WHERE run_id = ? AND kind = 'event' AND body = 'commit_intent'
+      ORDER BY created_at DESC, id DESC LIMIT 1
+    `).get(run.id);
+    return row ? JSON.parse(row.metadata) : null;
+  }
+
+  markCodingRunCommitted(runId, input) {
+    const run = this.getCodingRun(runId);
+    if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    if (run.phase === "in_review") return run;
+    const result = this.database.prepare(`
+      UPDATE coding_runs
+      SET phase = 'in_review', changed_files = ?, commit_sha = ?, result = ?,
+          version = version + 1, updated_at = ?
+      WHERE id = ? AND phase = 'committing'
+    `).run(
+      JSON.stringify(input.changedFiles),
+      input.commitSha ?? null,
+      input.commitSha ? "committed" : "no_code_change",
+      now(),
+      run.id,
+    );
+    if (result.changes !== 1) {
+      throw new ApiError(409, "INVALID_CODING_PHASE", "Coding run is not committing");
+    }
+    return this.getCodingRun(run.id);
+  }
+
+  completeCodingRunForTask(taskId) {
+    const result = this.database.prepare(`
+      UPDATE coding_runs
+      SET phase = 'completed', result = 'accepted', version = version + 1, updated_at = ?
+      WHERE task_id IN (SELECT id FROM tasks WHERE id = ? OR identifier = ?)
+        AND phase = 'in_review'
+    `).run(now(), taskId, taskId);
+    return result.changes === 1 ? this.getLatestCodingRunForTask(taskId) : null;
   }
 
   listAiChatThreads() {

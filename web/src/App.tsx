@@ -24,6 +24,7 @@ import {
   archiveTask as archiveTaskRequest,
   createProject as createProjectRequest,
   createTask as createTaskRequest,
+  getCodingWorkflowSettings,
   getTaskboardRevision,
   getWorkflowWorkspace,
   getTaskboardMetadata,
@@ -34,6 +35,7 @@ import {
   moveTask as moveTaskRequest,
   removeTaskRelation,
   restoreTask as restoreTaskRequest,
+  saveCodingWorkflowSettings,
   setCurrentUserActor,
   uploadAttachment,
   updateTask as updateTaskRequest,
@@ -69,6 +71,7 @@ import {
 import {
   TASK_STATUSES,
   type ActorIdentity,
+  type CodingWorkflowSettings,
   type DevelopmentScan,
   type HostContext,
   type IssueRelationType,
@@ -561,6 +564,9 @@ export function App() {
   const [attachmentsRevision, setAttachmentsRevision] = useState(0);
   const [workflowRevision, setWorkflowRevision] = useState(0);
   const [workflowOptions, setWorkflowOptions] = useState<WorkflowOption[]>(DEFAULT_WORKFLOW_OPTIONS);
+  const [codingWorkflowSettings, setCodingWorkflowSettings] = useState<CodingWorkflowSettings | null>(null);
+  const [codingWorkflowPending, setCodingWorkflowPending] = useState(false);
+  const [codingWorkflowError, setCodingWorkflowError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [draggedTaskHeight, setDraggedTaskHeight] = useState(0);
@@ -578,6 +584,7 @@ export function App() {
   const [announcement, setAnnouncementValue] = useState("");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const tasksRequestRef = useRef(0);
+  const codingSettingsRequestRef = useRef(0);
   const tasksRef = useRef<Task[]>([]);
   const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
@@ -1174,6 +1181,55 @@ export function App() {
     });
     return () => controller.abort();
   }, [refreshWorkflowOptions, selectedProjectId]);
+
+  useEffect(() => {
+    const requestId = ++codingSettingsRequestRef.current;
+    if (!selectedProjectId) {
+      setCodingWorkflowSettings(null);
+      setCodingWorkflowError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setCodingWorkflowError(null);
+    void getCodingWorkflowSettings(selectedProjectId, controller.signal)
+      .then((settings) => {
+        if (
+          !controller.signal.aborted
+          && requestId === codingSettingsRequestRef.current
+          && settings.projectId === selectedProjectIdRef.current
+        ) setCodingWorkflowSettings(settings);
+      })
+      .catch((error) => {
+        if (
+          (error as Error).name !== "AbortError"
+          && requestId === codingSettingsRequestRef.current
+        ) {
+          setCodingWorkflowSettings(null);
+          setCodingWorkflowError(errorMessage(error));
+        }
+      });
+    return () => controller.abort();
+  }, [selectedProjectId]);
+
+  const updateCodingWorkflowSettings = useCallback(async (
+    changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+  ) => {
+    if (!codingWorkflowSettings || codingWorkflowPending) return;
+    const projectId = codingWorkflowSettings.projectId;
+    setCodingWorkflowPending(true);
+    setCodingWorkflowError(null);
+    try {
+      const settings = await saveCodingWorkflowSettings(codingWorkflowSettings, changes);
+      if (selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(settings);
+    } catch (error) {
+      if (selectedProjectIdRef.current !== projectId) return;
+      setCodingWorkflowError(errorMessage(error));
+      const latest = await getCodingWorkflowSettings(projectId).catch(() => null);
+      if (latest && selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(latest);
+    } finally {
+      setCodingWorkflowPending(false);
+    }
+  }, [codingWorkflowPending, codingWorkflowSettings]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -1991,14 +2047,19 @@ export function App() {
 
           <div className="header-actions">
             {selectedProjectId && (
-              <ProjectAutomationMenu
-                automation={selectedProjectAutomation}
-                pending={automationPending}
-                error={automationError}
-                unavailableReason={automationProjectContext.unavailableReason}
-                onOpen={() => void reconcileProjectAutomation()}
-                onChange={(options) => void saveProjectAutomation(options)}
-              />
+                <ProjectAutomationMenu
+                  automation={selectedProjectAutomation}
+                  pending={automationPending}
+                  error={automationError}
+                  unavailableReason={automationProjectContext.unavailableReason}
+                  codingSettings={codingWorkflowSettings}
+                  codingPending={codingWorkflowPending}
+                  codingError={codingWorkflowError}
+                  workflows={workflowOptions}
+                  onOpen={() => void reconcileProjectAutomation()}
+                  onChange={(options) => void saveProjectAutomation(options)}
+                  onCodingChange={(changes) => void updateCodingWorkflowSettings(changes)}
+                />
             )}
             {selectedProjectId && boardView === "issues" && (
               <button
@@ -2293,6 +2354,7 @@ export function App() {
           initialStatus={editor.status}
           labels={availableLabels}
           workflows={workflowOptions}
+          defaultWorkflowId={codingWorkflowSettings?.defaultWorkflowId ?? null}
           currentUser={currentUser}
           developmentScan={developmentScan}
           developmentScanLoading={developmentScanLoading}

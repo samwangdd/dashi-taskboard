@@ -7,6 +7,11 @@ import {
   type AutomationModel,
   type AutomationReasoningEffort,
 } from "../../../shared/taskboard-automation-options.mjs";
+import {
+  CODING_WORKFLOW_MODELS,
+  DEFAULT_CODING_WORKFLOW_CONFIG,
+} from "../../../shared/coding-workflow.mjs";
+import type { CodingWorkflowSettings, WorkflowOption } from "../types";
 import { LinearIcon } from "./LinearIcon";
 
 type AutomationStatus = "ACTIVE" | "PAUSED";
@@ -36,8 +41,15 @@ interface ProjectAutomationMenuProps {
   pending: boolean;
   error: string | null;
   unavailableReason: string | null;
+  codingSettings: CodingWorkflowSettings | null;
+  codingPending: boolean;
+  codingError: string | null;
+  workflows: WorkflowOption[];
   onOpen: () => void;
   onChange: (options: AutomationOptions) => void;
+  onCodingChange: (
+    changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+  ) => void;
 }
 
 const DEFAULT_OPTIONS: AutomationOptions = {
@@ -62,8 +74,13 @@ export function ProjectAutomationMenu({
   pending,
   error,
   unavailableReason,
+  codingSettings,
+  codingPending,
+  codingError,
+  workflows,
   onOpen,
   onChange,
+  onCodingChange,
 }: ProjectAutomationMenuProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -71,6 +88,10 @@ export function ProjectAutomationMenu({
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
   const [draft, setDraft] = useState<AutomationOptions>(DEFAULT_OPTIONS);
+  const [codingDraft, setCodingDraft] = useState(() => ({
+    defaultWorkflowId: null as string | null,
+    config: { ...DEFAULT_CODING_WORKFLOW_CONFIG },
+  }));
   const status = automation?.status ?? "PAUSED";
   const quota = automation?.quota;
   const stateLabel = !automation?.enabledByUser
@@ -89,7 +110,11 @@ export function ProjectAutomationMenu({
   useEffect(() => {
     if (!open) return;
     setDraft({ ...DEFAULT_OPTIONS, ...automation });
-  }, [open]);
+    setCodingDraft({
+      defaultWorkflowId: codingSettings?.defaultWorkflowId ?? null,
+      config: { ...DEFAULT_CODING_WORKFLOW_CONFIG, ...codingSettings?.config },
+    });
+  }, [codingSettings, open]);
 
   useEffect(() => {
     if (wasPendingRef.current && !pending) {
@@ -141,6 +166,12 @@ export function ProjectAutomationMenu({
     if (disabled) return;
     setDraft(next);
     onChange(next);
+  };
+
+  const submitCodingChange = (next: typeof codingDraft) => {
+    if (codingPending || !codingSettings) return;
+    setCodingDraft(next);
+    onCodingChange(next);
   };
 
   const menu = open ? createPortal(
@@ -245,8 +276,78 @@ export function ProjectAutomationMenu({
           ))}
         </select>
       </label>
+      <div className="project-automation-menu-heading project-coding-heading">
+        <strong>Coding 工作流</strong>
+        <span>{codingPending ? "保存中" : "内置"}</span>
+      </div>
+      <label className="project-automation-field">
+        <span>默认工作流</span>
+        <select
+          value={codingDraft.defaultWorkflowId ?? ""}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            defaultWorkflowId: event.target.value || null,
+          })}
+        >
+          <option value="">不预选</option>
+          {workflows.map((workflow) => (
+            <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
+          ))}
+        </select>
+      </label>
+      {([
+        ["orchestratorModel", "Orchestrator"],
+        ["implementerModel", "Implementer"],
+        ["verifierModel", "代码 Verifier"],
+        ["uiVerifierModel", "UI Verifier"],
+        ["escalationImplementerModel", "升级 Implementer"],
+      ] as const).map(([field, label]) => (
+        <label className="project-automation-field" key={field}>
+          <span>{label}</span>
+          <select
+            value={codingDraft.config[field]}
+            disabled={codingPending || !codingSettings}
+            onChange={(event) => submitCodingChange({
+              ...codingDraft,
+              config: { ...codingDraft.config, [field]: event.target.value },
+            })}
+          >
+            {CODING_WORKFLOW_MODELS.map((model) => (
+              <option key={model.slug} value={model.slug}>{model.label}</option>
+            ))}
+          </select>
+        </label>
+      ))}
+      <label className="project-automation-field">
+        <span>普通模型轮次</span>
+        <select
+          value={codingDraft.config.standardRounds}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            config: { ...codingDraft.config, standardRounds: Number(event.target.value) },
+          })}
+        >
+          {[1, 2, 3, 4, 5].map((rounds) => <option key={rounds} value={rounds}>{rounds}</option>)}
+        </select>
+      </label>
+      <label className="project-automation-field">
+        <span>强模型轮次</span>
+        <select
+          value={codingDraft.config.escalationRounds}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            config: { ...codingDraft.config, escalationRounds: Number(event.target.value) },
+          })}
+        >
+          {[1, 2, 3].map((rounds) => <option key={rounds} value={rounds}>{rounds}</option>)}
+        </select>
+      </label>
       {unavailableReason && <p className="project-automation-note">{unavailableReason}</p>}
       {error && error !== unavailableReason && <p className="project-automation-error" role="alert">{error}</p>}
+      {codingError && <p className="project-automation-error" role="alert">{codingError}</p>}
     </div>,
     document.body,
   ) : null;
