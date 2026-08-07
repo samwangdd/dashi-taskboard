@@ -8,6 +8,8 @@ import { CODING_WORKFLOW_ID } from "../shared/coding-workflow.mjs";
 const exec = promisify(execCallback);
 const execFile = promisify(execFileCallback);
 const OUTPUT_LIMIT = 65_536;
+const GIT_TIMEOUT_MS = 30_000;
+const CHECK_TIMEOUT_MS = 15 * 60_000;
 const AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
@@ -17,6 +19,25 @@ const AGENT_ACTOR = {
 
 function shellQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function sameFiles(left, right) {
+  return left.length === right.length && left.every((file, index) => file === right[index]);
+}
+
+async function runGit(workspacePath, args, options = {}) {
+  try {
+    return await execFile("git", ["-C", workspacePath, ...args], {
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: OUTPUT_LIMIT,
+      ...options,
+    });
+  } catch (error) {
+    throw new ApiError(409, "GIT_COMMAND_FAILED", `Git command failed: git ${args.join(" ")}`, {
+      exitCode: Number.isInteger(error.code) ? error.code : null,
+      stderr: typeof error.stderr === "string" ? error.stderr.slice(0, OUTPUT_LIMIT) : "",
+    });
+  }
 }
 
 function normalizeRelativeFiles(files) {
@@ -57,13 +78,13 @@ export class CodingWorkflowService {
     } catch {
       throw new ApiError(409, "WORKSPACE_UNAVAILABLE", "The selected development context is not accessible");
     }
-    const { stdout: rootOutput } = await execFile("git", ["-C", workspacePath, "rev-parse", "--show-toplevel"]);
+    const { stdout: rootOutput } = await runGit(workspacePath, ["rev-parse", "--show-toplevel"]);
     const repositoryRoot = await realpath(rootOutput.trim());
     if (repositoryRoot !== workspacePath) {
       throw new ApiError(409, "WORKSPACE_NOT_ROOT", "Coding workflow development context must be a Git repository root");
     }
     if (task.developmentContext.type === "branch") {
-      const { stdout } = await execFile("git", ["-C", workspacePath, "branch", "--show-current"]);
+      const { stdout } = await runGit(workspacePath, ["branch", "--show-current"]);
       if (stdout.trim() !== task.developmentContext.branch) {
         throw new ApiError(409, "BRANCH_MISMATCH", "The project workspace is not on the task branch");
       }
@@ -74,15 +95,14 @@ export class CodingWorkflowService {
   async assertClaimable(task) {
     if (task.workflowId !== CODING_WORKFLOW_ID) return null;
     const workspacePath = await this.workspaceForTask(task);
-    const { stdout: status } = await execFile(
-      "git",
-      ["-C", workspacePath, "status", "--porcelain", "--untracked-files=all"],
-      { maxBuffer: OUTPUT_LIMIT },
+    const { stdout: status } = await runGit(
+      workspacePath,
+      ["status", "--porcelain", "--untracked-files=all"],
     );
     if (status.trim()) {
       throw new ApiError(409, "DEVELOPMENT_CONTEXT_DIRTY", "Coding workflow requires a clean development context");
     }
-    const { stdout } = await execFile("git", ["-C", workspacePath, "rev-parse", "HEAD"]);
+    const { stdout } = await runGit(workspacePath, ["rev-parse", "HEAD"]);
     return { workspacePath, startRevision: stdout.trim() };
   }
 
@@ -117,7 +137,8 @@ export class CodingWorkflowService {
     try {
       const result = await exec(command, {
         cwd: workspacePath,
-        shell: "/bin/zsh",
+        shell: process.platform === "win32" ? process.env.ComSpec : process.env.SHELL || "/bin/sh",
+        timeout: CHECK_TIMEOUT_MS,
         maxBuffer: OUTPUT_LIMIT,
       });
       stdout = result.stdout;
@@ -144,6 +165,13 @@ export class CodingWorkflowService {
 
   async addHandoff(runId, input) {
     const run = this.#requireRun(runId);
+    const allowedPhase = input.targetRole === "orchestrator" ? "ready_to_commit" : "implementing";
+    if (!["implementer", "verifier", "ui-verifier", "orchestrator"].includes(input.targetRole)) {
+      throw new ApiError(400, "INVALID_CODING_ROLE", "Coding handoff target role is invalid");
+    }
+    if (run.phase !== allowedPhase) {
+      throw new ApiError(409, "INVALID_CODING_PHASE", `Handoff to ${input.targetRole} requires a ${allowedPhase} run`);
+    }
     let changedFiles = null;
     if (input.sourceRole === "implementer" && ["verifier", "ui-verifier"].includes(input.targetRole)) {
       const task = this.database.getTask(run.taskId);
@@ -165,8 +193,8 @@ export class CodingWorkflowService {
 
   async changedFiles(workspacePath) {
     const [{ stdout: tracked }, { stdout: untracked }] = await Promise.all([
-      execFile("git", ["-C", workspacePath, "diff", "--name-only", "-z", "HEAD"], { encoding: "buffer" }),
-      execFile("git", ["-C", workspacePath, "ls-files", "--others", "--exclude-standard", "-z"], { encoding: "buffer" }),
+      runGit(workspacePath, ["diff", "--name-only", "-z", "HEAD"], { encoding: "buffer" }),
+      runGit(workspacePath, ["ls-files", "--others", "--exclude-standard", "-z"], { encoding: "buffer" }),
     ]);
     return [...new Set([
       ...Buffer.from(tracked).toString("utf8").split("\0"),
@@ -175,7 +203,7 @@ export class CodingWorkflowService {
   }
 
   async revision(workspacePath) {
-    const { stdout } = await execFile("git", ["-C", workspacePath, "rev-parse", "HEAD"]);
+    const { stdout } = await runGit(workspacePath, ["rev-parse", "HEAD"]);
     return stdout.trim();
   }
 
@@ -198,51 +226,99 @@ export class CodingWorkflowService {
   }
 
   async commit(runId, message) {
-    const run = this.#requireRun(runId);
-    if (run.phase === "in_review" && run.commitSha) {
-      return { run, task: this.database.getTask(run.taskId), idempotent: true };
-    }
-    if (run.phase !== "ready_to_commit") {
-      throw new ApiError(409, "INVALID_CODING_PHASE", "Coding commit requires a passed verification verdict");
-    }
     if (typeof message !== "string" || message.trim().length === 0 || message.length > 240 || message.includes("\n")) {
       throw new ApiError(400, "INVALID_COMMIT_MESSAGE", "Commit message must be one non-empty line up to 240 characters");
     }
+    let run = this.#requireRun(runId);
     const task = this.database.getTask(run.taskId);
     const workspacePath = await this.workspaceForTask(task);
-    const changedFiles = await this.changedFiles(workspacePath);
-    if (
-      changedFiles.length !== run.changedFiles.length
-      || changedFiles.some((file, index) => file !== run.changedFiles[index])
-    ) {
-      throw new ApiError(409, "VERIFIED_FILE_SET_CHANGED", "Changed files no longer match the verified allowlist", {
-        verifiedFiles: run.changedFiles,
-        currentFiles: changedFiles,
+    if (run.phase === "in_review") {
+      return this.#finishReview(run, run.changedFiles, run.commitSha, true);
+    }
+    if (run.phase === "ready_to_commit") {
+      const changedFiles = await this.changedFiles(workspacePath);
+      if (!sameFiles(changedFiles, run.changedFiles)) {
+        throw new ApiError(409, "VERIFIED_FILE_SET_CHANGED", "Changed files no longer match the verified allowlist", {
+          verifiedFiles: run.changedFiles,
+          currentFiles: changedFiles,
+        });
+      }
+      run = this.database.beginCodingCommit(run.id, {
+        parentRevision: await this.revision(workspacePath),
+        changedFiles: run.changedFiles,
+        message: message.trim(),
       });
     }
-    let commitSha = null;
-    if (changedFiles.length > 0) {
-      await execFile("git", ["-C", workspacePath, "add", "--", ...run.changedFiles]);
-      await execFile("git", ["-C", workspacePath, "commit", "-m", message.trim()], { maxBuffer: OUTPUT_LIMIT });
-      commitSha = await this.revision(workspacePath);
+    if (run.phase !== "committing") {
+      throw new ApiError(409, "INVALID_CODING_PHASE", "Coding commit requires a passed verification verdict");
     }
-    const updatedRun = this.database.markCodingRunCommitted(run.id, { changedFiles, commitSha });
-    const currentTask = this.database.getTask(task.id);
-    const movedTask = this.database.moveTask(
-      currentTask.id,
-      currentTask.version,
-      "in_review",
-      undefined,
-      currentTask.threadId ?? undefined,
-    );
-    this.database.createComment(task.id, {
-      body: commitSha
-        ? `Coding 工作流验证通过并已自动提交 ${commitSha.slice(0, 12)}。请验收结果。`
-        : "Coding 工作流验证通过；本次无需代码变更，请验收结果。",
-      threadId: currentTask.threadId,
-      actor: AGENT_ACTOR,
-    });
-    return { run: updatedRun, task: movedTask, idempotent: false };
+    const intent = this.database.getCodingCommitIntent(run.id);
+    if (!intent) throw new ApiError(409, "COMMIT_INTENT_MISSING", "Coding commit intent is missing");
+    const headRevision = await this.revision(workspacePath);
+    let commitSha = null;
+    if (intent.changedFiles.length === 0) {
+      const changedFiles = await this.changedFiles(workspacePath);
+      if (headRevision !== intent.parentRevision || changedFiles.length > 0) {
+        throw new ApiError(409, "COMMIT_RECOVERY_CONFLICT", "No-code result no longer matches the persisted commit intent");
+      }
+    } else if (headRevision === intent.parentRevision) {
+      const changedFiles = await this.changedFiles(workspacePath);
+      if (!sameFiles(changedFiles, intent.changedFiles)) {
+        throw new ApiError(409, "VERIFIED_FILE_SET_CHANGED", "Changed files no longer match the commit intent", {
+          verifiedFiles: intent.changedFiles,
+          currentFiles: changedFiles,
+        });
+      }
+      await runGit(workspacePath, ["add", "--", ...intent.changedFiles]);
+      await runGit(workspacePath, ["commit", "-m", intent.message]);
+      commitSha = await this.revision(workspacePath);
+    } else if (intent.changedFiles.length > 0) {
+      const [{ stdout: parent }, { stdout: committed }, { stdout: committedMessage }] = await Promise.all([
+        runGit(workspacePath, ["rev-parse", `${headRevision}^`]),
+        runGit(workspacePath, ["diff-tree", "--no-commit-id", "--name-only", "-r", "-z", headRevision], { encoding: "buffer" }),
+        runGit(workspacePath, ["log", "-1", "--pretty=%B", headRevision]),
+      ]);
+      const committedFiles = Buffer.from(committed).toString("utf8").split("\0").filter(Boolean).sort();
+      if (
+        parent.trim() !== intent.parentRevision
+        || !sameFiles(committedFiles, intent.changedFiles)
+        || committedMessage.trim() !== intent.message
+      ) {
+        throw new ApiError(409, "COMMIT_RECOVERY_CONFLICT", "HEAD does not match the persisted Coding commit intent");
+      }
+      commitSha = headRevision;
+    }
+    return this.#finishReview(run, intent.changedFiles, commitSha, false);
+  }
+
+  #finishReview(run, changedFiles, commitSha, idempotent) {
+    const updatedRun = run.phase === "committing"
+      ? this.database.markCodingRunCommitted(run.id, { changedFiles, commitSha })
+      : run;
+    let task = this.database.getTask(updatedRun.taskId);
+    if (task.status !== "in_review") {
+      if (task.status !== "in_progress") {
+        throw new ApiError(409, "TASK_STATUS_CONFLICT", "Coding task is no longer in progress");
+      }
+      task = this.database.moveTask(
+        task.id,
+        task.version,
+        "in_review",
+        undefined,
+        task.threadId ?? undefined,
+      );
+    }
+    const body = commitSha
+      ? `Coding 工作流验证通过并已自动提交 ${commitSha.slice(0, 12)}。请验收结果。`
+      : "Coding 工作流验证通过；本次无需代码变更，请验收结果。";
+    if (!this.database.listComments(task.id).some((comment) => comment.body === body)) {
+      this.database.createComment(task.id, {
+        body,
+        threadId: task.threadId,
+        actor: AGENT_ACTOR,
+      });
+    }
+    return { run: updatedRun, task, idempotent };
   }
 
   #requireRun(runId) {

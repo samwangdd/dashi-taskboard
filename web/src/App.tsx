@@ -584,6 +584,7 @@ export function App() {
   const [announcement, setAnnouncementValue] = useState("");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const tasksRequestRef = useRef(0);
+  const codingSettingsRequestRef = useRef(0);
   const tasksRef = useRef<Task[]>([]);
   const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
@@ -1182,6 +1183,7 @@ export function App() {
   }, [refreshWorkflowOptions, selectedProjectId]);
 
   useEffect(() => {
+    const requestId = ++codingSettingsRequestRef.current;
     if (!selectedProjectId) {
       setCodingWorkflowSettings(null);
       setCodingWorkflowError(null);
@@ -1191,10 +1193,17 @@ export function App() {
     setCodingWorkflowError(null);
     void getCodingWorkflowSettings(selectedProjectId, controller.signal)
       .then((settings) => {
-        if (!controller.signal.aborted) setCodingWorkflowSettings(settings);
+        if (
+          !controller.signal.aborted
+          && requestId === codingSettingsRequestRef.current
+          && settings.projectId === selectedProjectIdRef.current
+        ) setCodingWorkflowSettings(settings);
       })
       .catch((error) => {
-        if ((error as Error).name !== "AbortError") {
+        if (
+          (error as Error).name !== "AbortError"
+          && requestId === codingSettingsRequestRef.current
+        ) {
           setCodingWorkflowSettings(null);
           setCodingWorkflowError(errorMessage(error));
         }
@@ -1206,14 +1215,17 @@ export function App() {
     changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
   ) => {
     if (!codingWorkflowSettings || codingWorkflowPending) return;
+    const projectId = codingWorkflowSettings.projectId;
     setCodingWorkflowPending(true);
     setCodingWorkflowError(null);
     try {
-      setCodingWorkflowSettings(await saveCodingWorkflowSettings(codingWorkflowSettings, changes));
+      const settings = await saveCodingWorkflowSettings(codingWorkflowSettings, changes);
+      if (selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(settings);
     } catch (error) {
+      if (selectedProjectIdRef.current !== projectId) return;
       setCodingWorkflowError(errorMessage(error));
-      const latest = await getCodingWorkflowSettings(codingWorkflowSettings.projectId).catch(() => null);
-      if (latest) setCodingWorkflowSettings(latest);
+      const latest = await getCodingWorkflowSettings(projectId).catch(() => null);
+      if (latest && selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(latest);
     } finally {
       setCodingWorkflowPending(false);
     }

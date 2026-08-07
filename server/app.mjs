@@ -18,7 +18,10 @@ import {
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { CodingWorkflowService } from "./coding-workflow.mjs";
-import { normalizeCodingWorkflowConfig } from "../shared/coding-workflow.mjs";
+import {
+  CODING_WORKFLOW_ID,
+  normalizeCodingWorkflowConfig,
+} from "../shared/coding-workflow.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
   CloudProxyError,
@@ -1644,6 +1647,9 @@ export function createTaskboardServer(options = {}) {
         const taskId = decodeRouteSegment(codingTaskRunRoute[1], "Task id");
         const task = database.getTask(taskId);
         if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${taskId}' does not exist`);
+        if (task.workflowId !== CODING_WORKFLOW_ID) {
+          throw new ApiError(409, "NOT_CODING_WORKFLOW", "Task does not use the Coding workflow");
+        }
         const run = await codingWorkflow.createOrResumeRun(task);
         events.emit("coding.run.updated", { task, run });
         return sendJson(response, 200, { run });
@@ -1654,7 +1660,9 @@ export function createTaskboardServer(options = {}) {
         assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/artifacts");
         const runId = decodeRouteSegment(codingRunArtifactsRoute[1], "Coding run id");
         if (request.method === "GET") {
-          return sendJson(response, 200, { artifacts: database.listCodingArtifacts(runId) });
+          const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
+          if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+          return sendJson(response, 200, { artifacts: database.listCodingArtifacts(run.id) });
         }
         if (request.method === "POST") {
           const result = await codingWorkflow.addHandoff(runId, parseCodingHandoff(await readJson(request)));
@@ -1713,7 +1721,7 @@ export function createTaskboardServer(options = {}) {
         assertNoQuery(url.searchParams, "/api/local/coding/runs/:id");
         if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
         const runId = decodeRouteSegment(codingRunRoute[1], "Coding run id");
-        const run = database.getCodingRun(runId);
+        const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
         if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
         return sendJson(response, 200, {
           run,

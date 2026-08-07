@@ -117,6 +117,7 @@ export function TaskEditor({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleRef = useRef<HTMLInputElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const workflowTouchedRef = useRef(false);
   const [title, setTitle] = useState(task?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
   const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
@@ -159,6 +160,12 @@ export function TaskEditor({
       if (dialogRef.current?.open) dialogRef.current.close();
     };
   }, []);
+
+  useEffect(() => {
+    if (!task && !workflowTouchedRef.current && !workflowId && defaultWorkflowId) {
+      setWorkflowId(defaultWorkflowId);
+    }
+  }, [defaultWorkflowId, task, workflowId]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -331,7 +338,13 @@ export function TaskEditor({
             <label className="property-control property-workflow">
               <LinearIcon name="dashboard" />
               <span className="sr-only">工作流</span>
-              <select value={workflowId} onChange={(event) => setWorkflowId(event.target.value)}>
+              <select
+                value={workflowId}
+                onChange={(event) => {
+                  workflowTouchedRef.current = true;
+                  setWorkflowId(event.target.value);
+                }}
+              >
                 <option value="">工作流</option>
                 {!workflowAvailable && <option value={workflowId}>当前设备未找到此流程</option>}
                 {workflows.map((workflow) => (
