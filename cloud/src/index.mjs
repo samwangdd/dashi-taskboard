@@ -358,7 +358,7 @@ async function authenticate(request, env) {
     return {
       type: "agent",
       id: `${userId}:codex-agent`,
-      name: `Codex Agent (${username})`,
+      name: `Claude Agent (${username})`,
       avatarUrl: null,
       username,
     };
@@ -378,7 +378,7 @@ function resolveAssignee(target, actor) {
   return {
     type: "agent",
     id: `${userId}:codex-agent`,
-    name: `Codex Agent (${actor.username})`,
+    name: `Claude Agent (${actor.username})`,
     avatarUrl: null,
   };
 }

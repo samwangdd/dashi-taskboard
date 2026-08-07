@@ -74,7 +74,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new ApiError(0, {
       error: {
         code: "SERVICE_UNAVAILABLE",
-        message: "无法连接本地 Taskboard 服务，请重新通过 Taskboard 启动 Codex。",
+        message: "无法连接本地 Taskboard 服务，请确认 npm start 正在运行。",
       },
     });
   }

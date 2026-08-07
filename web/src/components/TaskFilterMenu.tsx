@@ -57,8 +57,8 @@ const PRIORITY_LABELS: Record<TaskPriority, string> = {
 };
 
 const LINK_LABELS = {
-  linked: "Codex 已处理",
-  unlinked: "尚未由 Codex 处理",
+  linked: "Claude 已处理",
+  unlinked: "尚未由 Claude 处理",
 } as const;
 
 function labelColor(label: string): string {
@@ -189,8 +189,8 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     {
       id: "link-linked",
       label: LINK_LABELS.linked,
-      category: "Codex 对话",
-      keywords: "codex thread task 已处理",
+      category: "Claude 会话",
+      keywords: "claude session thread task 已处理",
       count: countFor("link", (task) => Boolean(task.threadId)),
       selected: filters.link === "linked",
       icon: <LinearIcon name="link" />,
@@ -199,8 +199,8 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     {
       id: "link-unlinked",
       label: LINK_LABELS.unlinked,
-      category: "Codex 对话",
-      keywords: "codex thread task 未处理",
+      category: "Claude 会话",
+      keywords: "claude session thread task 未处理",
       count: countFor("link", (task) => !task.threadId),
       selected: filters.link === "unlinked",
       icon: <LinearIcon name="linkOff" />,
@@ -239,8 +239,8 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     },
     {
       id: "link" as const,
-      label: "Codex 关联",
-      keywords: "link linked thread task codex 关联",
+      label: "Claude 关联",
+      keywords: "link linked thread task claude session 关联",
       icon: <LinearIcon name="link" />,
       summary: filters.link === "all" ? null : LINK_LABELS[filters.link],
     },

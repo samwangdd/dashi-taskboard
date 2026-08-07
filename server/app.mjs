@@ -43,10 +43,10 @@ const INLINE_ATTACHMENT_TYPES = new Set([
 ]);
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-"]);
-const CODEX_AGENT_ACTOR = {
+const AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
-  name: "Codex Agent",
+  name: "Claude Agent",
   avatarUrl: null,
 };
 const CONTENT_TYPES = new Map([
@@ -496,7 +496,7 @@ function requestHeader(request, name) {
 
 function actorFromRequest(request) {
   if (request.headers["x-taskboard-client"] === "taskctl") {
-    return CODEX_AGENT_ACTOR;
+    return AGENT_ACTOR;
   }
 
   const rawId = requestHeader(request, "x-taskboard-user-id");
@@ -548,7 +548,7 @@ function parseAssigneeTarget(value) {
 
 function resolveAssignee(target, actor) {
   if (target === undefined) return actor;
-  if (target === "codex-agent") return CODEX_AGENT_ACTOR;
+  if (target === "codex-agent") return AGENT_ACTOR;
   if (actor.type !== "user") {
     throw new ApiError(400, "INVALID_FIELD", "'current-user' requires a user request identity");
   }
@@ -1269,7 +1269,7 @@ async function discoverWorkflowCapabilities(resolved, workspacePath) {
 }
 
 export function resolveServerOptions(options = {}) {
-  const configuredDataDirectory = options.dataDirectory ?? process.env.CODEX_TASKBOARD_DATA_DIR;
+  const configuredDataDirectory = options.dataDirectory ?? process.env.TASKBOARD_DATA_DIR;
   const dataDirectory = configuredDataDirectory
     ? path.resolve(configuredDataDirectory)
     : path.join(PROJECT_ROOT, ".data");
@@ -1289,18 +1289,18 @@ export function resolveServerOptions(options = {}) {
   };
 }
 
-export function resolvePort(value = process.env.CODEX_TASKBOARD_PORT ?? "47823") {
+export function resolvePort(value = process.env.TASKBOARD_PORT ?? "47823") {
   const port = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("CODEX_TASKBOARD_PORT must be an integer between 1 and 65535");
+    throw new Error("TASKBOARD_PORT must be an integer between 1 and 65535");
   }
   return port;
 }
 
-export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0") {
+export function resolveHost(value = process.env.TASKBOARD_HOST ?? "0.0.0.0") {
   const host = String(value).trim();
   if (host !== "127.0.0.1" && host !== "0.0.0.0") {
-    throw new Error("CODEX_TASKBOARD_HOST must be 127.0.0.1 or 0.0.0.0");
+    throw new Error("TASKBOARD_HOST must be 127.0.0.1 or 0.0.0.0");
   }
   return host;
 }

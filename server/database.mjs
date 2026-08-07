@@ -448,6 +448,18 @@ export class TaskboardDatabase {
       SET author_id = 'local-user'
       WHERE author_id = 'local'
     `);
+    this.database.exec(`
+      UPDATE tasks SET creator_name = 'Claude Agent'
+      WHERE creator_type = 'agent' AND creator_name = 'Codex Agent'
+    `);
+    this.database.exec(`
+      UPDATE tasks SET assignee_name = 'Claude Agent'
+      WHERE assignee_type = 'agent' AND assignee_name = 'Codex Agent'
+    `);
+    this.database.exec(`
+      UPDATE comments SET author_name = 'Claude Agent'
+      WHERE author_type = 'agent' AND author_name = 'Codex Agent'
+    `);
 
     const hasTaskThreads = this.database.prepare(`
       SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'task_threads'

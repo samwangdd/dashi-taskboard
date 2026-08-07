@@ -187,7 +187,7 @@ async function execute(parsed, overrides) {
   const env = overrides.env ?? process.env;
   const usesCompanionControl = command.startsWith("cloud ") || command === "project map";
   const api = createApiClient(overrides, {
-    baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
+    baseUrl: usesCompanionControl || env.TASKBOARD_COMPANION_URL !== undefined
       ? resolveCompanionUrl(env)
       : undefined,
   });
@@ -306,7 +306,7 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
   }
 
   const env = overrides.env ?? process.env;
-  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? env.CODEX_TASKBOARD_URL ?? DEFAULT_API_URL);
+  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? env.TASKBOARD_URL ?? DEFAULT_API_URL);
 
   return {
     async request(method, pathname, body) {
@@ -681,13 +681,13 @@ function recurrenceFromOptions(options) {
 
 function resolveThreadId(options, overrides) {
   const env = overrides.env ?? process.env;
-  const value = options["thread-id"] ?? env.CODEX_THREAD_ID;
+  const value = options["thread-id"] ?? env.TASKBOARD_SESSION_ID;
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw usageError("Codex conversation attribution requires --thread-id or CODEX_THREAD_ID");
+    throw usageError("conversation attribution requires --thread-id or TASKBOARD_SESSION_ID");
   }
   const threadId = value.trim();
   if (threadId.length > 256) {
-    throw usageError("--thread-id and CODEX_THREAD_ID cannot exceed 256 characters");
+    throw usageError("--thread-id and TASKBOARD_SESSION_ID cannot exceed 256 characters");
   }
   return threadId;
 }
@@ -765,10 +765,10 @@ function normalizeBaseUrl(rawUrl) {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw usageError("CODEX_TASKBOARD_URL must be a valid URL");
+    throw usageError("TASKBOARD_URL must be a valid URL");
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw usageError("CODEX_TASKBOARD_URL must use http or https");
+    throw usageError("TASKBOARD_URL must use http or https");
   }
   url.pathname = url.pathname.replace(/\/$/, "");
   url.search = "";
@@ -777,8 +777,8 @@ function normalizeBaseUrl(rawUrl) {
 }
 
 function resolveCompanionUrl(env) {
-  const rawUrl = env.CODEX_TASKBOARD_COMPANION_URL
-    ?? env.CODEX_TASKBOARD_URL
+  const rawUrl = env.TASKBOARD_COMPANION_URL
+    ?? env.TASKBOARD_URL
     ?? DEFAULT_API_URL;
   let url;
   try {

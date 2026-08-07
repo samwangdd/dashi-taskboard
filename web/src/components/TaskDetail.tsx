@@ -30,7 +30,7 @@ import type {
   WorkflowOption,
 } from "../types";
 import {
-  CODEX_AGENT_ACTOR,
+  AGENT_ACTOR,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
@@ -562,7 +562,7 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [currentTask.assignee, currentUser, AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));

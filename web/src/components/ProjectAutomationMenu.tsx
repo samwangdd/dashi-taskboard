@@ -199,7 +199,7 @@ export function ProjectAutomationMenu({
           )}
           {quota?.state === "unavailable" && (
             quota.reason === "api-key"
-              ? "API Key 模式不支持读取 Codex App 额度"
+              ? "API Key 模式不支持读取订阅额度"
               : "当前账户无法读取额度"
           )}
           {(!quota || quota.state === "unknown") && "额度状态未知，自动认领已暂停"}

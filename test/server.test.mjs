@@ -842,11 +842,11 @@ test("existing task and comment thread attribution remains content-specific", as
   assert.equal(result.body.task.threadId, "legacy-thread");
   assert.equal(result.body.task.creatorType, "agent");
   assert.equal(result.body.task.creatorId, "codex-agent");
-  assert.equal(result.body.task.creatorName, "Codex Agent");
+  assert.equal(result.body.task.creatorName, "Claude Agent");
   assert.deepEqual(result.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "Claude Agent",
     avatarUrl: null,
   });
   assert.equal(Object.hasOwn(result.body.task, "linkedThreadId"), false);
@@ -867,7 +867,7 @@ test("existing task and comment thread attribution remains content-specific", as
   assert.equal(comments.body.comments[0].threadId, "legacy-comment-thread");
   assert.equal(comments.body.comments[0].authorType, "agent");
   assert.equal(comments.body.comments[0].authorId, "codex-agent");
-  assert.equal(comments.body.comments[0].authorName, "Codex Agent");
+  assert.equal(comments.body.comments[0].authorName, "Claude Agent");
   assert.deepEqual(comments.body.comments[0].attachments, []);
   const attachments = await request(baseUrl, "/api/tasks/legacy-task/attachments");
   assert.equal(attachments.body.attachments[0].commentId, null);
@@ -1534,7 +1534,7 @@ test("issue comments can be created, edited, listed, and deleted", async () => {
   assert.equal(taskAfterDelete.body.task.threadId, null);
 });
 
-test("taskctl issue creation and comments use the Codex Agent identity", async () => {
+test("taskctl issue creation and comments use the Claude Agent identity", async () => {
   const baseUrl = await startServer();
   const agentHeaders = {
     "x-taskboard-client": "taskctl",
@@ -1551,12 +1551,12 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const task = createTaskResult.body.task;
   assert.equal(task.creatorType, "agent");
   assert.equal(task.creatorId, "codex-agent");
-  assert.equal(task.creatorName, "Codex Agent");
+  assert.equal(task.creatorName, "Claude Agent");
   assert.equal(task.creatorAvatarUrl, null);
   assert.deepEqual(task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "Claude Agent",
     avatarUrl: null,
   });
 
@@ -1569,7 +1569,7 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const comment = createCommentResult.body.comment;
   assert.equal(comment.authorType, "agent");
   assert.equal(comment.authorId, "codex-agent");
-  assert.equal(comment.authorName, "Codex Agent");
+  assert.equal(comment.authorName, "Claude Agent");
   assert.equal(comment.authorAvatarUrl, null);
   assert.equal(comment.threadId, "thread-agent-comment");
 });
@@ -1611,7 +1611,7 @@ test("Codex-hosted user mutations persist the current account identity and avata
   assert.deepEqual(assignedToCodexResult.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "Claude Agent",
     avatarUrl: null,
   });
 
