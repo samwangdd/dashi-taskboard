@@ -92,6 +92,7 @@ interface TaskDetailProps {
   ) => Promise<RelationMutationResult>;
   onOpenThread: (threadId: string) => void;
   onOpenInThread: (task: Task) => void;
+  onCopyPrompt: (task: Task) => void;
   openingThread: boolean;
   onError: (message: string | null) => void;
   onAnnounce: (message: string) => void;
@@ -198,6 +199,7 @@ export function TaskDetail({
   onRemoveRelation,
   onOpenThread,
   onOpenInThread,
+  onCopyPrompt,
   openingThread,
   onError,
   onAnnounce,
@@ -963,15 +965,27 @@ export function TaskDetail({
           </div>
 
           <aside className="issue-properties" aria-label="议题属性">
-            <button
-              className="detail-open-thread-action"
-              type="button"
-              disabled={openingThread}
-              onClick={() => onOpenInThread(currentTask)}
-            >
-              <LinearIcon name="conversation" />
-              <span>{openingThread ? "正在打开…" : "在对话中打开"}</span>
-            </button>
+            <div className="detail-thread-actions">
+              <button
+                className="detail-open-thread-action"
+                type="button"
+                disabled={openingThread}
+                title="在对话中打开"
+                onClick={() => onOpenInThread(currentTask)}
+              >
+                <LinearIcon name="conversation" />
+                <span>{openingThread ? "正在打开…" : "在对话中打开"}</span>
+              </button>
+              <button
+                className="detail-open-thread-action"
+                type="button"
+                title="复制 Prompt"
+                onClick={() => onCopyPrompt(currentTask)}
+              >
+                <LinearIcon name="copy" />
+                <span>复制 Prompt</span>
+              </button>
+            </div>
             <h2>属性</h2>
             <label className="detail-property-row">
               <span className={`detail-property-icon status-icon-${STATUS_DETAILS[currentTask.status].tone}`}><LinearStatusIcon status={currentTask.status} /></span>
