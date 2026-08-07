@@ -16,7 +16,7 @@ import {
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_API_URL = "http://127.0.0.1:47823";
 
-const BOOLEAN_OPTIONS = new Set(["json"]);
+const BOOLEAN_OPTIONS = new Set(["json", "ui"]);
 
 const COMMAND_OPTIONS = new Map([
   ["project list", new Set(["json"])],
@@ -37,6 +37,7 @@ const COMMAND_OPTIONS = new Map([
       "status",
       "priority",
       "labels",
+      "workflow",
       "thread-id",
       "git-branch",
       "worktree-path",
@@ -56,6 +57,7 @@ const COMMAND_OPTIONS = new Map([
       "status",
       "priority",
       "labels",
+      "workflow",
       "thread-id",
       "git-branch",
       "worktree-path",
@@ -77,6 +79,14 @@ const COMMAND_OPTIONS = new Map([
   ["comment delete", new Set(["thread-id", "if-version", "json"])],
   ["attachment download", new Set(["output", "json"])],
   ["context current", new Set(["cwd", "json"])],
+  ["coding start", new Set(["json"])],
+  ["coding get", new Set(["json"])],
+  ["coding artifacts", new Set(["json"])],
+  ["coding contract", new Set(["contract-file", "if-version", "json"])],
+  ["coding handoff", new Set(["from-role", "to-role", "body", "body-file", "json"])],
+  ["coding check", new Set(["kind", "files", "command", "json"])],
+  ["coding verdict", new Set(["result", "ui", "body", "body-file", "json"])],
+  ["coding commit", new Set(["message", "json"])],
 ]);
 
 class TaskctlError extends Error {
@@ -179,13 +189,15 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download, context current",
+      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download, context current, coding start/get/artifacts/contract/handoff/check/verdict/commit",
     );
   }
   validateOptions(parsed.options, allowedOptions);
 
   const env = overrides.env ?? process.env;
-  const usesCompanionControl = command.startsWith("cloud ") || command === "project map";
+  const usesCompanionControl = command.startsWith("cloud ")
+    || command.startsWith("coding ")
+    || command === "project map";
   const api = createApiClient(overrides, {
     baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
       ? resolveCompanionUrl(env)
@@ -291,6 +303,50 @@ async function execute(parsed, overrides) {
     case "context current":
       expectOperandCount(parsed, 0);
       return currentContext(api, parsed.options, overrides);
+    case "coding start":
+      expectOperandCount(parsed, 1);
+      return api.request(
+        "POST",
+        `/api/local/coding/tasks/${encodeURIComponent(parsed.operands[0])}/runs`,
+      );
+    case "coding get":
+      expectOperandCount(parsed, 1);
+      return api.request("GET", codingRunPath(parsed.operands[0]));
+    case "coding artifacts":
+      expectOperandCount(parsed, 1);
+      return api.request("GET", `${codingRunPath(parsed.operands[0])}/artifacts`);
+    case "coding contract":
+      expectOperandCount(parsed, 1);
+      return api.request("PUT", `${codingRunPath(parsed.operands[0])}/contract`, {
+        version: explicitVersion(parsed.options["if-version"]),
+        contract: await readJsonFile(requiredOption(parsed.options, "contract-file"), overrides),
+      });
+    case "coding handoff":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/artifacts`, {
+        sourceRole: requiredOption(parsed.options, "from-role"),
+        targetRole: requiredOption(parsed.options, "to-role"),
+        body: await resolveBody(parsed.options, overrides),
+      });
+    case "coding check":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/checks`, {
+        kind: requiredOption(parsed.options, "kind"),
+        command: requiredOption(parsed.options, "command"),
+        files: parseScopedFiles(requiredOption(parsed.options, "files")),
+      });
+    case "coding verdict":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/verdicts`, {
+        result: requiredOption(parsed.options, "result"),
+        ui: parsed.options.ui === true,
+        body: await resolveBody(parsed.options, overrides),
+      });
+    case "coding commit":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/commit`, {
+        message: requiredOption(parsed.options, "message"),
+      });
     default:
       throw usageError(`Unsupported command: ${command}`);
   }
@@ -500,6 +556,7 @@ async function createIssue(api, options, overrides) {
     status,
     priority,
     labels: parseLabels(options.labels),
+    ...optionalField("workflowId", options.workflow),
     threadId,
     ...optionalField("developmentContext", developmentContext),
     ...optionalField("dueDate", options["due-date"]),
@@ -519,6 +576,7 @@ async function updateIssue(api, taskId, options, overrides) {
     ...optionalField("status", options.status),
     ...optionalField("priority", options.priority),
     ...optionalField("labels", options.labels === undefined ? undefined : parseLabels(options.labels)),
+    ...optionalField("workflowId", options.workflow),
     ...optionalField("developmentContext", developmentContext),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
@@ -636,6 +694,55 @@ async function resolveDescription(options, overrides) {
   }
 }
 
+async function resolveBody(options, overrides) {
+  if (options.body !== undefined && options["body-file"] !== undefined) {
+    throw usageError("Use either --body or --body-file, not both");
+  }
+  if (options.body !== undefined) return options.body;
+  if (options["body-file"] === undefined) {
+    throw usageError("Missing required option --body or --body-file");
+  }
+  const read = overrides.readFile ?? readFile;
+  try {
+    return await read(options["body-file"], "utf8");
+  } catch (error) {
+    throw new TaskctlError(`Cannot read body file: ${options["body-file"]}`, {
+      code: "FILE_READ_FAILED",
+      exitCode: 2,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function readJsonFile(filename, overrides) {
+  const read = overrides.readFile ?? readFile;
+  let content;
+  try {
+    content = await read(filename, "utf8");
+  } catch (error) {
+    throw new TaskctlError(`Cannot read JSON file: ${filename}`, {
+      code: "FILE_READ_FAILED",
+      exitCode: 2,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    const value = JSON.parse(content);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("expected a JSON object");
+    }
+    return value;
+  } catch (error) {
+    throw usageError(`Invalid JSON file ${filename}: ${error.message}`);
+  }
+}
+
+function parseScopedFiles(value) {
+  const files = [...new Set(value.split(",").map((file) => file.trim()).filter(Boolean))];
+  if (files.length === 0) throw usageError("--files must contain at least one path");
+  return files;
+}
+
 function parseLabels(rawLabels) {
   if (rawLabels === undefined || rawLabels === "") return [];
   return [...new Set(rawLabels.split(",").map((label) => label.trim()).filter(Boolean))];
@@ -749,6 +856,11 @@ function commentPath(commentId) {
 function attachmentContentPath(attachmentId) {
   if (!attachmentId) throw usageError("Missing attachment id");
   return `/api/attachments/${encodeURIComponent(attachmentId)}/content`;
+}
+
+function codingRunPath(runId) {
+  if (!runId) throw usageError("Missing coding run id");
+  return `/api/local/coding/runs/${encodeURIComponent(runId)}`;
 }
 
 function explicitVersion(rawVersion) {
