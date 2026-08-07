@@ -1743,8 +1743,25 @@ export function App() {
     window.parent.postMessage({ type: "taskboard:expand-sidebar" }, "*");
   }
 
+  function taskThreadPrompt(task: Task): { instruction: string; prompt: string } | null {
+    if (!manageTaskboardSkillPath) return null;
+    const instruction = `e-taskboard Addressing the issues mentioned in ${task.identifier}`;
+    const prompt = `[$manage-taskboard](${manageTaskboardSkillPath}) ${instruction}`;
+    return { instruction, prompt };
+  }
+
+  function copyTaskPrompt(task: Task) {
+    const built = taskThreadPrompt(task);
+    if (!built) {
+      setActionError("任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。");
+      return;
+    }
+    void copyText(built.prompt, `${task.identifier} 的 Prompt 已复制。`);
+  }
+
   function openTaskInThread(task: Task) {
-    if (!manageTaskboardSkillPath) {
+    const built = taskThreadPrompt(task);
+    if (!built) {
       setActionError("任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。");
       return;
     }
@@ -1755,8 +1772,7 @@ export function App() {
       ?? selectedDeviceWorkspacePath
       ?? developmentScan.workspacePath
       ?? hostContext?.workspacePath;
-    const instruction = `e-taskboard Addressing the issues mentioned in ${task.identifier}`;
-    const prompt = `[$manage-taskboard](${manageTaskboardSkillPath}) ${instruction}`;
+    const { instruction, prompt } = built;
 
     if (!embedded || window.parent === window) {
       const query = new URLSearchParams();
@@ -2254,6 +2270,7 @@ export function App() {
             )}
             onOpenThread={openThread}
             onOpenInThread={openTaskInThread}
+            onCopyPrompt={copyTaskPrompt}
             openingThread={openingThreadTaskId === detailTask.id}
             onError={setActionError}
             onAnnounce={setAnnouncement}
