@@ -3934,14 +3934,22 @@ kbd {
   min-width: 0;
 }
 
-.detail-open-thread-action {
+.detail-thread-actions {
   display: flex;
-  align-items: center;
-  width: 100%;
-  min-height: 36px;
+  align-items: stretch;
   gap: 8px;
   margin-bottom: 12px;
-  padding: 0 10px;
+}
+
+.detail-open-thread-action {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  min-height: 36px;
+  gap: 6px;
+  padding: 0 8px;
   border: var(--border-hairline) solid var(--border);
   border-radius: 8px;
   background: var(--surface);
@@ -3968,8 +3976,15 @@ kbd {
 }
 
 .detail-open-thread-action svg {
+  flex: none;
   width: 16px;
   height: 16px;
+}
+
+.detail-open-thread-action span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .issue-properties h2 {
@@ -8262,6 +8277,7 @@ kbd {
   }
 
   .issue-properties h2,
+  .detail-thread-actions,
   .issue-relation-sidebar,
   .detail-timestamps {
     grid-column: 1 / -1;
