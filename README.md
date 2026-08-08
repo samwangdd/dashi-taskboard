@@ -32,6 +32,32 @@ To run several checkouts side by side, give each one its own pair of ports so th
 TASKBOARD_WEB_PORT=5174 TASKBOARD_PORT=47901 npm run dev
 ```
 
+## Lark notifications
+
+Set `TASKBOARD_LARK_USER_ID` to your Lark `open_id` and the service sends you a
+direct message whenever an issue moves into `in_review` or `blocked` — the two
+statuses that need a human. This covers every path that changes a status: the
+board UI, `taskctl`, the `manage-taskboard` skill, and the Coding workflow's own
+automatic transitions.
+
+```bash
+TASKBOARD_LARK_USER_ID=ou_xxx npm start
+```
+
+Delivery goes through `lark-cli` as a bot
+(`lark-cli im +messages-send --as bot`), so the CLI must already be configured
+and the app must have a direct-message relationship with you. Point
+`TASKBOARD_LARK_CLI` at the executable when it is not on the service's `PATH`:
+
+```bash
+TASKBOARD_LARK_USER_ID=ou_xxx \
+TASKBOARD_LARK_CLI=$HOME/.nvm/versions/node/v20.18.1/bin/lark-cli \
+npm start
+```
+
+Leaving `TASKBOARD_LARK_USER_ID` unset disables notifications. A failed send is
+logged to the server console and never fails the API request that triggered it.
+
 ## Use the CLI
 
 Run it from the project:

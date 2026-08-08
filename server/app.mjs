@@ -29,6 +29,7 @@ import {
   isLocalCompanionRoute,
 } from "./cloud-proxy.mjs";
 import { ApiError, TaskboardDatabase } from "./database.mjs";
+import { createLarkNotifier } from "./lark-notifier.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1389,7 +1390,14 @@ export function resolveHost(value = process.env.TASKBOARD_HOST ?? "0.0.0.0") {
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
-  const database = new TaskboardDatabase(resolved.databasePath);
+  const larkNotifier = createLarkNotifier({
+    userId: options.larkUserId ?? process.env.TASKBOARD_LARK_USER_ID,
+    command: options.larkCommand ?? process.env.TASKBOARD_LARK_CLI ?? "lark-cli",
+    run: options.larkCommandRunner,
+  });
+  const database = new TaskboardDatabase(resolved.databasePath, {
+    onTaskStatusChange: larkNotifier.onTaskStatusChange,
+  });
   const events = new EventHub();
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
     configPath: resolved.cloudConfigPath,
