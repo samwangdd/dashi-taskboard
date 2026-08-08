@@ -1,5 +1,16 @@
+/**
+ * Every field occupies exactly one line of the instruction, so a value that
+ * carries newlines or other control characters could otherwise forge extra
+ * lines and steer the agent. Collapse them into single spaces rather than
+ * dropping the value: the field keeps its meaning, and it can no longer break
+ * out of its own line.
+ */
 function clean(value) {
-  return typeof value === "string" ? value.trim() : "";
+  if (typeof value !== "string") return "";
+  return value
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/ {2,}/g, " ")
+    .trim();
 }
 
 /**
