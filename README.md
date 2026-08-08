@@ -44,7 +44,7 @@ The message ends with a link that opens the issue directly:
 
 ```
 🔍 待审核 · WEBSITE-7 Fix the login redirect
-项目：website
+项目：Website
 状态：in_progress → in_review
 http://127.0.0.1:5173/?project=website&issue=WEBSITE-7
 ```

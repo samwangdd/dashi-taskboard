@@ -96,6 +96,7 @@ test("moving an issue into in_review sends a Lark message through lark-cli", asy
   assert.equal(call.args[6], "--text");
   assert.match(call.args[7], /WEBSITE-1/);
   assert.match(call.args[7], /Build task board/);
+  assert.match(call.args[7], /项目：Website\n/);
   assert.match(call.args[7], /todo → in_review/);
   assert.match(call.args[7], /http:\/\/127\.0\.0\.1:5173\/\?project=website&issue=WEBSITE-1$/);
 });
@@ -187,13 +188,38 @@ test("formatLarkMessage labels both notified statuses", () => {
   };
 
   assert.equal(
-    formatLarkMessage(task, "in_progress", "http://127.0.0.1:5173"),
-    "🔍 待审核 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → in_review\n"
+    formatLarkMessage(task, "in_progress", "http://127.0.0.1:5173", "Website"),
+    "🔍 待审核 · WEBSITE-7 Fix the login redirect\n项目：Website\n状态：in_progress → in_review\n"
       + "http://127.0.0.1:5173/?project=website&issue=WEBSITE-7",
   );
   assert.equal(
-    formatLarkMessage({ ...task, status: "blocked" }, "in_progress", "http://127.0.0.1:5173"),
-    "⛔ 被阻塞 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → blocked\n"
+    formatLarkMessage({ ...task, status: "blocked" }, "in_progress", "http://127.0.0.1:5173", "Website"),
+    "⛔ 被阻塞 · WEBSITE-7 Fix the login redirect\n项目：Website\n状态：in_progress → blocked\n"
       + "http://127.0.0.1:5173/?project=website&issue=WEBSITE-7",
   );
+});
+
+test("a project named with an opaque id still reads as its name", async () => {
+  const lark = recorder();
+  const baseUrl = await startServer({
+    larkUserId: "ou_test",
+    larkCommand: "lark-cli-stub",
+    larkCommandRunner: lark.run,
+  });
+  const projectId = "5728f508-b9fb-49d7-8cae-4ef8f40a6bc9";
+  await request(baseUrl, "/api/projects", {
+    method: "POST",
+    body: { id: projectId, name: "Taskboard", workspacePath: "/work/taskboard" },
+  });
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { projectId, title: "Ship the notification", status: "todo" },
+  });
+
+  await move(baseUrl, created.body.task, "blocked");
+
+  const text = lark.calls[0].args.at(-1);
+  assert.match(text, /项目：Taskboard\n/);
+  assert.doesNotMatch(text, /项目：5728f508/);
+  assert.match(text, new RegExp(`project=${projectId}&issue=`));
 });

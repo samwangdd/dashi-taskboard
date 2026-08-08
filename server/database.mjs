@@ -241,7 +241,9 @@ export class TaskboardDatabase {
   }
 
   #announceStatusChange(task, previousStatus) {
-    if (task.status !== previousStatus) this.#onTaskStatusChange?.(task, previousStatus);
+    if (this.#onTaskStatusChange && task.status !== previousStatus) {
+      this.#onTaskStatusChange(task, previousStatus, this.getProject(task.projectId));
+    }
     return task;
   }
 

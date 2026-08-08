@@ -14,10 +14,10 @@ export function buildIssueLink(boardUrl, task) {
   return url.toString();
 }
 
-export function formatLarkMessage(task, previousStatus, boardUrl) {
+export function formatLarkMessage(task, previousStatus, boardUrl, projectName) {
   return [
     `${NOTIFIED_STATUSES.get(task.status)} · ${task.identifier} ${task.title}`,
-    `项目：${task.projectId}`,
+    `项目：${projectName}`,
     `状态：${previousStatus} → ${task.status}`,
     buildIssueLink(boardUrl, task),
   ].join("\n");
@@ -41,7 +41,7 @@ function execFileRunner(command, args) {
 
 export function createLarkNotifier({ userId, boardUrl, command = "lark-cli", run = execFileRunner } = {}) {
   return {
-    onTaskStatusChange(task, previousStatus) {
+    onTaskStatusChange(task, previousStatus, project) {
       if (!userId) return;
       if (!NOTIFIED_STATUSES.has(task.status)) return;
       if (task.status === previousStatus) return;
@@ -59,7 +59,7 @@ export function createLarkNotifier({ userId, boardUrl, command = "lark-cli", run
           "--user-id",
           userId,
           "--text",
-          formatLarkMessage(task, previousStatus, boardUrl),
+          formatLarkMessage(task, previousStatus, boardUrl, project.name),
         ])).catch(report);
       } catch (error) {
         report(error);
