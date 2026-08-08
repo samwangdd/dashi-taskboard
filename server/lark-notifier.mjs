@@ -6,11 +6,20 @@ export const NOTIFIED_STATUSES = new Map([
   ["blocked", "⛔ 被阻塞"],
 ]);
 
-export function formatLarkMessage(task, previousStatus) {
+// Mirrors buildIssueUrl in web/src/issueRoute.ts so the link opens the issue detail.
+export function buildIssueLink(boardUrl, task) {
+  const url = new URL(boardUrl);
+  url.searchParams.set("project", task.projectId);
+  url.searchParams.set("issue", task.identifier.toUpperCase());
+  return url.toString();
+}
+
+export function formatLarkMessage(task, previousStatus, boardUrl) {
   return [
     `${NOTIFIED_STATUSES.get(task.status)} · ${task.identifier} ${task.title}`,
     `项目：${task.projectId}`,
     `状态：${previousStatus} → ${task.status}`,
+    buildIssueLink(boardUrl, task),
   ].join("\n");
 }
 
@@ -30,7 +39,7 @@ function execFileRunner(command, args) {
   });
 }
 
-export function createLarkNotifier({ userId, command = "lark-cli", run = execFileRunner } = {}) {
+export function createLarkNotifier({ userId, boardUrl, command = "lark-cli", run = execFileRunner } = {}) {
   return {
     onTaskStatusChange(task, previousStatus) {
       if (!userId) return;
@@ -50,7 +59,7 @@ export function createLarkNotifier({ userId, command = "lark-cli", run = execFil
           "--user-id",
           userId,
           "--text",
-          formatLarkMessage(task, previousStatus),
+          formatLarkMessage(task, previousStatus, boardUrl),
         ])).catch(report);
       } catch (error) {
         report(error);

@@ -40,6 +40,20 @@ statuses that need a human. This covers every path that changes a status: the
 board UI, `taskctl`, the `manage-taskboard` skill, and the Coding workflow's own
 automatic transitions.
 
+The message ends with a link that opens the issue directly:
+
+```
+🔍 待审核 · WEBSITE-7 Fix the login redirect
+项目：website
+状态：in_progress → in_review
+http://127.0.0.1:5173/?project=website&issue=WEBSITE-7
+```
+
+The link uses `TASKBOARD_WEB_PORT` (the same variable the Vite UI binds to, so
+side-by-side checkouts each link to their own board). When you serve the built
+UI with `npm start` instead of `npm run dev`, point it at the service port:
+`TASKBOARD_WEB_PORT=47823`.
+
 ```bash
 TASKBOARD_LARK_USER_ID=ou_xxx npm start
 ```

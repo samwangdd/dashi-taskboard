@@ -97,6 +97,21 @@ test("moving an issue into in_review sends a Lark message through lark-cli", asy
   assert.match(call.args[7], /WEBSITE-1/);
   assert.match(call.args[7], /Build task board/);
   assert.match(call.args[7], /todo → in_review/);
+  assert.match(call.args[7], /http:\/\/127\.0\.0\.1:5173\/\?project=website&issue=WEBSITE-1$/);
+});
+
+test("the issue link follows TASKBOARD_WEB_PORT so side-by-side checkouts stay separate", async (t) => {
+  const configured = process.env.TASKBOARD_WEB_PORT;
+  process.env.TASKBOARD_WEB_PORT = "5174";
+  t.after(() => {
+    if (configured === undefined) delete process.env.TASKBOARD_WEB_PORT;
+    else process.env.TASKBOARD_WEB_PORT = configured;
+  });
+
+  const { baseUrl, lark, task } = await startBoard();
+  await move(baseUrl, task, "in_review");
+
+  assert.match(lark.calls[0].args.at(-1), /http:\/\/127\.0\.0\.1:5174\/\?project=website&issue=WEBSITE-1$/);
 });
 
 test("moving an issue into blocked sends a Lark message", async () => {
@@ -172,11 +187,13 @@ test("formatLarkMessage labels both notified statuses", () => {
   };
 
   assert.equal(
-    formatLarkMessage(task, "in_progress"),
-    "🔍 待审核 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → in_review",
+    formatLarkMessage(task, "in_progress", "http://127.0.0.1:5173"),
+    "🔍 待审核 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → in_review\n"
+      + "http://127.0.0.1:5173/?project=website&issue=WEBSITE-7",
   );
   assert.equal(
-    formatLarkMessage({ ...task, status: "blocked" }, "in_progress"),
-    "⛔ 被阻塞 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → blocked",
+    formatLarkMessage({ ...task, status: "blocked" }, "in_progress", "http://127.0.0.1:5173"),
+    "⛔ 被阻塞 · WEBSITE-7 Fix the login redirect\n项目：website\n状态：in_progress → blocked\n"
+      + "http://127.0.0.1:5173/?project=website&issue=WEBSITE-7",
   );
 });
