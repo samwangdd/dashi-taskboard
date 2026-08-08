@@ -18,6 +18,7 @@ import {
   type AutomationModel,
   type AutomationReasoningEffort,
 } from "../../shared/taskboard-automation-options.mjs";
+import { buildThreadInstruction } from "../../shared/thread-instruction.mjs";
 import {
   ApiError,
   addTaskRelation,
@@ -1743,11 +1744,30 @@ export function App() {
     window.parent.postMessage({ type: "taskboard:expand-sidebar" }, "*");
   }
 
-  function taskThreadPrompt(task: Task): { instruction: string; prompt: string } | null {
+  function taskWorktreePath(task: Task) {
+    return task.developmentContext?.type === "worktree"
+      ? task.developmentContext.path
+      : null;
+  }
+
+  function taskWorkspacePath(task: Task) {
+    return taskWorktreePath(task)
+      ?? selectedDeviceWorkspacePath
+      ?? developmentScan.workspacePath
+      ?? hostContext?.workspacePath;
+  }
+
+  function taskThreadPrompt(task: Task) {
     if (!manageTaskboardSkillPath) return null;
-    const instruction = `e-taskboard Addressing the issues mentioned in ${task.identifier}`;
+    const workspacePath = taskWorkspacePath(task);
+    const instruction = buildThreadInstruction({
+      identifier: task.identifier,
+      projectName: selectedProject?.name,
+      projectId: task.projectId,
+      workspacePath,
+    });
     const prompt = `[$manage-taskboard](${manageTaskboardSkillPath}) ${instruction}`;
-    return { instruction, prompt };
+    return { instruction, prompt, workspacePath };
   }
 
   function copyTaskPrompt(task: Task) {
@@ -1765,14 +1785,8 @@ export function App() {
       setActionError("任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。");
       return;
     }
-    const worktreePath = task.developmentContext?.type === "worktree"
-      ? task.developmentContext.path
-      : null;
-    const workspacePath = worktreePath
-      ?? selectedDeviceWorkspacePath
-      ?? developmentScan.workspacePath
-      ?? hostContext?.workspacePath;
-    const { instruction, prompt } = built;
+    const { instruction, prompt, workspacePath } = built;
+    const worktreePath = taskWorktreePath(task);
 
     if (!embedded || window.parent === window) {
       const query = new URLSearchParams();

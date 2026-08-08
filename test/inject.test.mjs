@@ -236,12 +236,20 @@ test("issues open an unsent native Codex composer in the exact workspace with a 
   assert.doesNotMatch(webApp, /taskboard:thread-created/);
   assert.match(
     webApp,
-    /const instruction = `e-taskboard Addressing the issues mentioned in \$\{task\.identifier\}`/,
+    /const instruction = buildThreadInstruction\(\{\s*identifier: task\.identifier,\s*projectName: selectedProject\?\.name,\s*projectId: task\.projectId,\s*workspacePath,\s*\}\);/,
   );
+  assert.doesNotMatch(webApp, /e-taskboard Addressing the issues mentioned in/);
   assert.match(
     webApp,
     /const prompt = `\[\$manage-taskboard\]\(\$\{manageTaskboardSkillPath\}\) \$\{instruction\}`/,
   );
+  // The copy button and the thread opener share one builder, so the copied
+  // prompt carries the same project, issue and workspace context.
+  assert.match(
+    webApp,
+    /function taskThreadPrompt\(task: Task\)[^}]*const workspacePath = taskWorkspacePath\(task\);\s*const instruction = buildThreadInstruction\(/,
+  );
+  assert.match(webApp, /const \{ instruction, prompt, workspacePath \} = built;/);
   assert.match(webApp, /skillName: "manage-taskboard"/);
   assert.match(webApp, /skillDisplayName: "Manage Taskboard"/);
   assert.match(webApp, /skillPath: manageTaskboardSkillPath/);
