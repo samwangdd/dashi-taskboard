@@ -36,9 +36,9 @@ TASKBOARD_WEB_PORT=5174 TASKBOARD_PORT=47901 npm run dev
 
 Set `TASKBOARD_LARK_USER_ID` to your Lark `open_id` and the service sends you a
 direct message whenever an issue moves into `in_review` or `blocked` — the two
-statuses that need a human. This covers every path that changes a status: the
-board UI, `taskctl`, the `manage-taskboard` skill, and the Coding workflow's own
-automatic transitions.
+statuses that need a human. This covers every path that changes a status in the
+local service: the board UI, `taskctl`, the `manage-taskboard` skill, and the
+Coding workflow's own automatic transitions.
 
 The message ends with a link that opens the issue directly:
 
@@ -71,6 +71,23 @@ npm start
 
 Leaving `TASKBOARD_LARK_USER_ID` unset disables notifications. A failed send is
 logged to the server console and never fails the API request that triggered it.
+
+### Not supported yet: cloud mode
+
+Notifications hang off the local SQLite database, so they only fire for issues
+that the local service owns. Once you connect a cloud deployment with
+`taskctl cloud login`, every `/api` request is forwarded straight to the worker
+and the local database never sees the write — no message is sent for status
+changes made in cloud mode, from any client. The worker keeps its own
+`updateTask`/`moveTask` against D1 and has no notification path of its own.
+
+Supporting cloud mode means notifying from the worker instead, which is a
+separate piece of work and may land later.
+
+A send is also fire-and-forget: it happens after the status change has already
+been committed, and is not retried or persisted. A transient `lark-cli` failure
+or a restart at the wrong moment drops that notification for good — the status
+change itself is never lost, only the message about it.
 
 ## Use the CLI
 
