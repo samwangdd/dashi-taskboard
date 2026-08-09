@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, test } from "node:test";
 
 import { createTaskboardServer } from "../server/index.mjs";
-import { formatLarkMessage } from "../server/lark-notifier.mjs";
+import { createLarkNotifier, formatLarkMessage } from "../server/lark-notifier.mjs";
 
 const runningApps = [];
 
@@ -177,6 +177,42 @@ test("no recipient configured disables the notification", async (t) => {
   await move(baseUrl, task, "blocked");
 
   assert.deepEqual(lark.calls, []);
+});
+
+test("a failed send keeps the recipient and the message out of the log", async (t) => {
+  const logged = [];
+  const original = console.error;
+  console.error = (...args) => logged.push(args.join(" "));
+  t.after(() => { console.error = original; });
+
+  // execFile builds its message as `Command failed: <file> <args…>\n<stderr>`,
+  // so a raw error.message leaks the recipient, the payload and the CLI's stderr.
+  const notifier = createLarkNotifier({
+    userId: "ou_secret_recipient",
+    boardUrl: "http://127.0.0.1:5173",
+    run: (command, args) => Promise.reject(
+      new Error(`Command failed: ${command} ${args.join(" ")}\nlark-cli: token a1b2c3 expired`),
+    ),
+  });
+
+  notifier.onTaskStatusChange(
+    {
+      id: "task-1",
+      identifier: "WEBSITE-7",
+      title: "Fix the login redirect",
+      projectId: "website",
+      status: "blocked",
+    },
+    "in_progress",
+    { name: "Website" },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(logged.length, 1);
+  assert.match(logged[0], /WEBSITE-7/);
+  assert.doesNotMatch(logged[0], /ou_secret_recipient/);
+  assert.doesNotMatch(logged[0], /Fix the login redirect/);
+  assert.doesNotMatch(logged[0], /token a1b2c3 expired/);
 });
 
 test("formatLarkMessage labels both notified statuses", () => {

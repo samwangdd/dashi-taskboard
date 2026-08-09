@@ -42,7 +42,7 @@ Coding workflow's own automatic transitions.
 
 The message ends with a link that opens the issue directly:
 
-```
+```text
 🔍 待审核 · WEBSITE-7 Fix the login redirect
 项目：Website
 状态：in_progress → in_review

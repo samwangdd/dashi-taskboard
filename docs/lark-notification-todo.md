@@ -15,8 +15,18 @@ for issues the local service owns. Once a cloud deployment is connected with
 `taskctl cloud login` (see [Cloud collaboration](cloud-collaboration.md)), every
 `/api` request is forwarded straight to the worker and the local database never
 sees the write. No message is sent for a status change made in cloud mode, from
-any client. The worker runs its own `updateTask`/`moveTask` against D1 and has no
-notification path of its own.
+any client.
+
+Following the two paths side by side:
+
+| | Local | Cloud |
+| --- | --- | --- |
+| Entry | `/api/tasks/:id/move`, `PATCH /api/tasks/:id` (`server/app.mjs`) | same request, forwarded at `server/app.mjs:1791` (`cloudProxy.forward`) before any route matches |
+| Write | `moveTask`/`updateTask` in `server/database.mjs` (SQLite) | `updateTask`/`moveTask` in `cloud/src/index.mjs` (D1), dispatched from its task route |
+| Notification | `#announceStatusChange` (`server/database.mjs:243`) calls the hook wired in `server/app.mjs:1400`, which reaches `server/lark-notifier.mjs` | none — the worker has no equivalent |
+
+The proxy branch returns before the local task routes are reached, which is why
+no local code — hook included — observes a cloud-mode status change.
 
 **Possible replacement.** Notify from the worker, so the notification lives with
 whichever store is authoritative. The worker cannot spawn `lark-cli`, so it would

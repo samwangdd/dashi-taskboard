@@ -46,8 +46,11 @@ export function createLarkNotifier({ userId, boardUrl, command = "lark-cli", run
       if (!NOTIFIED_STATUSES.has(task.status)) return;
       if (task.status === previousStatus) return;
 
+      // execFile formats its message as `Command failed: <file> <args…>\n<stderr>`,
+      // which would put the recipient, the payload and the CLI's stderr in the log.
       const report = (error) => {
-        console.error(`Lark notification failed for ${task.identifier}: ${error.message}`);
+        const exit = typeof error?.code === "number" ? `exit ${error.code}` : "see lark-cli output";
+        console.error(`Lark notification failed for ${task.identifier} (${exit})`);
       };
       // A notification failure must never surface as a taskboard API error.
       try {
