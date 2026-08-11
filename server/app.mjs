@@ -29,6 +29,7 @@ import {
   isLocalCompanionRoute,
 } from "./cloud-proxy.mjs";
 import { ApiError, TaskboardDatabase } from "./database.mjs";
+import { createLarkNotifier } from "./lark-notifier.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -1379,6 +1380,13 @@ export function resolvePort(value = process.env.TASKBOARD_PORT ?? "47823") {
   return port;
 }
 
+// The Vite UI port from web/vite.config.ts. Only the notification link depends on it,
+// so an unusable value falls back instead of taking the whole service down.
+function resolveWebPort(value = process.env.TASKBOARD_WEB_PORT) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 5173;
+}
+
 export function resolveHost(value = process.env.TASKBOARD_HOST ?? "0.0.0.0") {
   const host = String(value).trim();
   if (host !== "127.0.0.1" && host !== "0.0.0.0") {
@@ -1389,7 +1397,16 @@ export function resolveHost(value = process.env.TASKBOARD_HOST ?? "0.0.0.0") {
 
 export function createTaskboardServer(options = {}) {
   const resolved = resolveServerOptions(options);
-  const database = new TaskboardDatabase(resolved.databasePath);
+  const larkNotifier = createLarkNotifier({
+    userId: options.larkUserId ?? process.env.TASKBOARD_LARK_USER_ID,
+    // The same port the Vite UI binds to, so the link opens the board the user actually browses.
+    boardUrl: options.larkBoardUrl ?? `http://127.0.0.1:${resolveWebPort()}`,
+    command: options.larkCommand ?? process.env.TASKBOARD_LARK_CLI ?? "lark-cli",
+    run: options.larkCommandRunner,
+  });
+  const database = new TaskboardDatabase(resolved.databasePath, {
+    onTaskStatusChange: larkNotifier.onTaskStatusChange,
+  });
   const events = new EventHub();
   const cloudConfig = options.cloudConfigStore ?? createCloudConfigStore({
     configPath: resolved.cloudConfigPath,

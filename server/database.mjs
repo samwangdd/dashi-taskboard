@@ -229,12 +229,22 @@ function projectPrefix(projectId) {
 }
 
 export class TaskboardDatabase {
-  constructor(filename) {
+  #onTaskStatusChange;
+
+  constructor(filename, { onTaskStatusChange } = {}) {
     mkdirSync(path.dirname(filename), { recursive: true });
     this.database = new DatabaseSync(filename);
     this.database.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;");
+    this.#onTaskStatusChange = onTaskStatusChange;
     this.#migrate();
     this.interruptAbandonedAiChatRuns();
+  }
+
+  #announceStatusChange(task, previousStatus) {
+    if (this.#onTaskStatusChange && task.status !== previousStatus) {
+      this.#onTaskStatusChange(task, previousStatus, this.getProject(task.projectId));
+    }
+    return task;
   }
 
   #migrate() {
@@ -1540,7 +1550,7 @@ export class TaskboardDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
-    return this.getTask(current.id);
+    return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
   moveTask(id, version, status, sortOrder, threadId) {
@@ -1574,7 +1584,7 @@ export class TaskboardDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
-    return this.getTask(current.id);
+    return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
   archiveTask(id, version, threadId) {
