@@ -15,6 +15,10 @@ const anchorSource = await readFile(
   new URL("../web/src/components/usePopoverAnchor.ts", import.meta.url),
   "utf8",
 );
+const loopPromptSource = await readFile(
+  new URL("../shared/taskboard-loop-prompt.mjs", import.meta.url),
+  "utf8",
+);
 const styles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 
 test("the copy trigger sits right of the automation trigger and left of the create button", () => {
@@ -55,9 +59,38 @@ test("the chosen interval is persisted per project on this device", () => {
 
 test("the copy menu builds the prompt through the shared loop builder", () => {
   assert.match(menuSource, /buildTaskboardLoopPrompt/);
-  assert.match(menuSource, /from "\.\.\/\.\.\/\.\.\/shared\/taskboard-automation\.mjs"/);
+  assert.match(menuSource, /from "\.\.\/\.\.\/\.\.\/shared\/taskboard-loop-prompt\.mjs"/);
   assert.doesNotMatch(menuSource, /e-taskboard 每/);
   assert.doesNotMatch(menuSource, /每次仅处理一个 todo/);
+});
+
+test("nothing the browser imports may pull in a node builtin", () => {
+  // vite externalizes `node:*` for the browser, so reaching one at runtime throws
+  // instead of failing the build. taskboard-automation.mjs needs node:path for the
+  // host-request validation, so the browser must not reach it through this path.
+  assert.doesNotMatch(loopPromptSource, /(?:from|import|require\()\s*"node:/);
+  assert.doesNotMatch(loopPromptSource, /from "\.\/taskboard-automation\.mjs"/);
+  assert.doesNotMatch(menuSource, /taskboard-automation\.mjs/);
+});
+
+test("the gate rejects a relative directory instead of letting the builder throw", () => {
+  assert.match(loopPromptSource, /export function isAbsoluteWorkspacePath/);
+  assert.match(menuSource, /isAbsoluteWorkspacePath/);
+  assert.match(menuSource, /请先把项目目录填成绝对路径/);
+});
+
+test("opening the popover moves focus onto the interval select", () => {
+  assert.match(menuSource, /intervalRef/);
+  assert.match(menuSource, /intervalRef\.current\?\.focus\(\)/);
+});
+
+test("the interval updater stays pure and persists outside of it", () => {
+  const changeInterval = menuSource.slice(
+    menuSource.indexOf("const changeInterval"),
+    menuSource.indexOf("const copyPrompt"),
+  );
+  assert.doesNotMatch(changeInterval, /setIntervals\(\(current\)/);
+  assert.match(changeInterval, /localStorage\.setItem\(LOOP_PROMPT_INTERVAL_KEY, JSON\.stringify\(next\)\)/);
 });
 
 test("the copy menu is gated on the skill path and workspace path only", () => {
@@ -80,6 +113,15 @@ test("copying closes the popover, restores focus, and announces through the app 
 test("the copy menu passes the live coding config so the rounds match the board", () => {
   assert.match(menuSource, /codingConfig/);
   assert.match(appSource, /<CopyLoopPromptMenu[\s\S]*?codingConfig=\{codingWorkflowSettings\?\.config/);
+});
+
+test("the host workspace fallback only applies to the project the host is on", () => {
+  const resolution = appSource.slice(
+    appSource.indexOf("const loopPromptWorkspacePath"),
+    appSource.indexOf("const automationProjectContext"),
+  );
+  assert.match(resolution, /hostContext\?\.projectId === selectedProject\.id/);
+  assert.doesNotMatch(resolution, /\?\? hostContext\?\.workspacePath\s*\n?\s*\?\? null/);
 });
 
 test("both popovers share one anchor hook instead of duplicating the listeners", () => {

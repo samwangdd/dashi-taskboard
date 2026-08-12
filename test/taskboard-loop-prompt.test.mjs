@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
+import { buildTaskboardAutomationPrompt } from "../shared/taskboard-automation.mjs";
 import {
   TASKBOARD_BASE_INSTRUCTIONS,
-  buildTaskboardAutomationPrompt,
   buildTaskboardLoopPrompt,
-} from "../shared/taskboard-automation.mjs";
+  isAbsoluteWorkspacePath,
+} from "../shared/taskboard-loop-prompt.mjs";
 import {
   DEFAULT_CODING_WORKFLOW_CONFIG,
   codingWorkflowAutomationInstructions,
@@ -92,6 +93,20 @@ test("the loop prompt falls back to the default coding config", () => {
   assert.ok(prompt.includes(
     `最多再派发 ${DEFAULT_CODING_WORKFLOW_CONFIG.escalationRounds} 轮升级模型`,
   ));
+});
+
+test("the gate and the builder agree on what an absolute directory is", () => {
+  for (const value of ["/Users/sammore/codeLab", "/"]) {
+    assert.equal(isAbsoluteWorkspacePath(value), true, `${value} should be absolute`);
+  }
+  for (const value of ["", "  ", "codeLab/sync-spells", "./sync-spells", "~/codeLab", undefined]) {
+    assert.equal(isAbsoluteWorkspacePath(value), false, `${String(value)} should not be absolute`);
+    assert.throws(
+      () => buildTaskboardLoopPrompt({ ...LOOP_INPUT, workspacePath: value }),
+      TypeError,
+      `the builder should reject the same value the gate rejects: ${String(value)}`,
+    );
+  }
 });
 
 test("the loop prompt rejects an incomplete context", () => {

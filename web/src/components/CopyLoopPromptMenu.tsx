@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   buildTaskboardLoopPrompt,
+  isAbsoluteWorkspacePath,
   type AutomationIntervalMinutes,
-} from "../../../shared/taskboard-automation.mjs";
+} from "../../../shared/taskboard-loop-prompt.mjs";
 import type { CodingWorkflowConfig } from "../types";
 import { LinearIcon } from "./LinearIcon";
 import { usePopoverAnchor } from "./usePopoverAnchor";
@@ -53,33 +54,41 @@ export function CopyLoopPromptMenu({
   const [open, setOpen] = useState(false);
   const closeMenu = useCallback(() => setOpen(false), []);
   const { triggerRef, menuRef, position, resetPosition } = usePopoverAnchor(open, closeMenu);
+  const intervalRef = useRef<HTMLSelectElement>(null);
   const [intervals, setIntervals] = useState(readLoopIntervals);
   const intervalMinutes = intervals[projectId] ?? DEFAULT_LOOP_INTERVAL_MINUTES;
 
-  const unavailableReason = !skillPath
-    ? "任务面板还没有读取到 Skill 路径"
-    : !workspacePath
-      ? "请先在项目设置里填写项目目录"
+  // The gate uses the builder's own rule, so nothing the button lets through can
+  // make buildTaskboardLoopPrompt throw. Device directories are hand-typed, which
+  // makes a relative path a realistic input rather than a theoretical one.
+  const unavailableReason = !skillPath || !workspacePath
+    ? !skillPath
+      ? "任务面板还没有读取到 Skill 路径"
+      : "请先在项目设置里填写项目目录"
+    : !isAbsoluteWorkspacePath(workspacePath) || !isAbsoluteWorkspacePath(skillPath)
+      ? "请先把项目目录填成绝对路径"
       : null;
 
   useEffect(() => {
     if (unavailableReason) setOpen(false);
   }, [unavailableReason]);
 
+  useEffect(() => {
+    if (open && position.ready) intervalRef.current?.focus();
+  }, [open, position.ready]);
+
   const changeInterval = (minutes: AutomationIntervalMinutes) => {
-    setIntervals((current) => {
-      const next = { ...current, [projectId]: minutes };
-      try {
-        window.localStorage.setItem(LOOP_PROMPT_INTERVAL_KEY, JSON.stringify(next));
-      } catch {
-        // A full or blocked storage quota must not stop the copy itself.
-      }
-      return next;
-    });
+    const next = { ...intervals, [projectId]: minutes };
+    setIntervals(next);
+    try {
+      window.localStorage.setItem(LOOP_PROMPT_INTERVAL_KEY, JSON.stringify(next));
+    } catch {
+      // A full or blocked storage quota must not stop the copy itself.
+    }
   };
 
   const copyPrompt = () => {
-    if (!workspacePath || !skillPath) return;
+    if (unavailableReason || !workspacePath) return;
     onCopy(buildTaskboardLoopPrompt({
       intervalMinutes,
       projectName,
@@ -106,6 +115,7 @@ export function CopyLoopPromptMenu({
       <label className="project-automation-field">
         <span>间隔</span>
         <select
+          ref={intervalRef}
           value={intervalMinutes}
           onChange={(event) => changeInterval(
             Number(event.target.value) as AutomationIntervalMinutes,

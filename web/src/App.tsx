@@ -623,9 +623,16 @@ export function App() {
   const currentUser = hostContext?.user ?? DEFAULT_USER_ACTOR;
   const selectedDeviceWorkspacePath = deviceWorkspacePaths[selectedProjectId];
   const selectedProjectAutomation = projectAutomations[selectedProjectId];
+  // The host directory is whatever project Codex itself is sitting on, so it may
+  // belong to a different project than the one selected here. Falling back to it
+  // unconditionally would write another project's directory into this prompt.
   const loopPromptWorkspacePath = selectedDeviceWorkspacePath
     ?? selectedProject?.workspacePath
-    ?? hostContext?.workspacePath
+    ?? (
+      selectedProject && hostContext?.projectId === selectedProject.id
+        ? hostContext.workspacePath
+        : undefined
+    )
     ?? null;
   const automationProjectContext = useMemo(() => {
     if (!embedded || window.parent === window) {
