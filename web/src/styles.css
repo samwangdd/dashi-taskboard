@@ -3809,7 +3809,10 @@ kbd {
   border: var(--border-hairline) solid var(--border-strong);
   border-radius: 5px;
   background: var(--bg);
-  resize: vertical;
+  font-size: 15px;
+  line-height: 24px;
+  resize: none;
+  overflow: hidden;
 }
 
 .comment-edit-form > div {
