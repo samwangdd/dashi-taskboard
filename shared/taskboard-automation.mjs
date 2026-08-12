@@ -1,6 +1,22 @@
 import path from "node:path";
 import { isSupportedModelEffort } from "./taskboard-automation-options.mjs";
-import { codingWorkflowAutomationInstructions } from "./coding-workflow.mjs";
+import {
+  codingWorkflowAutomationInstructions,
+  codingWorkflowLoopInstructions,
+} from "./coding-workflow.mjs";
+
+/**
+ * Delivery rules shared by the Codex automation prompt and the copyable loop
+ * prompt. Only the opening line (which carries the interval and project) and the
+ * coding protocol differ between the two, so everything else lives here once.
+ */
+export const TASKBOARD_BASE_INSTRUCTIONS = Object.freeze([
+  "每次仅处理一个 todo：先用 issue get 读取最新议题内容，并用 comment list 读取全部评论，确认是否包含已完成后被打回的返工要求。",
+  "认领时使用最新 version 将议题移动到 in_progress；若发生版本冲突或最新状态已变化，立即跳过，避免多个 Agent 抢同一任务。",
+  "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
+  "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
+  "先检查议题 workflowId；只有非 coding 议题才执行上一条普通交付规则。",
+]);
 
 const AUTOMATION_OPERATIONS = new Set(["ensure-active", "pause", "list", "apply-policy"]);
 const INTERVAL_MINUTES = new Set([5, 10, 15, 30, 60]);
@@ -61,14 +77,44 @@ export function buildTaskboardAutomationName(request) {
 
 export function buildTaskboardAutomationPrompt(request) {
   return [
-    `[$manage-taskboard](${request.skillPath}) e-taskboard 每 ${request.intervalMinutes} 分钟检查任务面板中的「${request.projectName}」项目（项目 ID：${request.taskboardProjectId}，项目目录：${request.workspacePath}）。`,
-    "每次仅处理一个 todo：先用 issue get 读取最新议题内容，并用 comment list 读取全部评论，确认是否包含已完成后被打回的返工要求。",
-    "认领时使用最新 version 将议题移动到 in_progress；若发生版本冲突或最新状态已变化，立即跳过，避免多个 Agent 抢同一任务。",
-    "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
-    "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
-    "先检查议题 workflowId；只有非 coding 议题才执行上一条普通交付规则。",
+    buildTaskboardPromptOpening(request),
+    ...TASKBOARD_BASE_INSTRUCTIONS,
     codingWorkflowAutomationInstructions(),
   ].join("\n");
+}
+
+/**
+ * The prompt behind the "复制 loop prompt" button: same delivery rules as the
+ * Codex automation, but vendor-neutral so it can be pasted into any agent. Unlike
+ * the automation path it follows the project's saved coding config.
+ */
+export function buildTaskboardLoopPrompt(input) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    throw new TypeError("Loop prompt input must be an object");
+  }
+  if (!INTERVAL_MINUTES.has(input.intervalMinutes)) {
+    throw new TypeError(`Unsupported loop prompt interval: ${input.intervalMinutes}`);
+  }
+  for (const field of ["projectName", "taskboardProjectId"]) {
+    if (!validText(input[field], 256)) {
+      throw new TypeError(`Loop prompt input is missing ${field}`);
+    }
+  }
+  for (const field of ["workspacePath", "skillPath"]) {
+    if (!validAbsolutePath(input[field])) {
+      throw new TypeError(`Loop prompt input is missing an absolute ${field}`);
+    }
+  }
+
+  return [
+    buildTaskboardPromptOpening(input),
+    ...TASKBOARD_BASE_INSTRUCTIONS,
+    codingWorkflowLoopInstructions(input.codingConfig),
+  ].join("\n");
+}
+
+function buildTaskboardPromptOpening(request) {
+  return `[$manage-taskboard](${request.skillPath}) e-taskboard 每 ${request.intervalMinutes} 分钟检查任务面板中的「${request.projectName}」项目（项目 ID：${request.taskboardProjectId}，项目目录：${request.workspacePath}）。`;
 }
 
 export function buildTaskboardAutomationSpec(request) {

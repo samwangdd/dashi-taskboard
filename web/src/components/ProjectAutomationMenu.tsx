@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AUTOMATION_MODELS,
@@ -13,6 +13,7 @@ import {
 } from "../../../shared/coding-workflow.mjs";
 import type { CodingWorkflowSettings, WorkflowOption } from "../types";
 import { LinearIcon } from "./LinearIcon";
+import { usePopoverAnchor } from "./usePopoverAnchor";
 
 type AutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
@@ -82,11 +83,10 @@ export function ProjectAutomationMenu({
   onChange,
   onCodingChange,
 }: ProjectAutomationMenuProps) {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const wasPendingRef = useRef(pending);
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const { triggerRef, menuRef, position, resetPosition } = usePopoverAnchor(open, closeMenu);
   const [draft, setDraft] = useState<AutomationOptions>(DEFAULT_OPTIONS);
   const [codingDraft, setCodingDraft] = useState(() => ({
     defaultWorkflowId: null as string | null,
@@ -122,45 +122,6 @@ export function ProjectAutomationMenu({
     }
     wasPendingRef.current = pending;
   }, [automation, pending]);
-
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current || !menuRef.current) return;
-    const trigger = triggerRef.current.getBoundingClientRect();
-    const menu = menuRef.current.getBoundingClientRect();
-    const left = Math.max(8, Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8));
-    const top = trigger.bottom + 8 + menu.height <= window.innerHeight
-      ? trigger.bottom + 8
-      : Math.max(8, trigger.top - menu.height - 8);
-    setPosition({ left, top, ready: true });
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    function closeFromOutside(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function closeFromViewportChange() {
-      setOpen(false);
-    }
-    function closeFromEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", closeFromOutside);
-    document.addEventListener("keydown", closeFromEscape);
-    window.addEventListener("resize", closeFromViewportChange);
-    window.addEventListener("scroll", closeFromViewportChange, true);
-    return () => {
-      document.removeEventListener("pointerdown", closeFromOutside);
-      document.removeEventListener("keydown", closeFromEscape);
-      window.removeEventListener("resize", closeFromViewportChange);
-      window.removeEventListener("scroll", closeFromViewportChange, true);
-    };
-  }, [open]);
 
   const submitChange = (next: AutomationOptions) => {
     if (disabled) return;
@@ -365,7 +326,7 @@ export function ProjectAutomationMenu({
         title={status === "ACTIVE" ? "自动认领" : "无自动化"}
         onClick={() => {
           if (!open) {
-            setPosition((current) => ({ ...current, ready: false }));
+            resetPosition();
             onOpen();
           }
           setOpen((current) => !current);
