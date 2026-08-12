@@ -825,10 +825,14 @@ export function TaskDetail({
                           <textarea
                             className="comment-input"
                             autoFocus
+                            ref={resizeTextarea}
                             value={editingBody}
-                            rows={3}
+                            rows={1}
                             aria-label="编辑评论"
-                            onChange={(event) => setEditingBody(event.target.value)}
+                            onChange={(event) => {
+                              setEditingBody(event.target.value);
+                              resizeTextarea(event.currentTarget);
+                            }}
                             onKeyDown={(event) => {
                               if (event.key === "Escape") setEditingId(null);
                               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
