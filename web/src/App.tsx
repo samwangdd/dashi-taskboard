@@ -54,6 +54,7 @@ import {
   type PendingInlineImage,
 } from "./components/InlineMediaComposer";
 import { LinearIcon } from "./components/LinearIcon";
+import { CopyLoopPromptMenu } from "./components/CopyLoopPromptMenu";
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
@@ -622,6 +623,17 @@ export function App() {
   const currentUser = hostContext?.user ?? DEFAULT_USER_ACTOR;
   const selectedDeviceWorkspacePath = deviceWorkspacePaths[selectedProjectId];
   const selectedProjectAutomation = projectAutomations[selectedProjectId];
+  // The host directory is whatever project Codex itself is sitting on, so it may
+  // belong to a different project than the one selected here. Falling back to it
+  // unconditionally would write another project's directory into this prompt.
+  const loopPromptWorkspacePath = selectedDeviceWorkspacePath
+    ?? selectedProject?.workspacePath
+    ?? (
+      selectedProject && hostContext?.projectId === selectedProject.id
+        ? hostContext.workspacePath
+        : undefined
+    )
+    ?? null;
   const automationProjectContext = useMemo(() => {
     if (!embedded || window.parent === window) {
       return { unavailableReason: "仅可在 Codex App 中使用" };
@@ -2090,6 +2102,16 @@ export function App() {
                   onChange={(options) => void saveProjectAutomation(options)}
                   onCodingChange={(changes) => void updateCodingWorkflowSettings(changes)}
                 />
+            )}
+            {selectedProjectId && selectedProject && (
+              <CopyLoopPromptMenu
+                projectId={selectedProjectId}
+                projectName={selectedProject.name}
+                workspacePath={loopPromptWorkspacePath}
+                skillPath={manageTaskboardSkillPath}
+                codingConfig={codingWorkflowSettings?.config ?? null}
+                onCopy={(prompt) => void copyText(prompt, "loop prompt 已复制。")}
+              />
             )}
             {selectedProjectId && boardView === "issues" && (
               <button

@@ -1183,7 +1183,8 @@ kbd {
   -webkit-app-region: no-drag;
 }
 
-.project-automation-trigger {
+.project-automation-trigger,
+.copy-loop-prompt-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1200,18 +1201,56 @@ kbd {
 }
 
 .project-automation-trigger:hover,
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:hover:not(:disabled),
+.copy-loop-prompt-trigger:focus-visible {
   background: var(--surface-hover);
 }
 
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-.project-automation-trigger > svg {
+.project-automation-trigger > svg,
+.copy-loop-prompt-trigger > svg {
   width: 16px;
   height: 16px;
+}
+
+.copy-loop-prompt-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.copy-loop-prompt-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.copy-loop-prompt-submit:hover {
+  background: var(--surface-active, var(--surface-hover));
+}
+
+.copy-loop-prompt-submit:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.copy-loop-prompt-submit > svg {
+  width: 14px;
+  height: 14px;
 }
 
 .project-automation-trigger.is-active,

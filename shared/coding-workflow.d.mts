@@ -20,3 +20,4 @@ export function normalizeCodingWorkflowConfig(value?: Partial<CodingWorkflowConf
 export function implementerModelForRound(config: CodingWorkflowConfig, round: number): string;
 export function maximumImplementationRounds(config: CodingWorkflowConfig): number;
 export function codingWorkflowAutomationInstructions(config?: Partial<CodingWorkflowConfig>): string;
+export function codingWorkflowLoopInstructions(config?: Partial<CodingWorkflowConfig>): string;

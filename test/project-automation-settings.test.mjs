@@ -15,6 +15,10 @@ const iconSource = await readFile(
   new URL("../web/src/components/LinearIcon.tsx", import.meta.url),
   "utf8",
 );
+const anchorSource = await readFile(
+  new URL("../web/src/components/usePopoverAnchor.ts", import.meta.url),
+  "utf8",
+);
 const styles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 
 test("project automation state is device-local and scoped by taskboard project", () => {
@@ -66,10 +70,12 @@ test("the project navigation automation menu owns the icon, fields, and accessib
   assert.match(menuSource, /AUTOMATION_MODELS\.map/);
   assert.match(menuSource, /EFFORT_LABELS\[effort\]/);
   assert.match(menuSource, /createPortal/);
-  assert.match(menuSource, /window\.addEventListener\("resize"/);
-  assert.match(menuSource, /window\.addEventListener\("scroll", closeFromViewportChange, true\)/);
+  assert.match(menuSource, /usePopoverAnchor\(open, closeMenu\)/);
+  assert.match(anchorSource, /window\.addEventListener\("resize"/);
+  assert.match(anchorSource, /window\.addEventListener\("scroll", closeFromViewportChange, true\)/);
   assert.match(menuSource, /no-drag/);
   assert.doesNotMatch(menuSource, /event\.key === "Tab"/);
+  assert.doesNotMatch(anchorSource, /event\.key === "Tab"/);
   assert.match(appSource, /<ProjectAutomationMenu/);
   assert.match(appSource, /<ProjectAutomationMenu[\s\S]*?<button[\s\S]*?header-create-button/);
   assert.doesNotMatch(appSource, /toolbar-connection/);
