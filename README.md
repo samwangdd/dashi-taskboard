@@ -71,6 +71,21 @@ npm start
 
 Leaving `TASKBOARD_LARK_USER_ID` unset disables notifications. A failed send is
 logged to the server console and never fails the API request that triggered it.
+Because the feature has no interface of its own, an unset recipient looks exactly
+like the feature not being there — if nothing arrives, check this variable first.
+
+To avoid retyping it, put machine-local settings in `.env.local` at the project
+root. Both `npm run dev` and `npm start` load it at startup, and it is
+git-ignored:
+
+```bash
+TASKBOARD_LARK_USER_ID=ou_xxx
+TASKBOARD_LARK_CLI=/absolute/path/to/lark-cli
+```
+
+Any variable this README documents can go there, including `TASKBOARD_PORT` and
+`TASKBOARD_WEB_PORT`. A variable already set in the shell wins over the file, so
+`TASKBOARD_PORT=47901 npm run dev` still overrides it for one run.
 
 See [Lark notification TODO](docs/lark-notification-todo.md) for the two known
 gaps — cloud mode sends nothing, and a failed send is never retried — with what

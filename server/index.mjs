@@ -1,11 +1,16 @@
 import os from "node:os";
-import { pathToFileURL } from "node:url";
+import path from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { loadLocalEnv } from "../shared/local-env.mjs";
 import { createTaskboardServer, resolveHost, resolvePort } from "./app.mjs";
+
+const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 export { createTaskboardServer, resolveHost, resolvePort, resolveServerOptions } from "./app.mjs";
 
 async function main() {
+  loadLocalEnv(PROJECT_ROOT);
   const app = createTaskboardServer();
   const host = resolveHost();
   const address = await app.listen({ host, port: resolvePort() });
