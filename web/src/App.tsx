@@ -18,6 +18,7 @@ import {
   type AutomationModel,
   type AutomationReasoningEffort,
 } from "../../shared/taskboard-automation-options.mjs";
+import { buildThreadInstruction } from "../../shared/thread-instruction.mjs";
 import {
   ApiError,
   addTaskRelation,
@@ -33,6 +34,7 @@ import {
   getCodexThreadProgress,
   getHostRuntime,
   getJiraConnection,
+  getCodingWorkflowSettings,
   getTaskboardRevision,
   getWorkflowWorkspace,
   getTaskboardMetadata,
@@ -47,6 +49,7 @@ import {
   resolveTaskboardUrl,
   restoreTask as restoreTaskRequest,
   setApiText,
+  saveCodingWorkflowSettings,
   setCurrentUserActor,
   syncJiraConnection,
   uploadAttachment,
@@ -68,6 +71,7 @@ import {
   type PendingInlineImage,
 } from "./components/InlineMediaComposer";
 import { LinearIcon } from "./components/LinearIcon";
+import { CopyLoopPromptMenu } from "./components/CopyLoopPromptMenu";
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
@@ -113,6 +117,7 @@ import {
   TASK_STATUSES,
   type ActorIdentity,
   type AiChatThread,
+  type CodingWorkflowSettings,
   type DevelopmentScan,
   type HostContext,
   type IssueRelationType,
@@ -488,6 +493,7 @@ function taskToDraft(task: Task): TaskDraft {
     status: task.status,
     priority: task.priority,
     labels: task.labels,
+    workflowId: task.workflowId,
     developmentContext: task.developmentContext,
     startDate: task.startDate,
     dueDate: task.dueDate,
@@ -691,6 +697,9 @@ export function App() {
   const [attachmentsRevision, setAttachmentsRevision] = useState(0);
   const [workflowRevision, setWorkflowRevision] = useState(0);
   const [workflowOptions, setWorkflowOptions] = useState<WorkflowOption[]>(DEFAULT_WORKFLOW_OPTIONS);
+  const [codingWorkflowSettings, setCodingWorkflowSettings] = useState<CodingWorkflowSettings | null>(null);
+  const [codingWorkflowPending, setCodingWorkflowPending] = useState(false);
+  const [codingWorkflowError, setCodingWorkflowError] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
   const [draggedTaskId, setDraggedTaskId] = useState<string | null>(null);
   const [draggedTaskHeight, setDraggedTaskHeight] = useState(0);
@@ -721,6 +730,7 @@ export function App() {
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const projectsRequestRef = useRef(0);
   const tasksRequestRef = useRef(0);
+  const codingSettingsRequestRef = useRef(0);
   const tasksRef = useRef<Task[]>([]);
   const undoSequenceRef = useRef(0);
   const undoStackRef = useRef<UndoOperation[]>([]);
@@ -819,6 +829,17 @@ export function App() {
     ? undefined
     : deviceWorkspacePaths[selectedProjectId];
   const selectedProjectAutomation = projectAutomations[selectedProjectId];
+  // The host directory is whatever project Codex itself is sitting on, so it may
+  // belong to a different project than the one selected here. Falling back to it
+  // unconditionally would write another project's directory into this prompt.
+  const loopPromptWorkspacePath = selectedDeviceWorkspacePath
+    ?? selectedProject?.workspacePath
+    ?? (
+      selectedProject && hostContext?.projectId === selectedProject.id
+        ? hostContext.workspacePath
+        : undefined
+    )
+    ?? null;
   const automationProjectContext = useMemo(() => {
     if (!embedded || window.parent === window) {
       return { unavailableReason: text("仅可在 Codex App 中使用", "Available only in the Codex app") };
@@ -1653,6 +1674,55 @@ export function App() {
   }, [refreshWorkflowOptions, selectedProjectId]);
 
   useEffect(() => {
+    const requestId = ++codingSettingsRequestRef.current;
+    if (!selectedProjectId) {
+      setCodingWorkflowSettings(null);
+      setCodingWorkflowError(null);
+      return;
+    }
+    const controller = new AbortController();
+    setCodingWorkflowError(null);
+    void getCodingWorkflowSettings(selectedProjectId, controller.signal)
+      .then((settings) => {
+        if (
+          !controller.signal.aborted
+          && requestId === codingSettingsRequestRef.current
+          && settings.projectId === selectedProjectIdRef.current
+        ) setCodingWorkflowSettings(settings);
+      })
+      .catch((error) => {
+        if (
+          (error as Error).name !== "AbortError"
+          && requestId === codingSettingsRequestRef.current
+        ) {
+          setCodingWorkflowSettings(null);
+          setCodingWorkflowError(errorMessage(error));
+        }
+      });
+    return () => controller.abort();
+  }, [selectedProjectId]);
+
+  const updateCodingWorkflowSettings = useCallback(async (
+    changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+  ) => {
+    if (!codingWorkflowSettings || codingWorkflowPending) return;
+    const projectId = codingWorkflowSettings.projectId;
+    setCodingWorkflowPending(true);
+    setCodingWorkflowError(null);
+    try {
+      const settings = await saveCodingWorkflowSettings(codingWorkflowSettings, changes);
+      if (selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(settings);
+    } catch (error) {
+      if (selectedProjectIdRef.current !== projectId) return;
+      setCodingWorkflowError(errorMessage(error));
+      const latest = await getCodingWorkflowSettings(projectId).catch(() => null);
+      if (latest && selectedProjectIdRef.current === projectId) setCodingWorkflowSettings(latest);
+    } finally {
+      setCodingWorkflowPending(false);
+    }
+  }, [codingWorkflowPending, codingWorkflowSettings]);
+
+  useEffect(() => {
     if (!selectedProjectId) {
       setDevelopmentScan({ workspacePath: null, contexts: [] });
       return;
@@ -2432,26 +2502,70 @@ export function App() {
     postEmbeddedHostMessage({ type: "taskboard:expand-sidebar" });
   }
 
-  function openTaskInThread(task: Task) {
-    const worktreePath = task.developmentContext?.type === "worktree"
+  function taskWorktreePath(task: Task) {
+    return task.developmentContext?.type === "worktree"
       ? task.developmentContext.path
       : null;
-    const workspacePath = worktreePath
+  }
+
+  function taskWorkspacePath(task: Task) {
+    return taskWorktreePath(task)
       ?? selectedDeviceWorkspacePath
       ?? selectedProject?.workspacePath
+      ?? developmentScan.workspacePath
       ?? (
         selectedProject?.id === GLOBAL_PROJECT_ID
         || hostContext?.projectId === selectedProject?.id
           ? hostContext?.workspacePath
           : undefined
       );
-    const instruction = `e-taskboard 处理任务面板任务 ${task.identifier}，并同步进度状态。`;
+  }
+
+  function taskThreadPrompt(task: Task) {
+    if (!manageTaskboardSkillPath) return null;
+    const workspacePath = taskWorkspacePath(task);
+    const instruction = buildThreadInstruction({
+      identifier: task.identifier,
+      projectName: selectedProject?.name,
+      projectId: task.projectId,
+      workspacePath,
+    });
+    const prompt = `[$manage-taskboard](${manageTaskboardSkillPath}) ${instruction}`;
+    return { instruction, prompt, workspacePath };
+  }
+
+  function copyTaskPrompt(task: Task) {
+    const built = taskThreadPrompt(task);
+    if (!built) {
+      setActionError(text(
+        "任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。",
+        "Taskboard has not loaded the manage-taskboard Skill path. Refresh and try again.",
+      ));
+      return;
+    }
+    void copyText(
+      built.prompt,
+      text(`${task.identifier} 的 Prompt 已复制。`, `Prompt for ${task.identifier} copied.`),
+    );
+  }
+
+  function openTaskInThread(task: Task) {
+    const built = taskThreadPrompt(task);
+    if (!built) {
+      setActionError(text(
+        "任务面板还没有读取到 manage-taskboard Skill 路径，请刷新后重试。",
+        "Taskboard has not loaded the manage-taskboard Skill path. Refresh and try again.",
+      ));
+      return;
+    }
+    const { instruction, prompt, workspacePath } = built;
+    const worktreePath = taskWorktreePath(task);
 
     if (!embedded || window.parent === window) {
-      setActionError([
-        "在对话中打开仅可在 Codex 内嵌任务面板中使用。请从 Codex 侧栏打开任务面板后重试。",
-        "Open in conversation is available only in the embedded Codex Taskboard. Open Taskboard from the Codex sidebar and try again.",
-      ]);
+      const query = new URLSearchParams();
+      if (workspacePath) query.set("path", workspacePath);
+      query.set("prompt", prompt);
+      window.location.assign(`codex://new?${query.toString().replace(/\+/g, "%20")}`);
       return;
     }
     if (openingThreadTaskId) return;
@@ -2469,8 +2583,14 @@ export function App() {
         identifier: task.identifier,
         title: task.title,
         instruction,
+        prompt,
+        skillName: "manage-taskboard",
+        skillDisplayName: "Manage Taskboard",
+        skillPath: manageTaskboardSkillPath,
         codexProjectId,
+        projectName: selectedProject?.name,
         workspacePath,
+        workspaceLabel: worktreePath?.split(/[\\/]/).filter(Boolean).at(-1),
       },
     });
   }
@@ -2825,13 +2945,28 @@ export function App() {
 
           <div className="header-actions">
             {selectedProjectId && (
-              <ProjectAutomationMenu
-                automation={selectedProjectAutomation}
-                pending={automationPending}
-                error={automationError}
-                unavailableReason={automationProjectContext.unavailableReason}
-                onOpen={() => void reconcileProjectAutomation()}
-                onChange={(options) => void saveProjectAutomation(options)}
+                <ProjectAutomationMenu
+                  automation={selectedProjectAutomation}
+                  pending={automationPending}
+                  error={automationError}
+                  unavailableReason={automationProjectContext.unavailableReason}
+                  codingSettings={codingWorkflowSettings}
+                  codingPending={codingWorkflowPending}
+                  codingError={codingWorkflowError}
+                  workflows={workflowOptions}
+                  onOpen={() => void reconcileProjectAutomation()}
+                  onChange={(options) => void saveProjectAutomation(options)}
+                  onCodingChange={(changes) => void updateCodingWorkflowSettings(changes)}
+                />
+            )}
+            {selectedProjectId && selectedProject && (
+              <CopyLoopPromptMenu
+                projectId={selectedProjectId}
+                projectName={selectedProject.name}
+                workspacePath={loopPromptWorkspacePath}
+                skillPath={manageTaskboardSkillPath}
+                codingConfig={codingWorkflowSettings?.config ?? null}
+                onCopy={(prompt) => void copyText(prompt, "loop prompt 已复制。")}
               />
             )}
             {isJiraProject && (
@@ -3027,6 +3162,7 @@ export function App() {
             onOpenThread={openThread}
             onOpenInThread={openTaskInThread}
             onCopy={(text, message) => void copyText(text, message)}
+            onCopyPrompt={copyTaskPrompt}
             openingThread={openingThreadTaskId === detailTask.id}
             onError={setActionError}
           />
@@ -3430,6 +3566,8 @@ export function App() {
             ? null
             : newTaskDraft.draft}
           labels={availableLabels}
+          workflows={workflowOptions}
+          defaultWorkflowId={codingWorkflowSettings?.defaultWorkflowId ?? null}
           currentUser={currentUser}
           developmentScan={developmentScan}
           developmentScanLoading={developmentScanLoading}

@@ -284,10 +284,23 @@ test("issues start a native Codex conversation in the confirmed workspace with t
   assert.match(source, /type: "taskboard:thread-prepared", payload: \{ taskId, threadId: started\.threadId \}/);
   assert.match(
     webApp,
-    /const instruction = `e-taskboard 处理任务面板任务 \$\{task\.identifier\}，并同步进度状态。`/,
+    /const instruction = buildThreadInstruction\(\{\s*identifier: task\.identifier,\s*projectName: selectedProject\?\.name,\s*projectId: task\.projectId,\s*workspacePath,\s*\}\);/,
   );
-  assert.doesNotMatch(webApp, /const prompt =/);
-  assert.doesNotMatch(webApp, /skillName: "manage-taskboard"/);
+  assert.doesNotMatch(webApp, /e-taskboard Addressing the issues mentioned in/);
+  assert.match(
+    webApp,
+    /const prompt = `\[\$manage-taskboard\]\(\$\{manageTaskboardSkillPath\}\) \$\{instruction\}`/,
+  );
+  // The copy button and the thread opener share one builder, so the copied
+  // prompt carries the same project, issue and workspace context.
+  assert.match(
+    webApp,
+    /function taskThreadPrompt\(task: Task\)[^}]*const workspacePath = taskWorkspacePath\(task\);\s*const instruction = buildThreadInstruction\(/,
+  );
+  assert.match(webApp, /const \{ instruction, prompt, workspacePath \} = built;/);
+  assert.match(webApp, /skillName: "manage-taskboard"/);
+  assert.match(webApp, /skillDisplayName: "Manage Taskboard"/);
+  assert.match(webApp, /skillPath: manageTaskboardSkillPath/);
   assert.match(webApp, /instruction,/);
   assert.match(webApp, /title: task\.title,/);
   assert.match(webApp, /type: "taskboard:create-thread"/);
@@ -317,16 +330,10 @@ test("host navigation follows Codex's renderer message bus", () => {
   assert.doesNotMatch(source, /new CustomEvent\("codex-message-from-view"/);
 });
 
-test("the standalone web page reports that new Codex conversations require the embedded Taskboard", () => {
-  assert.match(
-    webApp,
-    /setActionError\(\[\s*"在对话中打开仅可在 Codex 内嵌任务面板中使用。请从 Codex 侧栏打开任务面板后重试。",/,
-  );
-  assert.match(
-    webApp,
-    /"Open in conversation is available only in the embedded Codex Taskboard\. Open Taskboard from the Codex sidebar and try again\.",/,
-  );
-  assert.doesNotMatch(webApp, /codex:\/\/new/);
+test("the standalone web page opens a new Codex conversation with the same contextual prompt", () => {
+  assert.match(webApp, /if \(workspacePath\) query\.set\("path", workspacePath\)/);
+  assert.match(webApp, /query\.set\("prompt", prompt\)/);
+  assert.match(webApp, /window\.location\.assign\(`codex:\/\/new\?\$\{query\.toString\(\)\.replace\(/);
 });
 
 test("host context captures all Codex projects even when the sidebar section is collapsed", () => {

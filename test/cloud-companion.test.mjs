@@ -155,7 +155,7 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
           id: "REMOTE-1",
           creatorType: "agent",
           creatorId: "codex-agent",
-          creatorName: "Codex Agent",
+          creatorName: "Claude Agent",
         },
       }, 201);
     },
@@ -196,7 +196,7 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
       id: "REMOTE-1",
       creatorType: "agent",
       creatorId: "codex-agent",
-      creatorName: "Codex Agent",
+      creatorName: "Claude Agent",
     },
   });
 });
@@ -724,7 +724,7 @@ test("taskctl cloud status, logout, and project map use local companion endpoint
   };
 
   const companionEnv = {
-    CODEX_TASKBOARD_COMPANION_URL: "http://127.0.0.1:49000",
+    TASKBOARD_COMPANION_URL: "http://127.0.0.1:49000",
   };
   assert.equal((await runCli(
     ["cloud", "status"],
@@ -788,7 +788,7 @@ test("taskctl companion-control commands use the tokenized launcher runtime endp
 test("taskctl accepts only loopback companion origins and supports the legacy loopback URL", async () => {
   let requestedUrl;
   const legacy = await runCli(["cloud", "status"], {
-    env: { CODEX_TASKBOARD_URL: "http://localhost:49100/" },
+    env: { TASKBOARD_URL: "http://localhost:49100/" },
     fetch: async (url) => {
       requestedUrl = url.toString();
       return jsonResponse({ mode: "local", authenticated: false });
@@ -799,7 +799,7 @@ test("taskctl accepts only loopback companion origins and supports the legacy lo
 
   let fetchCalled = false;
   const rejected = await runCli(["cloud", "status"], {
-    env: { CODEX_TASKBOARD_COMPANION_URL: "https://tasks.example.test" },
+    env: { TASKBOARD_COMPANION_URL: "https://tasks.example.test" },
     fetch: async () => {
       fetchCalled = true;
       return jsonResponse({});
@@ -814,8 +814,8 @@ test("taskctl uses an explicit companion URL for ordinary commands before the le
   let requestedUrl;
   const result = await runCli(["project", "list"], {
     env: {
-      CODEX_TASKBOARD_COMPANION_URL: "http://127.0.0.1:49200",
-      CODEX_TASKBOARD_URL: "https://legacy.example.test",
+      TASKBOARD_COMPANION_URL: "http://127.0.0.1:49200",
+      TASKBOARD_URL: "https://legacy.example.test",
     },
     fetch: async (url) => {
       requestedUrl = url.toString();

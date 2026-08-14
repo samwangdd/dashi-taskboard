@@ -165,6 +165,24 @@ export interface WorkflowOption {
   name: string;
 }
 
+export interface CodingWorkflowConfig {
+  orchestratorModel: string;
+  implementerModel: string;
+  verifierModel: string;
+  uiVerifierModel: string;
+  escalationImplementerModel: string;
+  standardRounds: number;
+  escalationRounds: number;
+}
+
+export interface CodingWorkflowSettings {
+  projectId: string;
+  defaultWorkflowId: string | null;
+  config: CodingWorkflowConfig;
+  version: number;
+  updatedAt: string | null;
+}
+
 export interface WorkflowWorkspaceRecord<T = unknown> {
   projectId: string;
   workspace: T | null;
@@ -332,6 +350,7 @@ export interface TaskDraft {
   status: TaskStatus;
   priority: TaskPriority;
   labels: string[];
+  workflowId: string | null;
   assigneeTarget?: AssigneeTarget;
   developmentContext: DevelopmentContext | null;
   startDate: string | null;

@@ -73,7 +73,7 @@ test("the workflow catalog retains the real trigger, capability, API, integratio
     "基础规划",
     "Claude Code 规划",
     "自定义规划",
-    "Codex 审核",
+    "Claude 审核",
     "Claude Code 审核",
   ]) {
     assert.match(catalogSource, new RegExp(label));
@@ -216,7 +216,7 @@ test("the on-demand inspector exposes real capabilities and the existing node co
   assert.match(inspectorSource, /text\("推理强度", "Reasoning effort"\)/);
   assert.match(inspectorSource, /text\("规划要求", "Planning requirements"\)/);
   assert.match(inspectorSource, /text\("议题选择", "Issue selection"\)/);
-  for (const action of ["改变状态", "添加评论", "添加标签", "设置优先级", "附加流程运行产物", "记录执行该议题的 Codex 对话"]) {
+  for (const action of ["改变状态", "添加评论", "添加标签", "设置优先级", "附加流程运行产物", "记录执行该议题的 Claude 会话"]) {
     assert.match(inspectorSource, new RegExp(action));
   }
   assert.match(inspectorSource, /text\("额外说明", "Additional instructions"\)/);

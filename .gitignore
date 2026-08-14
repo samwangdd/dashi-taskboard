@@ -3,6 +3,7 @@ dist/
 .data/
 .wrangler/
 .dev.vars*
+.env.local
 .tmp/
 cloud-migration-exports/
 .playwright-cli/
@@ -14,3 +15,8 @@ src-tauri/binaries/
 src-tauri/gen/
 src-tauri/resources/
 src-tauri/target/
+
+# Machine-local agent skill distribution (symlinks and copies of an external skill store)
+.agents/
+.cursor/
+.kiro/

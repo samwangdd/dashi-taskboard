@@ -102,7 +102,7 @@ npm run build:web
 Start the local companion:
 
 ```bash
-CODEX_TASKBOARD_HOST=127.0.0.1 npm start
+TASKBOARD_HOST=127.0.0.1 npm start
 ```
 
 In a second terminal, configure cloud mode. Use the deployed HTTPS Worker origin, choose the actor name that should appear on their actions, and enter the shared password only at the private `Shared key:` prompt:
@@ -130,12 +130,12 @@ The owner runs the same mapping command with the owner's own path. Mappings are 
 Launch the injected Codex window:
 
 ```bash
-CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
+TASKBOARD_HOST=127.0.0.1 npm run codex
 ```
 
 `npm run codex` reuses or starts the loopback companion. Keep it running while using the embedded board. The companion supplies local Codex/Git/Skill/MCP capabilities and sends the shared password to the Worker only in the HTTPS Basic `Authorization` header. It does not write that password to D1 or R2, return it to the browser UI, or print it in logs. Device paths also stay off Cloudflare.
 
-Do not point `CODEX_TASKBOARD_URL` directly at the cloud origin for this workflow. `taskctl` talks to the loopback companion, which applies Basic Authentication and the device's local project mapping. If the companion uses a non-default loopback port, set `CODEX_TASKBOARD_COMPANION_URL` to that loopback origin.
+Do not point `TASKBOARD_URL` directly at the cloud origin for this workflow. `taskctl` talks to the loopback companion, which applies Basic Authentication and the device's local project mapping. If the companion uses a non-default loopback port, set `TASKBOARD_COMPANION_URL` to that loopback origin.
 
 ## Browser-only access
 

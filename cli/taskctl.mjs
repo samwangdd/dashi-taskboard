@@ -22,7 +22,7 @@ const sourceRuntimeFile = path.resolve(
   ".data",
   "launcher-runtime.json",
 );
-const BOOLEAN_OPTIONS = new Set(["json"]);
+const BOOLEAN_OPTIONS = new Set(["json", "ui", "help", "archived"]);
 const GLOBAL_OPTIONS = new Set(["runtime-file"]);
 
 const COMMAND_OPTIONS = new Map([
@@ -44,6 +44,7 @@ const COMMAND_OPTIONS = new Map([
       "status",
       "priority",
       "labels",
+      "workflow",
       "thread-id",
       "git-branch",
       "worktree-path",
@@ -65,6 +66,7 @@ const COMMAND_OPTIONS = new Map([
       "status",
       "priority",
       "labels",
+      "workflow",
       "thread-id",
       "git-branch",
       "worktree-path",
@@ -88,7 +90,288 @@ const COMMAND_OPTIONS = new Map([
   ["attachment download", new Set(["output", "json"])],
   ["attachment upload", new Set(["file", "task", "comment", "content-type", "json"])],
   ["context current", new Set(["cwd", "json"])],
+  ["coding start", new Set(["json"])],
+  ["coding get", new Set(["json"])],
+  ["coding artifacts", new Set(["json"])],
+  ["coding contract", new Set(["contract-file", "if-version", "json"])],
+  ["coding handoff", new Set(["from-role", "to-role", "body", "body-file", "json"])],
+  ["coding check", new Set(["kind", "files", "command", "json"])],
+  ["coding verdict", new Set(["result", "ui", "body", "body-file", "json"])],
+  ["coding commit", new Set(["message", "json"])],
 ]);
+
+// Value placeholders shown in help. Options absent from this map are boolean flags.
+const OPTION_VALUES = new Map([
+  ["id", "ID"],
+  ["name", "NAME"],
+  ["workspace-path", "PATH"],
+  ["url", "HTTPS_ORIGIN"],
+  ["actor-name", "NAME"],
+  ["project", "PROJECT_ID"],
+  ["status", "STATUS"],
+  ["title", "TITLE"],
+  ["description", "TEXT"],
+  ["description-file", "FILE"],
+  ["priority", "PRIORITY"],
+  ["labels", "a,b"],
+  ["thread-id", "ID"],
+  ["git-branch", "BRANCH"],
+  ["worktree-path", "PATH"],
+  ["worktree-branch", "BRANCH"],
+  ["start-date", "YYYY-MM-DD"],
+  ["due-date", "YYYY-MM-DD"],
+  ["recurrence-interval", "N"],
+  ["recurrence-unit", "day|week|month|year"],
+  ["if-version", "N"],
+  ["type", "parent|blocks|blocked_by|related"],
+  ["issue", "ISSUE_ID"],
+  ["body", "TEXT"],
+  ["body-file", "FILE"],
+  ["output", "PATH"],
+  ["file", "FILE"],
+  ["task", "ISSUE_ID"],
+  ["comment", "COMMENT_ID"],
+  ["content-type", "MIME_TYPE"],
+  ["cwd", "PATH"],
+  ["workflow", "WORKFLOW_ID"],
+  ["contract-file", "FILE"],
+  ["from-role", "ROLE"],
+  ["to-role", "ROLE"],
+  ["kind", "KIND"],
+  ["files", "PATH,PATH"],
+  ["command", "COMMAND"],
+  ["result", "pass|fail"],
+  ["message", "TEXT"],
+]);
+
+// Operand signature, summary, and required options per command. The optional
+// options are derived from COMMAND_OPTIONS so help cannot drift from the parser.
+const COMMAND_HELP = new Map([
+  ["project list", { operands: "", summary: "List every project." }],
+  ["project create", { operands: "", summary: "Create a project.", required: ["name"] }],
+  [
+    "project map",
+    {
+      operands: "PROJECT_ID",
+      summary: "Map a project to a local workspace path.",
+      required: ["workspace-path"],
+    },
+  ],
+  [
+    "cloud login",
+    {
+      operands: "",
+      summary: "Point the local companion at a shared cloud board (prompts for the shared key).",
+      required: ["url", "actor-name"],
+    },
+  ],
+  ["cloud status", { operands: "", summary: "Show the current cloud session." }],
+  ["cloud logout", { operands: "", summary: "Clear the stored cloud session." }],
+  ["issue list", { operands: "", summary: "List issues, optionally filtered." }],
+  ["issue get", { operands: "ID", summary: "Read one issue." }],
+  [
+    "issue create",
+    { operands: "", summary: "Create an issue.", required: ["project", "title"] },
+  ],
+  ["issue update", { operands: "ID", summary: "Update issue fields." }],
+  ["issue move", { operands: "ID", summary: "Move an issue to a status.", required: ["status"] }],
+  ["issue archive", { operands: "ID", summary: "Archive an issue." }],
+  ["issue restore", { operands: "ID", summary: "Restore an archived issue." }],
+  [
+    "issue relation",
+    {
+      operands: "add|remove ISSUE_ID",
+      summary: "Add or remove a relation on an issue.",
+      required: ["type", "issue"],
+    },
+  ],
+  ["comment list", { operands: "ISSUE_ID", summary: "List an issue's comments." }],
+  ["comment add", { operands: "ISSUE_ID", summary: "Append a comment.", required: ["body"] }],
+  [
+    "comment update",
+    { operands: "COMMENT_ID", summary: "Edit a comment.", required: ["body", "if-version"] },
+  ],
+  [
+    "comment delete",
+    { operands: "COMMENT_ID", summary: "Delete a comment.", required: ["if-version"] },
+  ],
+  [
+    "attachment download",
+    {
+      operands: "ATTACHMENT_ID",
+      summary: "Download an inline attachment to a local path.",
+      required: ["output"],
+    },
+  ],
+  ["context current", { operands: "", summary: "Report the project for the current directory." }],
+  ["coding start", { operands: "ISSUE_ID", summary: "Start a coding workflow run for an issue." }],
+  ["coding get", { operands: "RUN_ID", summary: "Read one coding run." }],
+  ["coding artifacts", { operands: "RUN_ID", summary: "List a coding run's artifacts." }],
+  [
+    "coding contract",
+    {
+      operands: "RUN_ID",
+      summary: "Replace a run's verification contract from a JSON file.",
+      required: ["contract-file", "if-version"],
+    },
+  ],
+  [
+    "coding handoff",
+    {
+      operands: "RUN_ID",
+      summary: "Hand a run off from one workflow role to another.",
+      required: ["from-role", "to-role", "body"],
+    },
+  ],
+  [
+    "coding check",
+    {
+      operands: "RUN_ID",
+      summary: "Record a scoped check and the files it covered.",
+      required: ["kind", "command", "files"],
+    },
+  ],
+  [
+    "coding verdict",
+    {
+      operands: "RUN_ID",
+      summary: "Record a verifier verdict, optionally from the UI verifier.",
+      required: ["result", "body"],
+    },
+  ],
+  [
+    "coding commit",
+    {
+      operands: "RUN_ID",
+      summary: "Commit a run that reached ready_to_commit.",
+      required: ["message"],
+    },
+  ],
+]);
+
+const EXIT_CODE_NOTES = [
+  "Every successful command writes one JSON object with schemaVersion "
+    + `${SCHEMA_VERSION} to stdout; errors write one JSON object to stderr.`,
+  "Exit codes: 0 success, 2 invalid input, 3 service unavailable, 4 API or response error,"
+    + " 5 conflict.",
+];
+
+function optionSignature(name) {
+  const value = OPTION_VALUES.get(name);
+  return value === undefined ? `--${name}` : `--${name} ${value}`;
+}
+
+// COMMAND_OPTIONS is the single source of truth for which commands exist, so a new
+// command shows up in help even before it gains a COMMAND_HELP description.
+function commandSpec(command) {
+  return COMMAND_HELP.get(command) ?? { operands: "", summary: "" };
+}
+
+function partitionOptions(command) {
+  const required = commandSpec(command).required ?? [];
+  return {
+    required,
+    optional: [...COMMAND_OPTIONS.get(command)].filter((name) => !required.includes(name)),
+  };
+}
+
+function renderTopLevelHelp() {
+  const lines = [
+    "taskctl — Taskboard CLI",
+    "",
+    "Usage:",
+    "  taskctl <resource> <action> [operands] [options]",
+    "  taskctl help [<resource> <action>]",
+    "",
+    "Commands:",
+  ];
+  const commands = [...COMMAND_OPTIONS.keys()];
+  const labels = commands.map((command) =>
+    [command, commandSpec(command).operands].filter(Boolean).join(" "));
+  const width = Math.max(...labels.map((label) => label.length));
+  for (const [index, command] of commands.entries()) {
+    lines.push(`  ${labels[index].padEnd(width)}  ${commandSpec(command).summary}`);
+  }
+  lines.push(
+    "",
+    "Global options:",
+    "  --json      Emit machine-readable JSON.",
+    "  -h, --help  Show this help.",
+    "",
+    ...EXIT_CODE_NOTES,
+    "",
+    "Run `taskctl help <resource> <action>` for a command's full option list.",
+  );
+  return `${lines.join("\n")}\n`;
+}
+
+function renderCommandHelp(command) {
+  const spec = commandSpec(command);
+  const { required, optional } = partitionOptions(command);
+  const lines = [
+    spec.summary,
+    "",
+    "Usage:",
+    `  ${["taskctl", command, spec.operands, "[options]"].filter(Boolean).join(" ")}`,
+  ];
+  if (required.length > 0) {
+    lines.push("", "Required options:");
+    for (const name of required) lines.push(`  ${optionSignature(name)}`);
+  }
+  lines.push("", "Optional options:");
+  for (const name of optional) lines.push(`  ${optionSignature(name)}`);
+  lines.push("  -h, --help");
+  return `${lines.join("\n")}\n`;
+}
+
+// `help issue create` parses as resource "help", action "issue", operand "create",
+// while `issue create --help` parses as resource "issue", action "create".
+function resolveHelpTopic(parsed) {
+  const words = parsed.resource === "help"
+    ? [parsed.action, ...parsed.operands]
+    : [parsed.resource, parsed.action];
+  const topic = words.filter(Boolean).join(" ");
+  if (topic === "") return undefined;
+  if (COMMAND_OPTIONS.has(topic)) return topic;
+  // `taskctl issue --help` has no command to scope to; fall back to the full list.
+  if (parsed.resource !== "help") return undefined;
+  throw usageError(`Unknown command: ${topic}. Run \`taskctl help\` for the command list.`);
+}
+
+function helpCommandPayload(command) {
+  const spec = commandSpec(command);
+  const { required, optional } = partitionOptions(command);
+  return {
+    command,
+    summary: spec.summary,
+    operands: spec.operands,
+    options: [...required, ...optional].map((name) => ({
+      name,
+      value: OPTION_VALUES.get(name) ?? null,
+      required: required.includes(name),
+    })),
+  };
+}
+
+function helpPayload(topic) {
+  const commands = topic === undefined ? [...COMMAND_OPTIONS.keys()] : [topic];
+  return {
+    help: {
+      usage: "taskctl <resource> <action> [operands] [options]",
+      commands: commands.map((command) => helpCommandPayload(command)),
+      notes: EXIT_CODE_NOTES,
+    },
+    schemaVersion: SCHEMA_VERSION,
+  };
+}
+
+function writeHelp(stream, topic, asJson) {
+  if (asJson) {
+    writeJson(stream, helpPayload(topic));
+    return;
+  }
+  stream.write(topic === undefined ? renderTopLevelHelp() : renderCommandHelp(topic));
+}
 
 class TaskctlError extends Error {
   constructor(message, { code = "TASKCTL_ERROR", exitCode = 2, details } = {}) {
@@ -113,6 +396,11 @@ export function parseArgs(argv) {
     if (token === "--") {
       positionals.push(...argv.slice(index + 1));
       break;
+    }
+
+    if (token === "-h") {
+      options.help = true;
+      continue;
     }
 
     if (!token.startsWith("--")) {
@@ -165,6 +453,10 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
 
   try {
     const parsed = parseArgs(argv);
+    if (parsed.options.help || parsed.resource === "help" || parsed.resource === undefined) {
+      writeHelp(stdout, resolveHelpTopic(parsed), parsed.options.json === true);
+      return 0;
+    }
     const result = await execute(parsed, overrides);
     writeJson(stdout, { ...result, schemaVersion: SCHEMA_VERSION });
     return 0;
@@ -190,7 +482,7 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current",
+      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current, coding start/get/artifacts/contract/handoff/check/verdict/commit",
     );
   }
   validateOptions(parsed.options, allowedOptions);
@@ -199,9 +491,13 @@ async function execute(parsed, overrides) {
   const env = parsed.options["runtime-file"] === undefined
     ? processEnv
     : { ...processEnv, CODEX_TASKBOARD_RUNTIME_FILE: parsed.options["runtime-file"] };
-  const usesCompanionControl = command.startsWith("cloud ") || command === "project map";
+  const usesCompanionControl = command.startsWith("cloud ")
+    || command.startsWith("coding ")
+    || command === "project map";
   const api = createApiClient(overrides, {
-    baseUrl: usesCompanionControl || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
+    baseUrl: usesCompanionControl
+      || env.TASKBOARD_COMPANION_URL !== undefined
+      || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
       ? await resolveCompanionUrl(env, overrides)
       : await resolveTaskboardBaseUrl(env, overrides),
   });
@@ -308,6 +604,50 @@ async function execute(parsed, overrides) {
     case "context current":
       expectOperandCount(parsed, 0);
       return currentContext(api, parsed.options, overrides);
+    case "coding start":
+      expectOperandCount(parsed, 1);
+      return api.request(
+        "POST",
+        `/api/local/coding/tasks/${encodeURIComponent(parsed.operands[0])}/runs`,
+      );
+    case "coding get":
+      expectOperandCount(parsed, 1);
+      return api.request("GET", codingRunPath(parsed.operands[0]));
+    case "coding artifacts":
+      expectOperandCount(parsed, 1);
+      return api.request("GET", `${codingRunPath(parsed.operands[0])}/artifacts`);
+    case "coding contract":
+      expectOperandCount(parsed, 1);
+      return api.request("PUT", `${codingRunPath(parsed.operands[0])}/contract`, {
+        version: explicitVersion(parsed.options["if-version"]),
+        contract: await readJsonFile(requiredOption(parsed.options, "contract-file"), overrides),
+      });
+    case "coding handoff":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/artifacts`, {
+        sourceRole: requiredOption(parsed.options, "from-role"),
+        targetRole: requiredOption(parsed.options, "to-role"),
+        body: await resolveBody(parsed.options, overrides),
+      });
+    case "coding check":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/checks`, {
+        kind: requiredOption(parsed.options, "kind"),
+        command: requiredOption(parsed.options, "command"),
+        files: parseScopedFiles(requiredOption(parsed.options, "files")),
+      });
+    case "coding verdict":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/verdicts`, {
+        result: requiredOption(parsed.options, "result"),
+        ui: parsed.options.ui === true,
+        body: await resolveBody(parsed.options, overrides),
+      });
+    case "coding commit":
+      expectOperandCount(parsed, 1);
+      return api.request("POST", `${codingRunPath(parsed.operands[0])}/commit`, {
+        message: requiredOption(parsed.options, "message"),
+      });
     default:
       throw usageError(`Unsupported command: ${command}`);
   }
@@ -323,7 +663,9 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
   }
 
   const env = overrides.env ?? process.env;
-  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? DEFAULT_API_URL);
+  const baseUrl = normalizeBaseUrl(
+    explicitBaseUrl ?? env.TASKBOARD_URL ?? env.CODEX_TASKBOARD_URL ?? DEFAULT_API_URL,
+  );
 
   return {
     async request(method, pathname, body) {
@@ -639,6 +981,7 @@ async function createIssue(api, options, overrides) {
     status,
     priority,
     labels: parseLabels(options.labels),
+    ...optionalField("workflowId", options.workflow),
     threadId,
     ...optionalField("developmentContext", developmentContext),
     ...optionalField("startDate", options["start-date"]),
@@ -660,6 +1003,7 @@ async function updateIssue(api, taskId, options, overrides) {
     ...optionalField("status", options.status),
     ...optionalField("priority", options.priority),
     ...optionalField("labels", options.labels === undefined ? undefined : parseLabels(options.labels)),
+    ...optionalField("workflowId", options.workflow),
     ...optionalField("developmentContext", developmentContext),
     ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
@@ -778,6 +1122,55 @@ async function resolveDescription(options, overrides) {
   }
 }
 
+async function resolveBody(options, overrides) {
+  if (options.body !== undefined && options["body-file"] !== undefined) {
+    throw usageError("Use either --body or --body-file, not both");
+  }
+  if (options.body !== undefined) return options.body;
+  if (options["body-file"] === undefined) {
+    throw usageError("Missing required option --body or --body-file");
+  }
+  const read = overrides.readFile ?? readFile;
+  try {
+    return await read(options["body-file"], "utf8");
+  } catch (error) {
+    throw new TaskctlError(`Cannot read body file: ${options["body-file"]}`, {
+      code: "FILE_READ_FAILED",
+      exitCode: 2,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+async function readJsonFile(filename, overrides) {
+  const read = overrides.readFile ?? readFile;
+  let content;
+  try {
+    content = await read(filename, "utf8");
+  } catch (error) {
+    throw new TaskctlError(`Cannot read JSON file: ${filename}`, {
+      code: "FILE_READ_FAILED",
+      exitCode: 2,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    const value = JSON.parse(content);
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("expected a JSON object");
+    }
+    return value;
+  } catch (error) {
+    throw usageError(`Invalid JSON file ${filename}: ${error.message}`);
+  }
+}
+
+function parseScopedFiles(value) {
+  const files = [...new Set(value.split(",").map((file) => file.trim()).filter(Boolean))];
+  if (files.length === 0) throw usageError("--files must contain at least one path");
+  return files;
+}
+
 function parseLabels(rawLabels) {
   if (rawLabels === undefined || rawLabels === "") return [];
   return [...new Set(rawLabels.split(",").map((label) => label.trim()).filter(Boolean))];
@@ -823,13 +1216,13 @@ function recurrenceFromOptions(options) {
 
 function resolveThreadId(options, overrides) {
   const env = overrides.env ?? process.env;
-  const value = options["thread-id"] ?? env.CODEX_THREAD_ID;
+  const value = options["thread-id"] ?? env.TASKBOARD_SESSION_ID;
   if (typeof value !== "string" || value.trim().length === 0) {
-    throw usageError("Codex conversation attribution requires --thread-id or CODEX_THREAD_ID");
+    throw usageError("conversation attribution requires --thread-id or TASKBOARD_SESSION_ID");
   }
   const threadId = value.trim();
   if (threadId.length > 256) {
-    throw usageError("--thread-id and CODEX_THREAD_ID cannot exceed 256 characters");
+    throw usageError("--thread-id and TASKBOARD_SESSION_ID cannot exceed 256 characters");
   }
   return threadId;
 }
@@ -893,6 +1286,11 @@ function attachmentContentPath(attachmentId) {
   return `/api/attachments/${encodeURIComponent(attachmentId)}/content`;
 }
 
+function codingRunPath(runId) {
+  if (!runId) throw usageError("Missing coding run id");
+  return `/api/local/coding/runs/${encodeURIComponent(runId)}`;
+}
+
 function explicitVersion(rawVersion) {
   if (rawVersion === undefined) throw usageError("Missing required option --if-version");
   const version = Number(rawVersion);
@@ -907,10 +1305,10 @@ function normalizeBaseUrl(rawUrl) {
   try {
     url = new URL(rawUrl);
   } catch {
-    throw usageError("CODEX_TASKBOARD_URL must be a valid URL");
+    throw usageError("TASKBOARD_URL must be a valid URL");
   }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw usageError("CODEX_TASKBOARD_URL must use http or https");
+    throw usageError("TASKBOARD_URL must use http or https");
   }
   url.pathname = url.pathname.replace(/\/$/, "");
   url.search = "";
@@ -923,6 +1321,7 @@ function resolveApiUrl(baseUrl, pathname) {
 }
 
 async function resolveTaskboardBaseUrl(env, overrides) {
+  if (env.TASKBOARD_URL !== undefined) return env.TASKBOARD_URL;
   if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
   const configuredDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
   const descriptorPath = configuredDescriptorPath ?? sourceRuntimeFile;
@@ -952,9 +1351,9 @@ async function resolveTaskboardBaseUrl(env, overrides) {
 }
 
 async function resolveCompanionUrl(env, overrides) {
-  const rawUrl = env.CODEX_TASKBOARD_COMPANION_URL !== undefined
-    ? env.CODEX_TASKBOARD_COMPANION_URL
-    : await resolveTaskboardBaseUrl(env, overrides);
+  const rawUrl = env.TASKBOARD_COMPANION_URL
+    ?? env.CODEX_TASKBOARD_COMPANION_URL
+    ?? await resolveTaskboardBaseUrl(env, overrides);
   let url;
   try {
     url = new URL(rawUrl);

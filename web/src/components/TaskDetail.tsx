@@ -43,7 +43,7 @@ import type {
   TaskStatus,
 } from "../types";
 import {
-  CODEX_AGENT_ACTOR,
+  AGENT_ACTOR,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
@@ -107,6 +107,7 @@ interface TaskDetailProps {
   onOpenThread: (threadId: string) => void;
   onOpenInThread: (task: Task) => void;
   onCopy: (text: string, announcement: string) => void;
+  onCopyPrompt: (task: Task) => void;
   openingThread: boolean;
   onError: (message: TaskDetailError | null) => void;
 }
@@ -417,6 +418,7 @@ export function TaskDetail({
   onOpenThread,
   onOpenInThread,
   onCopy,
+  onCopyPrompt,
   openingThread,
   onError,
 }: TaskDetailProps) {
@@ -885,7 +887,7 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [currentTask.assignee, currentUser, AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
@@ -1475,10 +1477,19 @@ export function TaskDetail({
                 disabled={openingThread}
                 onClick={() => onOpenInThread(currentTask)}
               >
-                <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
+                <ActorAvatar actor={AGENT_ACTOR} className="detail-thread-avatar" />
                 <span>{openingThread
                   ? text("正在打开…", "Opening…")
                   : text("在对话中打开", "Open in conversation")}</span>
+              </button>
+              <button
+                className="detail-copy-action"
+                type="button"
+                title={text("复制 Prompt", "Copy prompt")}
+                onClick={() => onCopyPrompt(currentTask)}
+              >
+                <span className="detail-copy-action-icon" aria-hidden="true"><LinearIcon name="copy" /></span>
+                <span className="detail-copy-action-label">{text("复制 Prompt", "Copy prompt")}</span>
               </button>
               {currentTask.externalUrl && (
                 <a

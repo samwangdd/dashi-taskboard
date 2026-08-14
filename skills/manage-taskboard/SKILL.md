@@ -1,6 +1,7 @@
 ---
 name: manage-taskboard
-description: Manage Codex Taskboard / e-taskboard work with taskctl. Use for taskboard issue IDs, status sync, comments, or taskctl cloud setup—not for unrelated product docs.
+version: 1.0.0
+description: Use when tracking Taskboard issues, comments, relations, review handoffs, or Coding workflow runs through taskctl.
 ---
 
 # Manage Taskboard
@@ -32,3 +33,19 @@ When writing Chinese, keep the English word or use **本地 companion** / **本�
 - Let `taskctl` read `CODEX_THREAD_ID` for writes. Outside Codex, pass the exact conversation ID with `--thread-id`.
 - Use the latest returned `version` with `--if-version` for concurrent updates. On conflict, read the issue again and reconcile before retrying.
 - Download and inspect an inline `![alt](api/attachments/<id>/content)` image only when it is needed to understand the requirement.
+
+## Coding workflow
+
+When an issue has `workflowId: "coding"`, do not use the generic implementation and review steps above. The Taskboard companion owns the run state and the exact-file commit:
+
+1. Claiming the issue creates or resumes one coding run and freezes its configured agent models. The companion rejects a dirty branch or worktree before claim. By default, rounds 1–3 use `gpt-5.3-codex-spark`; one final escalation round uses `gpt-5.6-terra`.
+2. The orchestrator writes a versioned verification contract before dispatching the implementer.
+3. Every role boundary writes a handoff artifact using the `handoff` skill's objective, references, next action, and suggested skills structure. Immediately after a failed verifier verdict, write the verifier → implementer handoff before the next implementation round. The orchestrator remains the state owner but is not a relay hop.
+4. The implementer runs only changed-scope unit, integration, and configured type checks through `taskctl coding check`. Every command must contain exactly one `{files}` marker. Full test, typecheck, and build commands are forbidden.
+5. The verifier reads captured check evidence instead of repeating those commands. Use the configured UI verifier for UI work and provide preview routes plus expected results in the verification contract.
+6. After all configured verification passes, call `taskctl coding commit` without asking for another commit confirmation. The engine commits the recorded files, adds the final summary, and moves the issue to `in_review`. It never pushes or creates a PR.
+7. A returned issue resumes the same run and produces an additive commit. Exhausted implementation rounds move the issue to `blocked`; a verified no-code result moves to `in_review` without an empty commit.
+
+Use the `coding` commands in the CLI reference for every run transition. Intermediate rounds stay in coding artifacts; only `in_review` and `blocked` produce user-facing task notifications.
+
+For version conflicts outside the initial claim, read the issue again, reconcile the newer state, and retry with its current version.

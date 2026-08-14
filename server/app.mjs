@@ -22,6 +22,11 @@ import { executableCommand } from "../shared/executable-command.mjs";
 import { normalizeWorkflowSnapshot } from "../shared/workflow-control-flow.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
+import { CodingWorkflowService } from "./coding-workflow.mjs";
+import {
+  CODING_WORKFLOW_ID,
+  normalizeCodingWorkflowConfig,
+} from "../shared/coding-workflow.mjs";
 import { createCloudConfigStore } from "./cloud-config.mjs";
 import {
   CloudProxyError,
@@ -32,6 +37,7 @@ import { ApiError, TaskboardDatabase } from "./database.mjs";
 import { createJiraConfigStore } from "./jira-config.mjs";
 import { createJiraIntegration } from "./jira-integration.mjs";
 import { ProjectSummaryService } from "./project-summary.mjs";
+import { createLarkNotifier } from "./lark-notifier.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const execFileAsync = promisify(execFile);
@@ -53,10 +59,10 @@ const INLINE_ATTACHMENT_TYPES = new Set([
 ]);
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-"]);
-const CODEX_AGENT_ACTOR = {
+const AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
-  name: "Codex Agent",
+  name: "Claude Agent",
   avatarUrl: null,
 };
 const CONTENT_TYPES = new Map([
@@ -422,6 +428,83 @@ function parseWorkflowWorkspaceSave(body) {
   };
 }
 
+function parseCodingWorkflowSettings(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["version", "defaultWorkflowId", "config"]));
+  if (!Number.isInteger(body.version) || body.version < 0) {
+    throw new ApiError(400, "INVALID_FIELD", "'version' must be a non-negative integer");
+  }
+  assertPlainObject(body.config);
+  let config;
+  try {
+    config = normalizeCodingWorkflowConfig(body.config);
+  } catch (error) {
+    throw new ApiError(400, "INVALID_FIELD", error instanceof Error ? error.message : "Invalid Coding workflow config");
+  }
+  return {
+    version: body.version,
+    defaultWorkflowId: stringField(body.defaultWorkflowId ?? null, "defaultWorkflowId", {
+      nullable: true,
+      maxLength: 128,
+    }),
+    config,
+  };
+}
+
+function parseCodingContract(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["version", "contract"]));
+  if (!Number.isInteger(body.version) || body.version < 1) {
+    throw new ApiError(400, "INVALID_FIELD", "'version' must be a positive integer");
+  }
+  assertPlainObject(body.contract);
+  return { version: body.version, contract: body.contract };
+}
+
+function parseCodingHandoff(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["sourceRole", "targetRole", "body", "metadata"]));
+  if (body.metadata !== undefined) assertPlainObject(body.metadata);
+  return {
+    sourceRole: stringField(body.sourceRole, "sourceRole", { required: true, maxLength: 64 }),
+    targetRole: stringField(body.targetRole, "targetRole", { required: true, maxLength: 64 }),
+    body: stringField(body.body, "body", { required: true, maxLength: 100_000 }),
+    ...(body.metadata === undefined ? {} : { metadata: body.metadata }),
+  };
+}
+
+function parseCodingCheck(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["kind", "command", "files"]));
+  if (!Array.isArray(body.files) || body.files.length > 1_000) {
+    throw new ApiError(400, "INVALID_FIELD", "'files' must be an array with at most 1000 entries");
+  }
+  return {
+    kind: stringField(body.kind, "kind", { required: true, maxLength: 32 }),
+    command: stringField(body.command, "command", { required: true, maxLength: 8_192 }),
+    files: body.files,
+  };
+}
+
+function parseCodingVerdict(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["result", "ui", "body"]));
+  if (typeof body.ui !== "boolean") {
+    throw new ApiError(400, "INVALID_FIELD", "'ui' must be a boolean");
+  }
+  return {
+    result: stringField(body.result, "result", { required: true, maxLength: 32 }),
+    ui: body.ui,
+    body: stringField(body.body, "body", { required: true, maxLength: 100_000 }),
+  };
+}
+
+function parseCodingCommit(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["message"]));
+  return { message: stringField(body.message, "message", { required: true, maxLength: 240 }) };
+}
+
 function parseSortOrder(value) {
   if (typeof value !== "number" || !Number.isFinite(value) || Math.abs(value) > 1_000_000_000_000) {
     throw new ApiError(400, "INVALID_FIELD", "'sortOrder' must be a finite number between -1000000000000 and 1000000000000");
@@ -513,7 +596,7 @@ function requestHeader(request, name) {
 
 function actorFromRequest(request) {
   if (request.headers["x-taskboard-client"] === "taskctl") {
-    return CODEX_AGENT_ACTOR;
+    return AGENT_ACTOR;
   }
 
   const rawId = requestHeader(request, "x-taskboard-user-id");
@@ -565,7 +648,7 @@ function parseAssigneeTarget(value) {
 
 function resolveAssignee(target, actor) {
   if (target === undefined) return actor;
-  if (target === "codex-agent") return CODEX_AGENT_ACTOR;
+  if (target === "codex-agent") return AGENT_ACTOR;
   if (actor.type !== "user") {
     throw new ApiError(400, "INVALID_FIELD", "'current-user' requires a user request identity");
   }
@@ -1297,7 +1380,7 @@ async function discoverWorkflowCapabilities(resolved, workspacePath, processEnv)
 }
 
 export function resolveServerOptions(options = {}) {
-  const configuredDataDirectory = options.dataDirectory ?? process.env.CODEX_TASKBOARD_DATA_DIR;
+  const configuredDataDirectory = options.dataDirectory ?? process.env.TASKBOARD_DATA_DIR;
   const dataDirectory = configuredDataDirectory
     ? path.resolve(configuredDataDirectory)
     : path.join(PROJECT_ROOT, ".data");
@@ -1336,18 +1419,25 @@ export function resolveServerOptions(options = {}) {
   };
 }
 
-export function resolvePort(value = process.env.CODEX_TASKBOARD_PORT ?? "47823") {
+export function resolvePort(value = process.env.TASKBOARD_PORT ?? "47823") {
   const port = typeof value === "number" ? value : Number(value);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("CODEX_TASKBOARD_PORT must be an integer between 1 and 65535");
+    throw new Error("TASKBOARD_PORT must be an integer between 1 and 65535");
   }
   return port;
 }
 
-export function resolveHost(value = process.env.CODEX_TASKBOARD_HOST ?? "0.0.0.0") {
+// The Vite UI port from web/vite.config.ts. Only the notification link depends on it,
+// so an unusable value falls back instead of taking the whole service down.
+function resolveWebPort(value = process.env.TASKBOARD_WEB_PORT) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 5173;
+}
+
+export function resolveHost(value = process.env.TASKBOARD_HOST ?? "0.0.0.0") {
   const host = String(value).trim();
   if (host !== "127.0.0.1" && host !== "0.0.0.0") {
-    throw new Error("CODEX_TASKBOARD_HOST must be 127.0.0.1 or 0.0.0.0");
+    throw new Error("TASKBOARD_HOST must be 127.0.0.1 or 0.0.0.0");
   }
   return host;
 }
@@ -1358,7 +1448,16 @@ export function createTaskboardServer(options = {}) {
     options.processEnv ?? process.env,
   );
   const routePrefix = resolved.instanceToken ? `/${resolved.instanceToken}` : "";
-  const database = new TaskboardDatabase(resolved.databasePath);
+  const larkNotifier = createLarkNotifier({
+    userId: options.larkUserId ?? process.env.TASKBOARD_LARK_USER_ID,
+    // The same port the Vite UI binds to, so the link opens the board the user actually browses.
+    boardUrl: options.larkBoardUrl ?? `http://127.0.0.1:${resolveWebPort()}`,
+    command: options.larkCommand ?? process.env.TASKBOARD_LARK_CLI ?? "lark-cli",
+    run: options.larkCommandRunner,
+  });
+  const database = new TaskboardDatabase(resolved.databasePath, {
+    onTaskStatusChange: larkNotifier.onTaskStatusChange,
+  });
   const events = new EventHub();
   let clientStorageWrite = Promise.resolve();
 
@@ -1529,6 +1628,7 @@ export function createTaskboardServer(options = {}) {
     processEnv: codexProcessEnvironment,
     workspacePath: PROJECT_ROOT,
   });
+  const codingWorkflow = new CodingWorkflowService(database);
   const aiEventResponses = new Set();
   const codexSessionSearches = new Map();
   const codexSessionStateCache = new Map();
@@ -1702,8 +1802,10 @@ export function createTaskboardServer(options = {}) {
       }
       const url = new URL(request.url, "http://127.0.0.1");
       const pathname = url.pathname;
-      const isLocalAiRoute = pathname === "/api/local/ai" || pathname.startsWith("/api/local/ai/");
-      if (isLocalAiRoute) {
+      const isLocalExecutionRoute = pathname === "/api/local/ai"
+        || pathname.startsWith("/api/local/ai/")
+        || pathname.startsWith("/api/local/coding/");
+      if (isLocalExecutionRoute) {
         assertAiLoopbackRequest(request);
       } else if (pathname.startsWith("/api/local/")) {
         assertLoopbackRequest(request);
@@ -2044,6 +2146,112 @@ export function createTaskboardServer(options = {}) {
         await assertEmptyRequestBody(request, "POST /api/local/ai/runs/:id/interrupt");
         const run = await aiChat.interrupt(runId);
         return sendJson(response, 200, { run });
+      }
+
+      const codingSettingsRoute = pathname.match(/^\/api\/local\/coding\/projects\/([^/]+)\/settings$/);
+      if (codingSettingsRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/projects/:id/settings");
+        const projectId = decodeRouteSegment(codingSettingsRoute[1], "Project id");
+        if (request.method === "GET") {
+          return sendJson(response, 200, { settings: database.getCodingWorkflowSettings(projectId) });
+        }
+        if (request.method === "PUT") {
+          const input = parseCodingWorkflowSettings(await readJson(request));
+          const settings = database.saveCodingWorkflowSettings(projectId, input.version, input);
+          events.emit("coding.settings.updated", { projectId, settingsVersion: settings.version });
+          return sendJson(response, 200, { settings });
+        }
+        return methodNotAllowed(response, ["GET", "PUT"]);
+      }
+
+      const codingTaskRunRoute = pathname.match(/^\/api\/local\/coding\/tasks\/([^/]+)\/runs$/);
+      if (codingTaskRunRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/tasks/:id/runs");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await assertEmptyRequestBody(request, "POST /api/local/coding/tasks/:id/runs");
+        const taskId = decodeRouteSegment(codingTaskRunRoute[1], "Task id");
+        const task = database.getTask(taskId);
+        if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${taskId}' does not exist`);
+        if (task.workflowId !== CODING_WORKFLOW_ID) {
+          throw new ApiError(409, "NOT_CODING_WORKFLOW", "Task does not use the Coding workflow");
+        }
+        const run = await codingWorkflow.createOrResumeRun(task);
+        events.emit("coding.run.updated", { task, run });
+        return sendJson(response, 200, { run });
+      }
+
+      const codingRunArtifactsRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/artifacts$/);
+      if (codingRunArtifactsRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/artifacts");
+        const runId = decodeRouteSegment(codingRunArtifactsRoute[1], "Coding run id");
+        if (request.method === "GET") {
+          const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
+          if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+          return sendJson(response, 200, { artifacts: database.listCodingArtifacts(run.id) });
+        }
+        if (request.method === "POST") {
+          const result = await codingWorkflow.addHandoff(runId, parseCodingHandoff(await readJson(request)));
+          events.emit("coding.artifact.created", { runId, artifact: result.artifact });
+          events.emit("coding.run.updated", result);
+          return sendJson(response, 201, result);
+        }
+        return methodNotAllowed(response, ["GET", "POST"]);
+      }
+
+      const codingRunContractRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/contract$/);
+      if (codingRunContractRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/contract");
+        if (request.method !== "PUT") return methodNotAllowed(response, ["PUT"]);
+        const runId = decodeRouteSegment(codingRunContractRoute[1], "Coding run id");
+        const input = parseCodingContract(await readJson(request));
+        const run = database.saveCodingContract(runId, input.version, input.contract);
+        events.emit("coding.run.updated", { run });
+        return sendJson(response, 200, { run });
+      }
+
+      const codingRunCheckRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/checks$/);
+      if (codingRunCheckRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/checks");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunCheckRoute[1], "Coding run id");
+        const result = await codingWorkflow.runScopedCheck(runId, parseCodingCheck(await readJson(request)));
+        events.emit("coding.run.updated", result);
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunVerdictRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/verdicts$/);
+      if (codingRunVerdictRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/verdicts");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunVerdictRoute[1], "Coding run id");
+        const result = await codingWorkflow.recordVerdict(runId, parseCodingVerdict(await readJson(request)));
+        events.emit("coding.run.updated", result);
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunCommitRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)\/commit$/);
+      if (codingRunCommitRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id/commit");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const runId = decodeRouteSegment(codingRunCommitRoute[1], "Coding run id");
+        const input = parseCodingCommit(await readJson(request));
+        const result = await codingWorkflow.commit(runId, input.message);
+        events.emit("coding.run.updated", result);
+        events.emit("task.moved", { task: result.task });
+        return sendJson(response, 200, result);
+      }
+
+      const codingRunRoute = pathname.match(/^\/api\/local\/coding\/runs\/([^/]+)$/);
+      if (codingRunRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/runs/:id");
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        const runId = decodeRouteSegment(codingRunRoute[1], "Coding run id");
+        const run = database.getCodingRun(runId) ?? database.getLatestCodingRunForTask(runId);
+        if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+        return sendJson(response, 200, {
+          run,
+          artifacts: database.listCodingArtifacts(run.id),
+        });
       }
 
       if (pathname === "/api/device-workspaces") {
@@ -2671,19 +2879,22 @@ export function createTaskboardServer(options = {}) {
         }
         if (action === "move" && request.method === "POST") {
           const move = parseMove(await readJson(request));
-          const current = database.getTask(id);
-          if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
-          if (current.source === "jira") {
-            if (current.version !== move.version) {
+          const currentTask = database.getTask(id);
+          if (!currentTask) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          const preparedCodingRun = move.status === "in_progress"
+            ? await codingWorkflow.assertClaimable(currentTask)
+            : null;
+          if (currentTask.source === "jira") {
+            if (currentTask.version !== move.version) {
               throw new ApiError(409, "VERSION_CONFLICT", "Task changed since it was last read", {
                 expectedVersion: move.version,
-                actualVersion: current.version,
+                actualVersion: currentTask.version,
               });
             }
-            if (current.archivedAt !== null) {
+            if (currentTask.archivedAt !== null) {
               throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
             }
-            await jira.moveTask(current, move.status);
+            await jira.moveTask(currentTask, move.status);
           }
           const task = database.moveTask(
             id,
@@ -2693,8 +2904,20 @@ export function createTaskboardServer(options = {}) {
             move.threadId,
             actorFromRequest(request),
           );
+          const codingRun = move.status === "in_progress"
+            ? await codingWorkflow.createOrResumeRun(task, preparedCodingRun)
+            : null;
+          const completedCodingRun = move.status === "done"
+            ? database.completeCodingRunForTask(task.id)
+            : null;
           events.emit("task.moved", { task });
-          return sendJson(response, 200, { task });
+          if (codingRun) events.emit("coding.run.updated", { task, run: codingRun });
+          if (completedCodingRun) events.emit("coding.run.updated", { task, run: completedCodingRun });
+          return sendJson(response, 200, {
+            task,
+            ...(codingRun ? { codingRun } : {}),
+            ...(completedCodingRun ? { codingRun: completedCodingRun } : {}),
+          });
         }
         if (action === "archive" && request.method === "POST") {
           const current = database.getTask(id);

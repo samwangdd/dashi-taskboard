@@ -1181,7 +1181,8 @@ kbd {
   -webkit-app-region: no-drag;
 }
 
-.project-automation-trigger {
+.project-automation-trigger,
+.copy-loop-prompt-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1198,18 +1199,56 @@ kbd {
 }
 
 .project-automation-trigger:hover,
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:hover:not(:disabled),
+.copy-loop-prompt-trigger:focus-visible {
   background: var(--surface-hover);
 }
 
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-.project-automation-trigger > svg {
+.project-automation-trigger > svg,
+.copy-loop-prompt-trigger > svg {
   width: 16px;
   height: 16px;
+}
+
+.copy-loop-prompt-trigger:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.copy-loop-prompt-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.copy-loop-prompt-submit:hover {
+  background: var(--surface-active, var(--surface-hover));
+}
+
+.copy-loop-prompt-submit:focus-visible {
+  outline: 0;
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.copy-loop-prompt-submit > svg {
+  width: 14px;
+  height: 14px;
 }
 
 .project-automation-trigger.is-active,
@@ -1233,6 +1272,17 @@ kbd {
   color: var(--text-primary);
   box-shadow: 0 16px 38px rgba(0, 0, 0, 0.14), 0 4px 12px rgba(0, 0, 0, 0.08), 0 0 0 0.5px rgba(0, 0, 0, 0.035);
   animation: context-menu-in 90ms ease-out both;
+}
+
+.project-automation-menu {
+  max-height: min(720px, calc(100vh - 16px));
+  overflow-y: auto;
+}
+
+.project-coding-heading {
+  margin-top: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 
 :root[data-theme="dark"] .project-automation-menu {
@@ -3853,6 +3903,14 @@ kbd {
   line-height: 19px;
 }
 
+.comment-edit-form .inline-media-composer textarea {
+  min-height: 74px;
+  padding: 6px;
+  font-size: 15px;
+  line-height: 24px;
+  overflow: hidden;
+}
+
 .comment-edit-actions {
   display: flex;
   justify-content: flex-end;
@@ -4045,6 +4103,7 @@ kbd {
 }
 
 .detail-open-thread-action svg {
+  flex: none;
   width: 16px;
   height: 16px;
 }
@@ -4087,6 +4146,12 @@ kbd {
   min-width: 0;
   overflow: hidden;
   opacity: 0.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.detail-open-thread-action span {
+  overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -8710,6 +8775,7 @@ kbd {
   }
 
   .issue-properties h2,
+  .detail-thread-actions,
   .issue-relation-sidebar,
   .detail-timestamps {
     grid-column: 1 / -1;

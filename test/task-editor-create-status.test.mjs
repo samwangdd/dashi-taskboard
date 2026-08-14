@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,6 +25,18 @@ function chromeExecutable() {
   return candidates.find((candidate) => candidate && existsSync(candidate));
 }
 
+async function availablePort() {
+  const probe = createNetServer();
+  await new Promise((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", resolve);
+  });
+  const address = probe.address();
+  assert.ok(address && typeof address === "object");
+  await new Promise((resolve) => probe.close(resolve));
+  return address.port;
+}
+
 test("a new status entry overrides the old draft status and restores the remaining draft", async (t) => {
   const chrome = chromeExecutable();
   if (!chrome) {
@@ -31,11 +44,12 @@ test("a new status entry overrides the old draft status and restores the remaini
     return;
   }
 
+  const port = await availablePort();
   const server = await createServer({
     root: projectRoot,
     configFile: false,
     logLevel: "error",
-    server: { host: "127.0.0.1", port: 0, strictPort: true },
+    server: { host: "127.0.0.1", port, strictPort: true },
   });
   const profile = await mkdtemp(path.join(os.tmpdir(), "task-editor-create-status-"));
 

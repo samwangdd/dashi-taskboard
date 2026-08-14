@@ -8,6 +8,7 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
+  CodingWorkflowSettings,
   DevelopmentScan,
   HostContext,
   IssueRelationType,
@@ -64,6 +65,7 @@ export class ApiError extends Error {
 }
 
 export function resolveTaskboardUrl(path: string): string {
+  if (typeof document === "undefined") return path;
   return new URL(path.replace(/^\//, ""), document.baseURI).href;
 }
 
@@ -86,7 +88,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       response = await fetch(resolveTaskboardUrl(path), { ...init, headers });
       break;
     } catch (error) {
-      if (error instanceof Error && error.name === "AbortError") throw error;
+      if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {
+        throw error;
+      }
       if (readRequest && attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
         continue;
@@ -384,6 +388,31 @@ export async function saveWorkflowWorkspace<T>(
     },
   );
   return data.workflow;
+}
+
+export async function getCodingWorkflowSettings(
+  projectId: string,
+  signal?: AbortSignal,
+): Promise<CodingWorkflowSettings> {
+  const data = await request<{ settings: CodingWorkflowSettings }>(
+    `/api/local/coding/projects/${encodeURIComponent(projectId)}/settings`,
+    { signal },
+  );
+  return data.settings;
+}
+
+export async function saveCodingWorkflowSettings(
+  settings: CodingWorkflowSettings,
+  changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+): Promise<CodingWorkflowSettings> {
+  const data = await request<{ settings: CodingWorkflowSettings }>(
+    `/api/local/coding/projects/${encodeURIComponent(settings.projectId)}/settings`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ version: settings.version, ...changes }),
+    },
+  );
+  return data.settings;
 }
 
 export async function createProject(input: {

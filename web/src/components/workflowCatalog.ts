@@ -2,7 +2,6 @@ import bytedanceLogo from "@lobehub/icons-static-svg/icons/bytedance-color.svg";
 import claudeLogo from "@lobehub/icons-static-svg/icons/claude-color.svg";
 import claudeCodeLogo from "@lobehub/icons-static-svg/icons/claudecode-color.svg";
 import cloudflareLogo from "@lobehub/icons-static-svg/icons/cloudflare-color.svg";
-import codexLogo from "@lobehub/icons-static-svg/icons/codex-color.svg";
 import geminiLogo from "@lobehub/icons-static-svg/icons/gemini-color.svg";
 import jimengLogo from "@lobehub/icons-static-svg/icons/jimeng-color.svg";
 import klingLogo from "@lobehub/icons-static-svg/icons/kling-color.svg";
@@ -686,16 +685,16 @@ export const PALETTE_ITEMS: PaletteItem[] = [
   },
   {
     group: "结果",
-    title: "Codex 审核",
-    description: "由 Codex 审核结果和变更",
+    title: "Claude 审核",
+    description: "由 Claude 审核结果和变更",
     data: {
       kind: "codex-review",
       eyebrow: "REVIEW",
-      title: "Codex 审核",
+      title: "Claude 审核",
       description: "检查实现结果、测试与验收条件",
-      meta: "Codex · Review",
+      meta: "Claude · Review",
       icon: "check",
-      logo: codexLogo,
+      logo: claudeCodeLogo,
       tone: "result",
       inputLabel: "执行结果",
       outputLabel: "审核结论",

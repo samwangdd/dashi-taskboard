@@ -164,7 +164,7 @@ test("issues expose processing conversations without manual binding", () => {
   assert.match(contextMenuSource, /onOpenInThread/);
 });
 
-test("issue editing leaves workflow configuration on the project workflow board", () => {
+test("issue editing selects a project workflow without owning its configuration", () => {
   assert.match(typesSource, /export interface Task \{[\s\S]*?workflowId: string \| null/);
   const taskDraftSource = typesSource.slice(
     typesSource.indexOf("export interface TaskDraft"),
@@ -174,11 +174,14 @@ test("issue editing leaves workflow configuration on the project workflow board"
     appSource.indexOf("function taskToDraft"),
     appSource.indexOf("function isEditableTarget"),
   );
-  assert.doesNotMatch(taskDraftSource, /workflowId/);
-  assert.doesNotMatch(taskToDraftSource, /workflowId/);
+  assert.match(taskDraftSource, /workflowId: string \| null/);
+  assert.match(taskToDraftSource, /workflowId: task\.workflowId/);
   assert.match(appSource, /const \[workflowOptions, setWorkflowOptions\] = useState<WorkflowOption\[\]>/);
   assert.match(appSource, /workflowOptionsFromWorkspace\(record\.workspace\)/);
-  assert.doesNotMatch(editorSource, /WorkflowOption|workflowId|工作流/);
+  assert.match(editorSource, /workflows: WorkflowOption\[\]/);
+  assert.match(editorSource, /const \[workflowId, setWorkflowId\]/);
+  assert.match(editorSource, /className="property-control property-workflow"/);
+  assert.doesNotMatch(editorSource, /CodingWorkflowConfig|orchestratorModel|verifierModel/);
   assert.doesNotMatch(detailSource, /detail-property-label">工作流|workflowId: event\.target\.value/);
 });
 

@@ -333,6 +333,111 @@ export function normalizeCodexEvent(raw) {
   return normalizedItem(raw.type, raw.item);
 }
 
+export function buildClaudeArgs(thread, addDirectories, imagePaths = []) {
+  // `--output-format stream-json` is rejected under `--print` without `--verbose`.
+  const args = ["-p", "--output-format", "stream-json", "--verbose"];
+  for (const directory of addDirectories) args.push("--add-dir", directory);
+  if (thread.model) args.push("--model", thread.model);
+  if (thread.reasoningEffort) args.push("--effort", thread.reasoningEffort);
+  if (thread.permissionMode) args.push("--permission-mode", thread.permissionMode);
+  args.push(thread.sessionStarted ? "--resume" : "--session-id", thread.sessionId);
+  // Claude Code has no `-i` equivalent; image paths are referenced from the prompt
+  // text instead so the model reads them itself.
+  void imagePaths;
+  return args;
+}
+
+const COMMAND_TOOLS = new Set(["Bash", "BashOutput", "KillShell"]);
+const FILE_TOOLS = new Set(["Write", "Edit", "NotebookEdit"]);
+const WEB_TOOLS = new Set(["WebSearch", "WebFetch"]);
+const TODO_TOOLS = new Set(["TodoWrite", "TaskCreate", "TaskUpdate"]);
+
+function itemTypeForTool(name) {
+  if (typeof name !== "string") return "command_execution";
+  if (name.startsWith("mcp__")) return "mcp_tool_call";
+  if (COMMAND_TOOLS.has(name)) return "command_execution";
+  if (FILE_TOOLS.has(name)) return "file_change";
+  if (WEB_TOOLS.has(name)) return "web_search";
+  if (TODO_TOOLS.has(name)) return "todo_list";
+  return "command_execution";
+}
+
+function normalizedToolUse(block) {
+  const type = itemTypeForTool(block.name);
+  const data = {
+    status: "in_progress",
+    itemId: cappedText(block.id),
+    tool: cappedText(block.name),
+  };
+  if (type === "command_execution") data.command = cappedText(block.input?.command);
+  if (type === "file_change") data.path = cappedText(block.input?.file_path);
+  if (type === "web_search") data.query = cappedText(block.input?.query ?? block.input?.url);
+  if (type === "todo_list") data.detail = detailText(block.input?.todos);
+  if (type === "mcp_tool_call") data.detail = detailText(block.input);
+  return { kind: "event", type, role: "assistant", content: "", data };
+}
+
+export function normalizeClaudeEvent(raw) {
+  if (!raw || typeof raw !== "object") return null;
+
+  if (raw.type === "system") {
+    if (raw.subtype !== "init") return null;
+    const sessionId = cappedText(raw.session_id);
+    return sessionId ? { kind: "session", sessionId } : null;
+  }
+
+  if (raw.type === "assistant") {
+    const blocks = Array.isArray(raw.message?.content) ? raw.message.content : [];
+    for (const block of blocks) {
+      if (block?.type === "text") {
+        return {
+          kind: "event",
+          type: "agent_message",
+          role: "assistant",
+          content: cappedText(block.text),
+          data: { status: "completed" },
+        };
+      }
+      if (block?.type === "tool_use") return normalizedToolUse(block);
+    }
+    return null;
+  }
+
+  if (raw.type === "user") {
+    const block = Array.isArray(raw.message?.content)
+      ? raw.message.content.find((entry) => entry?.type === "tool_result")
+      : undefined;
+    if (!block) return null;
+    return {
+      kind: "event",
+      type: "command_execution",
+      role: "assistant",
+      content: "",
+      data: {
+        status: block.is_error ? "failed" : "completed",
+        itemId: cappedText(block.tool_use_id),
+        detail: detailText(block.content),
+        ...(raw.tool_use_result?.stderr ? { stderr: cappedText(raw.tool_use_result.stderr) } : {}),
+      },
+    };
+  }
+
+  if (raw.type === "result") {
+    return {
+      kind: "completed",
+      result: {
+        text: cappedText(raw.result),
+        isError: raw.is_error === true,
+        sessionId: cappedText(raw.session_id),
+        numTurns: Number.isSafeInteger(raw.num_turns) ? raw.num_turns : 0,
+        stopReason: cappedText(raw.stop_reason),
+      },
+    };
+  }
+
+  return null;
+}
+
 export function spawnCodexTurn({
   executable,
   args,

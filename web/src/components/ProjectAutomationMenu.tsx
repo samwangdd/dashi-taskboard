@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   AUTOMATION_MODELS,
@@ -9,6 +9,12 @@ import {
 } from "../../../shared/taskboard-automation-options.mjs";
 import { TaskboardIcon } from "./TaskboardIcon";
 import { useTaskboardI18n } from "../i18n";
+import {
+  CODING_WORKFLOW_MODELS,
+  DEFAULT_CODING_WORKFLOW_CONFIG,
+} from "../../../shared/coding-workflow.mjs";
+import type { CodingWorkflowSettings, WorkflowOption } from "../types";
+import { usePopoverAnchor } from "./usePopoverAnchor";
 
 type AutomationStatus = "ACTIVE" | "PAUSED";
 type AutomationQuotaState = "available" | "blocked" | "unknown" | "unavailable";
@@ -37,8 +43,15 @@ interface ProjectAutomationMenuProps {
   pending: boolean;
   error: string | null;
   unavailableReason: string | null;
+  codingSettings: CodingWorkflowSettings | null;
+  codingPending: boolean;
+  codingError: string | null;
+  workflows: WorkflowOption[];
   onOpen: () => void;
   onChange: (options: AutomationOptions) => void;
+  onCodingChange: (
+    changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
+  ) => void;
 }
 
 const DEFAULT_OPTIONS: AutomationOptions = {
@@ -63,16 +76,24 @@ export function ProjectAutomationMenu({
   pending,
   error,
   unavailableReason,
+  codingSettings,
+  codingPending,
+  codingError,
+  workflows,
   onOpen,
   onChange,
+  onCodingChange,
 }: ProjectAutomationMenuProps) {
   const { locale, text } = useTaskboardI18n();
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const wasPendingRef = useRef(pending);
   const [open, setOpen] = useState(false);
-  const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const { triggerRef, menuRef, position, resetPosition } = usePopoverAnchor(open, closeMenu);
   const [draft, setDraft] = useState<AutomationOptions>(DEFAULT_OPTIONS);
+  const [codingDraft, setCodingDraft] = useState(() => ({
+    defaultWorkflowId: null as string | null,
+    config: { ...DEFAULT_CODING_WORKFLOW_CONFIG },
+  }));
   const status = automation?.status ?? "PAUSED";
   const quota = automation?.quota;
   const stateLabel = !automation?.enabledByUser
@@ -91,7 +112,11 @@ export function ProjectAutomationMenu({
   useEffect(() => {
     if (!open) return;
     setDraft({ ...DEFAULT_OPTIONS, ...automation });
-  }, [open]);
+    setCodingDraft({
+      defaultWorkflowId: codingSettings?.defaultWorkflowId ?? null,
+      config: { ...DEFAULT_CODING_WORKFLOW_CONFIG, ...codingSettings?.config },
+    });
+  }, [codingSettings, open]);
 
   useEffect(() => {
     if (wasPendingRef.current && !pending) {
@@ -100,49 +125,16 @@ export function ProjectAutomationMenu({
     wasPendingRef.current = pending;
   }, [automation, pending]);
 
-  useLayoutEffect(() => {
-    if (!open || !triggerRef.current || !menuRef.current) return;
-    const trigger = triggerRef.current.getBoundingClientRect();
-    const menu = menuRef.current.getBoundingClientRect();
-    const left = Math.max(8, Math.min(trigger.right - menu.width, window.innerWidth - menu.width - 8));
-    const top = trigger.bottom + 8 + menu.height <= window.innerHeight
-      ? trigger.bottom + 8
-      : Math.max(8, trigger.top - menu.height - 8);
-    setPosition({ left, top, ready: true });
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    function closeFromOutside(event: PointerEvent) {
-      if (!menuRef.current?.contains(event.target as Node) && !triggerRef.current?.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    }
-    function closeFromViewportChange() {
-      setOpen(false);
-    }
-    function closeFromEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
-      }
-    }
-    document.addEventListener("pointerdown", closeFromOutside);
-    document.addEventListener("keydown", closeFromEscape);
-    window.addEventListener("resize", closeFromViewportChange);
-    window.addEventListener("scroll", closeFromViewportChange, true);
-    return () => {
-      document.removeEventListener("pointerdown", closeFromOutside);
-      document.removeEventListener("keydown", closeFromEscape);
-      window.removeEventListener("resize", closeFromViewportChange);
-      window.removeEventListener("scroll", closeFromViewportChange, true);
-    };
-  }, [open]);
-
   const submitChange = (next: AutomationOptions) => {
     if (disabled) return;
     setDraft(next);
     onChange(next);
+  };
+
+  const submitCodingChange = (next: typeof codingDraft) => {
+    if (codingPending || !codingSettings) return;
+    setCodingDraft(next);
+    onCodingChange(next);
   };
 
   const menu = open ? createPortal(
@@ -205,8 +197,8 @@ export function ProjectAutomationMenu({
           {quota?.state === "unavailable" && (
             quota.reason === "api-key"
               ? text(
-                "API Key 模式不支持读取 Codex App 额度",
-                "API key mode cannot read the Codex app quota.",
+                "API Key 模式不支持读取订阅额度",
+                "API key mode cannot read subscription quota.",
               )
               : text("当前账户无法读取额度", "This account cannot read quota information.")
           )}
@@ -258,8 +250,78 @@ export function ProjectAutomationMenu({
           ))}
         </select>
       </label>
+      <div className="project-automation-menu-heading project-coding-heading">
+        <strong>Coding 工作流</strong>
+        <span>{codingPending ? "保存中" : "内置"}</span>
+      </div>
+      <label className="project-automation-field">
+        <span>默认工作流</span>
+        <select
+          value={codingDraft.defaultWorkflowId ?? ""}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            defaultWorkflowId: event.target.value || null,
+          })}
+        >
+          <option value="">不预选</option>
+          {workflows.map((workflow) => (
+            <option key={workflow.id} value={workflow.id}>{workflow.name}</option>
+          ))}
+        </select>
+      </label>
+      {([
+        ["orchestratorModel", "Orchestrator"],
+        ["implementerModel", "Implementer"],
+        ["verifierModel", "代码 Verifier"],
+        ["uiVerifierModel", "UI Verifier"],
+        ["escalationImplementerModel", "升级 Implementer"],
+      ] as const).map(([field, label]) => (
+        <label className="project-automation-field" key={field}>
+          <span>{label}</span>
+          <select
+            value={codingDraft.config[field]}
+            disabled={codingPending || !codingSettings}
+            onChange={(event) => submitCodingChange({
+              ...codingDraft,
+              config: { ...codingDraft.config, [field]: event.target.value },
+            })}
+          >
+            {CODING_WORKFLOW_MODELS.map((model) => (
+              <option key={model.slug} value={model.slug}>{model.label}</option>
+            ))}
+          </select>
+        </label>
+      ))}
+      <label className="project-automation-field">
+        <span>普通模型轮次</span>
+        <select
+          value={codingDraft.config.standardRounds}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            config: { ...codingDraft.config, standardRounds: Number(event.target.value) },
+          })}
+        >
+          {[1, 2, 3, 4, 5].map((rounds) => <option key={rounds} value={rounds}>{rounds}</option>)}
+        </select>
+      </label>
+      <label className="project-automation-field">
+        <span>强模型轮次</span>
+        <select
+          value={codingDraft.config.escalationRounds}
+          disabled={codingPending || !codingSettings}
+          onChange={(event) => submitCodingChange({
+            ...codingDraft,
+            config: { ...codingDraft.config, escalationRounds: Number(event.target.value) },
+          })}
+        >
+          {[1, 2, 3].map((rounds) => <option key={rounds} value={rounds}>{rounds}</option>)}
+        </select>
+      </label>
       {unavailableReason && <p className="project-automation-note">{unavailableReason}</p>}
       {error && error !== unavailableReason && <p className="project-automation-error" role="alert">{error}</p>}
+      {codingError && <p className="project-automation-error" role="alert">{codingError}</p>}
     </div>,
     document.body,
   ) : null;
@@ -281,7 +343,7 @@ export function ProjectAutomationMenu({
           : text("自动化", "Automation")}
         onClick={() => {
           if (!open) {
-            setPosition((current) => ({ ...current, ready: false }));
+            resetPosition();
             onOpen();
           }
           setOpen((current) => !current);

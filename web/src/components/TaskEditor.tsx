@@ -18,9 +18,10 @@ import {
   type TaskDraft,
   type TaskPriority,
   type TaskStatus,
+  type WorkflowOption,
 } from "../types";
 import {
-  CODEX_AGENT_ACTOR,
+  AGENT_ACTOR,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
@@ -94,6 +95,8 @@ interface TaskEditorProps {
   initialStatus: TaskStatus;
   initialDraft: NewTaskEditorDraft | null;
   labels: string[];
+  workflows: WorkflowOption[];
+  defaultWorkflowId: string | null;
   currentUser: ActorIdentity;
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
@@ -149,6 +152,8 @@ export function TaskEditor({
   initialStatus,
   initialDraft,
   labels: availableLabels,
+  workflows,
+  defaultWorkflowId,
   currentUser,
   developmentScan,
   developmentScanLoading,
@@ -164,6 +169,7 @@ export function TaskEditor({
   const descriptionComposerRef = useRef<InlineMediaComposerHandle>(null);
   const createSubmitIntentRef = useRef(false);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const workflowTouchedRef = useRef(false);
   const [title, setTitle] = useState(task?.title ?? initialDraft?.title ?? "");
   const [description, setDescription] = useState(task?.description ?? "");
   const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
@@ -173,6 +179,7 @@ export function TaskEditor({
   const [priority, setPriority] = useState<TaskPriority>(task?.priority ?? initialDraft?.priority ?? "none");
   const [assignee, setAssignee] = useState<ActorIdentity>(task?.assignee ?? initialDraft?.assignee ?? currentUser);
   const [selectedLabels, setSelectedLabels] = useState<string[]>(task?.labels ?? initialDraft?.selectedLabels ?? []);
+  const [workflowId, setWorkflowId] = useState(task?.workflowId ?? defaultWorkflowId ?? "");
   const [developmentContext, setDevelopmentContext] = useState<DevelopmentContext | null>(task?.developmentContext ?? initialDraft?.developmentContext ?? null);
   const [startDate] = useState(task?.startDate ?? initialDraft?.startDate ?? "");
   const [dueDate, setDueDate] = useState(task?.dueDate ?? initialDraft?.dueDate ?? "");
@@ -246,7 +253,8 @@ export function TaskEditor({
         : subIssueIds,
   );
 
-  const assigneeOptions = [task?.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const workflowAvailable = !workflowId || workflows.some((workflow) => workflow.id === workflowId);
+  const assigneeOptions = [task?.assignee, currentUser, AGENT_ACTOR]
     .filter((actor): actor is ActorIdentity => actor !== undefined)
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
@@ -312,6 +320,12 @@ export function TaskEditor({
     };
   }, [title]);
 
+  useEffect(() => {
+    if (!task && !workflowTouchedRef.current && !workflowId && defaultWorkflowId) {
+      setWorkflowId(defaultWorkflowId);
+    }
+  }, [defaultWorkflowId, task, workflowId]);
+
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!task) {
@@ -350,6 +364,7 @@ export function TaskEditor({
         status,
         priority,
         labels: selectedLabels,
+        workflowId: workflowId || null,
         ...(assigneeTarget ? { assigneeTarget } : {}),
         developmentContext,
         startDate: startDate || null,
@@ -615,6 +630,25 @@ export function TaskEditor({
               onOpenChange={(open) => setMenu(open ? "development" : null)}
               onChange={(value) => setDevelopmentContext(value ? JSON.parse(value) as DevelopmentContext : null)}
             />
+            <label className="property-control property-workflow">
+              <LinearIcon name="dashboard" />
+              <span className="sr-only">{text("工作流", "Workflow")}</span>
+              <select
+                value={workflowId}
+                onChange={(event) => {
+                  workflowTouchedRef.current = true;
+                  setWorkflowId(event.target.value);
+                }}
+              >
+                <option value="">{text("工作流", "Workflow")}</option>
+                {!workflowAvailable && (
+                  <option value={workflowId}>{text("当前设备未找到此流程", "Workflow unavailable on this device")}</option>
+                )}
+                {workflows.map((workflow) => (
+                  <option value={workflow.id} key={workflow.id}>{workflow.name}</option>
+                ))}
+              </select>
+            </label>
 
             {dueDate && (
               <button className="property-control" type="button" onClick={() => setMenu("due")}>

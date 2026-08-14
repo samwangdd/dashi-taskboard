@@ -1,5 +1,5 @@
 {
-  "name": "codex-taskboard",
+  "name": "claude-taskboard",
   "version": "1.0.3",
   "private": true,
   "type": "module",
@@ -10,7 +10,7 @@
     "taskctl": "./cli/taskctl.mjs"
   },
   "scripts": {
-    "codex": "node scripts/codex-injector.mjs --launch --watch --open --port 9231",
+    "codex": "node scripts/codex-injector.mjs --launch --watch --open --port 9231 --replace",
     "codex:inject": "node scripts/codex-injector.mjs --watch",
     "codex:daemon": "node scripts/codex-injector.mjs --daemon --open",
     "codex:refresh": "node scripts/codex-injector.mjs --refresh",

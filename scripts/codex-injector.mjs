@@ -105,6 +105,7 @@ function parseArgs(argv) {
     portExplicit: false,
     cdpPipe: false,
     launch: false,
+    replace: false,
     watch: false,
     open: false,
     refresh: false,
@@ -120,6 +121,7 @@ function parseArgs(argv) {
     const arg = argv[index];
     if (arg === "--launch") options.launch = true;
     else if (arg === "--cdp-pipe") options.cdpPipe = true;
+    else if (arg === "--replace") options.replace = true;
     else if (arg === "--watch") options.watch = true;
     else if (arg === "--open") options.open = true;
     else if (arg === "--refresh") options.refresh = true;
@@ -346,6 +348,57 @@ function isManagedCodexRunning(record) {
     },
   );
   return result.status === 0 && result.stdout.trimEnd() === record.command;
+}
+
+function codexApplicationPids(appPath) {
+  if (process.platform !== "darwin") return [];
+  const executable = codexExecutablePath(appPath);
+  const result = spawnSync("/bin/ps", ["-ww", "-axo", "pid=,command="], {
+    encoding: "utf8",
+    env: withoutTaskboardLauncherEnvironment(process.env),
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  if (result.status !== 0) return [];
+  return result.stdout.split("\n").flatMap((line) => {
+    const match = line.match(/^\s*(\d+)\s+(.+)$/);
+    return match && (match[2] === executable || match[2].startsWith(`${executable} `))
+      ? [Number(match[1])]
+      : [];
+  });
+}
+
+async function waitForCodexToQuit(appPath, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (codexApplicationPids(appPath).length === 0) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error("Codex did not quit. Close it completely, then run this command again.");
+}
+
+async function replaceCodex(appPath) {
+  if (process.platform !== "darwin" || codexApplicationPids(appPath).length === 0) return;
+  const appName = path.basename(appPath, ".app");
+  const quit = spawnSync("/usr/bin/osascript", [
+    "-e",
+    `tell application ${JSON.stringify(appName)} to quit`,
+  ], { encoding: "utf8" });
+  if (quit.status !== 0) {
+    throw new Error("Codex did not accept the quit request. Close it completely, then run this command again.");
+  }
+  try {
+    await waitForCodexToQuit(appPath, 5_000);
+    return;
+  } catch {}
+
+  for (const pid of codexApplicationPids(appPath)) process.kill(pid, "SIGTERM");
+  try {
+    await waitForCodexToQuit(appPath, 5_000);
+    return;
+  } catch {}
+
+  for (const pid of codexApplicationPids(appPath)) process.kill(pid, "SIGKILL");
+  await waitForCodexToQuit(appPath, 5_000);
 }
 
 async function launchCodexWithLaunchServices(appPath, port, shouldStop = () => false) {
@@ -2131,6 +2184,9 @@ async function main() {
       }
       if (!cdpReachable && !options.launch) {
         throw new Error(`Codex CDP is not listening on 127.0.0.1:${options.port}`);
+      }
+      if (!cdpReachable && options.launch && options.replace) {
+        await replaceCodex(options.appPath);
       }
     }
     if (stopping) return;

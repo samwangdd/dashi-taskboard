@@ -1,4 +1,12 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { loadLocalEnv } from "../shared/local-env.mjs";
+
+// Load before spawning so both children inherit the settings, including the
+// ports web/vite.config.ts reads.
+loadLocalEnv(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 
 const children = [
   spawn(process.execPath, ["--watch", "server/index.mjs", "--dev"], {
