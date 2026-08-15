@@ -3544,6 +3544,15 @@ kbd {
   border-radius: 8px;
   background: var(--surface);
   box-shadow: var(--card-shadow);
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* Action affordances stay unselectable so dragging across the card only picks up prose. */
+.comment-card .comment-actions,
+.comment-card .comment-avatar {
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .comment-header {
