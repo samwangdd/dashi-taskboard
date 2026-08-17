@@ -52,6 +52,15 @@ test("the loop prompt keeps the shared taskboard instructions verbatim", () => {
   assert.ok(prompt.includes("不要直接标记为 done"));
 });
 
+test("the loop prompt claims todo by status and visibly yields claimed work", () => {
+  const prompt = buildTaskboardLoopPrompt(LOOP_INPUT);
+
+  assert.ok(prompt.includes("A todo remains claimable even when threadId has a value"));
+  assert.ok(prompt.includes("continue only when its threadId belongs to the current session"));
+  assert.ok(prompt.includes("emit a visible report instead of ending silently"));
+  assert.doesNotMatch(prompt, /send_message_to_thread/);
+});
+
 test("the loop prompt honours the requested interval", () => {
   for (const intervalMinutes of [5, 10, 15, 30, 60]) {
     const prompt = buildTaskboardLoopPrompt({ ...LOOP_INPUT, intervalMinutes });
