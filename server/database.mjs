@@ -10,6 +10,10 @@ import {
   normalizeCodingWorkflowConfig,
 } from "../shared/coding-workflow.mjs";
 
+import { DEFAULT_LABEL_NAMES, JIRA_PROJECT_ID } from "../shared/domain.mjs";
+
+const DEFAULT_PROJECT_LABELS_JSON = JSON.stringify(DEFAULT_LABEL_NAMES);
+
 export class ApiError extends Error {
   constructor(status, code, message, details) {
     super(message);
@@ -22,6 +26,145 @@ export class ApiError extends Error {
 
 function now() {
   return new Date().toISOString();
+}
+
+function commentConversationTitle(body) {
+  const firstLine = String(body ?? "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find(Boolean);
+  if (!firstLine) return "评论";
+  const compact = firstLine.replace(/\s+/g, " ");
+  return compact.length > 80 ? `${compact.slice(0, 77)}…` : compact;
+}
+
+function attachTaskActivity(task, comments, activities, previewImage = null) {
+  const orderedComments = [...comments].sort((left, right) => (
+    left.id.localeCompare(right.id)
+  ));
+  const orderedActivities = [...activities].sort((left, right) => (
+    left.id.localeCompare(right.id)
+  ));
+  const participants = [];
+  const participantIds = new Set();
+  const addParticipant = (actor) => {
+    const key = `${actor.type}:${actor.id}`;
+    if (participantIds.has(key)) return;
+    participantIds.add(key);
+    participants.push(actor);
+  };
+  addParticipant({
+    type: task.creatorType,
+    id: task.creatorId,
+    name: task.creatorName,
+    avatarUrl: task.creatorAvatarUrl,
+  });
+  addParticipant(task.assignee);
+  for (const comment of orderedComments) {
+    addParticipant({
+      type: comment.author_type,
+      id: comment.author_id,
+      name: comment.author_name,
+      avatarUrl: comment.author_avatar_url,
+    });
+  }
+  for (const activity of orderedActivities) {
+    addParticipant({
+      type: activity.actor_type,
+      id: activity.actor_id,
+      name: activity.actor_name,
+      avatarUrl: activity.actor_avatar_url,
+    });
+  }
+  const conversationRefs = [];
+  if (task.threadId) {
+    conversationRefs.push({
+      threadId: task.threadId,
+      source: "task",
+      sourceId: task.id,
+      title: task.title,
+      updatedAt: task.updatedAt,
+    });
+  }
+  for (const comment of orderedComments) {
+    if (!comment.thread_id) continue;
+    conversationRefs.push({
+      threadId: comment.thread_id,
+      source: "comment",
+      sourceId: comment.id,
+      title: commentConversationTitle(comment.body),
+      updatedAt: comment.updated_at,
+    });
+  }
+
+  task.conversationRefs = conversationRefs;
+  task.participants = participants;
+  task.previewImage = previewImage;
+  task.activityKey = JSON.stringify({
+    version: 1,
+    task: [task.id, task.version, task.updatedAt],
+    comments: orderedComments.map((comment) => [comment.id, comment.version, comment.updated_at]),
+    changes: orderedActivities.map((activity) => [activity.id, activity.created_at]),
+  });
+  task.activityUpdatedAt = [...orderedComments, ...orderedActivities].reduce(
+    (latest, activity) => {
+      const updatedAt = activity.updated_at ?? activity.created_at;
+      return updatedAt > latest ? updatedAt : latest;
+    },
+    task.updatedAt,
+  );
+  return task;
+}
+
+function taskActivityFromRow(row) {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    actorType: row.actor_type,
+    actorId: row.actor_id,
+    actorName: row.actor_name,
+    actorAvatarUrl: row.actor_avatar_url,
+    changes: JSON.parse(row.changes),
+    createdAt: row.created_at,
+  };
+}
+
+function taskFieldChanges(task, changes) {
+  return Object.entries(changes).flatMap(([field, after]) => {
+    const before = task[field];
+    return JSON.stringify(before) === JSON.stringify(after)
+      ? []
+      : [{ field, before, after }];
+  });
+}
+
+function relationActivityValue(type, task) {
+  return {
+    type,
+    identifier: task.identifier,
+    externalKey: task.externalKey ?? null,
+    title: task.title,
+  };
+}
+
+function parseAiChatTodoProgress(row) {
+  try {
+    const data = row.data === null ? null : JSON.parse(row.data);
+    const detail = typeof data?.detail === "string" ? JSON.parse(data.detail) : data?.detail;
+    if (!Array.isArray(detail)) return null;
+    const items = detail.filter((item) => (
+      item && typeof item === "object" && typeof item.text === "string" && item.text.trim()
+    ));
+    if (items.length === 0) return null;
+    return {
+      completed: items.filter((item) => item.completed === true).length,
+      total: items.length,
+      eventId: row.id,
+      updatedAt: row.created_at,
+    };
+  } catch {
+    return null;
+  }
 }
 
 function taskFromRow(row) {
@@ -53,10 +196,15 @@ function taskFromRow(row) {
     },
     workflowId: row.workflow_id,
     developmentContext,
+    startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
       ? { interval: row.recurrence_interval, unit: row.recurrence_unit }
       : null,
+    source: row.external_source === "jira" ? "jira" : "local",
+    externalOrigin: row.external_origin ?? null,
+    externalKey: row.external_key ?? null,
+    externalUrl: row.external_url ?? null,
     archivedAt: row.archived_at,
     version: row.version,
     createdAt: row.created_at,
@@ -68,6 +216,7 @@ function taskRelationSummaryFromRow(row) {
   return {
     id: row.id,
     identifier: row.identifier,
+    externalKey: row.external_key ?? null,
     projectId: row.project_id,
     title: row.title,
     status: row.status,
@@ -116,9 +265,21 @@ function projectFromRow(row) {
     id: row.id,
     name: row.name,
     workspacePath: row.workspace_path,
+    source: row.id === JIRA_PROJECT_ID ? "jira" : "local",
+    labels: JSON.parse(row.labels),
     issueCount: Number(row.issue_count ?? 0),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+function projectSummaryFromRow(row) {
+  return {
+    projectId: row.project_id,
+    summary: row.summary,
+    generatedAt: row.generated_at,
+    attemptedAt: row.attempted_at,
+    error: row.error,
   };
 }
 
@@ -205,6 +366,7 @@ function aiChatThreadFromRow(row) {
     reasoningEffort: row.reasoning_effort,
     sandbox: row.sandbox,
     currentRun: null,
+    latestTodo: null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -253,6 +415,7 @@ export class TaskboardDatabase {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         workspace_path TEXT,
+        labels TEXT NOT NULL DEFAULT '${DEFAULT_PROJECT_LABELS_JSON}',
         next_task_number INTEGER NOT NULL DEFAULT 1 CHECK (next_task_number > 0),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL
@@ -283,9 +446,15 @@ export class TaskboardDatabase {
         git_branch TEXT,
         worktree_path TEXT,
         worktree_branch TEXT,
+        start_date TEXT,
         due_date TEXT,
         recurrence_interval INTEGER,
         recurrence_unit TEXT,
+        external_source TEXT,
+        external_origin TEXT,
+        external_id TEXT,
+        external_key TEXT,
+        external_url TEXT,
         archived_at TEXT,
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         created_at TEXT NOT NULL,
@@ -312,6 +481,20 @@ export class TaskboardDatabase {
       CREATE INDEX IF NOT EXISTS comments_task_created
         ON comments(task_id, created_at, id);
 
+      CREATE TABLE IF NOT EXISTS task_activities (
+        id TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        actor_type TEXT NOT NULL CHECK (actor_type IN ('user', 'agent')),
+        actor_id TEXT NOT NULL,
+        actor_name TEXT NOT NULL,
+        actor_avatar_url TEXT,
+        changes TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS task_activities_task_created
+        ON task_activities(task_id, created_at, id);
+
       CREATE TABLE IF NOT EXISTS attachments (
         id TEXT PRIMARY KEY,
         task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
@@ -330,6 +513,14 @@ export class TaskboardDatabase {
         workspace TEXT NOT NULL,
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS project_summaries (
+        project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        summary TEXT,
+        generated_at TEXT,
+        attempted_at TEXT NOT NULL,
+        error TEXT
       );
 
       CREATE TABLE IF NOT EXISTS coding_workflow_settings (
@@ -469,6 +660,9 @@ export class TaskboardDatabase {
     if (!taskColumns.some((column) => column.name === "due_date")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN due_date TEXT");
     }
+    if (!taskColumns.some((column) => column.name === "start_date")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN start_date TEXT");
+    }
     if (!taskColumns.some((column) => column.name === "recurrence_interval")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN recurrence_interval INTEGER");
     }
@@ -492,6 +686,27 @@ export class TaskboardDatabase {
     if (!migratedTaskColumns.some((column) => column.name === "workflow_id")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN workflow_id TEXT");
     }
+    if (!migratedTaskColumns.some((column) => column.name === "external_source")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_source TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "external_id")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_id TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "external_origin")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_origin TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "external_key")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_key TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "external_url")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN external_url TEXT");
+    }
+    this.database.exec(`
+      DROP INDEX IF EXISTS tasks_external_source_id;
+      CREATE UNIQUE INDEX IF NOT EXISTS tasks_external_source_origin_id
+      ON tasks(external_source, external_origin, external_id)
+      WHERE external_source IS NOT NULL AND external_origin IS NOT NULL AND external_id IS NOT NULL
+    `);
     this.database.exec(`
       UPDATE tasks
       SET creator_type = 'agent', creator_id = 'codex-agent', creator_name = 'Codex Agent'
@@ -510,6 +725,41 @@ export class TaskboardDatabase {
         for (const [column, definition, source] of assigneeMigrations) {
           this.database.exec(`ALTER TABLE tasks ADD COLUMN ${column} ${definition}`);
           this.database.exec(`UPDATE tasks SET ${column} = ${source}`);
+        }
+        this.database.exec("COMMIT");
+      } catch (error) {
+        this.database.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    if (!projectColumns.some((column) => column.name === "labels")) {
+      this.database.exec("BEGIN IMMEDIATE");
+      try {
+        this.database.exec(`
+          ALTER TABLE projects
+          ADD COLUMN labels TEXT NOT NULL DEFAULT '${DEFAULT_PROJECT_LABELS_JSON}'
+        `);
+        const labelsByProject = new Map(
+          this.database.prepare("SELECT id FROM projects").all().map((project) => (
+            [project.id, [...DEFAULT_LABEL_NAMES]]
+          )),
+        );
+        for (const task of this.database.prepare(`
+          SELECT project_id, labels
+          FROM tasks
+          ORDER BY created_at, id
+        `).all()) {
+          const projectLabels = labelsByProject.get(task.project_id);
+          if (!projectLabels) continue;
+          for (const label of JSON.parse(task.labels)) {
+            if (!projectLabels.includes(label)) projectLabels.push(label);
+          }
+        }
+        const updateProjectLabels = this.database.prepare(`
+          UPDATE projects SET labels = ? WHERE id = ?
+        `);
+        for (const [projectId, labels] of labelsByProject) {
+          updateProjectLabels.run(JSON.stringify(labels), projectId);
         }
         this.database.exec("COMMIT");
       } catch (error) {
@@ -578,18 +828,16 @@ export class TaskboardDatabase {
     `).get();
     if (hasTaskThreads) {
       this.database.exec(`
-        UPDATE tasks
+        UPDATE tasks AS migrated_task
         SET thread_id = COALESCE(thread_id, (
           SELECT task_threads.thread_id
           FROM task_threads
-          WHERE task_threads.task_id = tasks.id
+          LEFT JOIN comments
+            ON comments.task_id = task_threads.task_id
+            AND comments.thread_id = task_threads.thread_id
+          WHERE task_threads.task_id = migrated_task.id
           ORDER BY
-            CASE WHEN EXISTS (
-              SELECT 1
-              FROM comments
-              WHERE comments.task_id = tasks.id
-                AND comments.thread_id = task_threads.thread_id
-            ) THEN 1 ELSE 0 END,
+            CASE WHEN comments.id IS NOT NULL THEN 1 ELSE 0 END,
             task_threads.created_at DESC,
             task_threads.thread_id DESC
           LIMIT 1
@@ -608,9 +856,14 @@ export class TaskboardDatabase {
     const timestamp = now();
     this.database.prepare(`
       INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
-      VALUES ('local', 'Local', NULL, 1, ?, ?)
+      VALUES ('local', '全局', NULL, 1, ?, ?)
       ON CONFLICT(id) DO NOTHING
     `).run(timestamp, timestamp);
+    this.database.prepare(`
+      UPDATE projects
+      SET name = '全局', workspace_path = NULL, updated_at = ?
+      WHERE id = 'local' AND (name != '全局' OR workspace_path IS NOT NULL)
+    `).run(timestamp);
   }
 
   close() {
@@ -648,6 +901,7 @@ export class TaskboardDatabase {
           git_branch TEXT,
           worktree_path TEXT,
           worktree_branch TEXT,
+          start_date TEXT,
           due_date TEXT,
           recurrence_interval INTEGER,
           recurrence_unit TEXT,
@@ -660,13 +914,13 @@ export class TaskboardDatabase {
         INSERT INTO tasks_status_migration (
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         )
         SELECT
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         FROM tasks;
 
@@ -693,6 +947,7 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at,
         COUNT(tasks.id) AS issue_count
@@ -704,6 +959,7 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at
       ORDER BY projects.created_at, projects.id
@@ -714,9 +970,17 @@ export class TaskboardDatabase {
     const timestamp = now();
     try {
       this.database.prepare(`
-        INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
-        VALUES (?, ?, ?, 1, ?, ?)
-      `).run(input.id, input.name, input.workspacePath, timestamp, timestamp);
+        INSERT INTO projects (
+          id, name, workspace_path, labels, next_task_number, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, 1, ?, ?)
+      `).run(
+        input.id,
+        input.name,
+        input.workspacePath,
+        DEFAULT_PROJECT_LABELS_JSON,
+        timestamp,
+        timestamp,
+      );
     } catch (error) {
       if (String(error.message).includes("UNIQUE constraint failed")) {
         throw new ApiError(409, "PROJECT_EXISTS", `Project '${input.id}' already exists`);
@@ -726,12 +990,240 @@ export class TaskboardDatabase {
     return this.getProject(input.id);
   }
 
+  ensureJiraProject(name) {
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO projects (id, name, workspace_path, next_task_number, created_at, updated_at)
+      VALUES (?, ?, NULL, 1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at
+    `).run(JIRA_PROJECT_ID, name, timestamp, timestamp);
+    return this.database.prepare(`
+      SELECT
+        projects.id,
+        projects.name,
+        projects.workspace_path,
+        projects.created_at,
+        projects.updated_at,
+        COUNT(tasks.id) AS issue_count
+      FROM projects
+      LEFT JOIN tasks ON tasks.project_id = projects.id AND tasks.archived_at IS NULL
+      WHERE projects.id = ?
+      GROUP BY projects.id
+    `).get(JIRA_PROJECT_ID);
+  }
+
+  syncJiraTasks(issues, { archiveMissing = true, projectName, legacyIdentity = null } = {}) {
+    const timestamp = now();
+    const seenTaskIds = new Set();
+    const projectLabels = JSON.stringify([
+      ...new Set(issues.flatMap((issue) => issue.labels)),
+    ]);
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      this.database.prepare(`
+        INSERT INTO projects (id, name, workspace_path, labels, next_task_number, created_at, updated_at)
+        VALUES (?, ?, NULL, ?, 1, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+          name = excluded.name,
+          labels = excluded.labels,
+          updated_at = excluded.updated_at
+      `).run(JIRA_PROJECT_ID, projectName, projectLabels, timestamp, timestamp);
+      const findExisting = this.database.prepare(`
+        SELECT * FROM tasks
+        WHERE external_source = 'jira' AND external_origin = ? AND external_id = ?
+      `);
+      const migrateLegacyIdentity = this.database.prepare(`
+        UPDATE tasks SET
+          identifier = ?, external_origin = ?, external_id = ?, external_key = ?
+        WHERE id = ?
+      `);
+      if (legacyIdentity) {
+        const legacyTasks = this.database.prepare(`
+          SELECT id, identifier, external_id
+          FROM tasks
+          WHERE project_id = ?
+            AND external_source = 'jira'
+            AND external_origin IS NULL
+            AND substr(external_id, 1, 17) = ?
+            AND id = 'jira:' || external_id
+        `).all(JIRA_PROJECT_ID, `${legacyIdentity.urlHash}:`);
+        for (const legacyTask of legacyTasks) {
+          const externalId = legacyTask.external_id.slice(17);
+          migrateLegacyIdentity.run(
+            `JIRA:${legacyIdentity.originId.toUpperCase()}:${externalId}`,
+            legacyIdentity.originId,
+            externalId,
+            legacyTask.identifier,
+            legacyTask.id,
+          );
+        }
+      }
+      const insertTask = this.database.prepare(`
+        INSERT INTO tasks (
+          id, identifier, project_id, title, description, status, priority, labels,
+          sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
+          assignee_type, assignee_id, assignee_name, assignee_avatar_url,
+          workflow_id, git_branch, worktree_path, worktree_branch,
+          start_date, due_date, recurrence_interval, recurrence_unit,
+          external_source, external_origin, external_id, external_key, external_url,
+          archived_at, version, created_at, updated_at
+        ) VALUES (
+          ?, ?, ?, ?, ?, ?, ?, ?,
+          ?, NULL, ?, ?, ?, ?,
+          ?, ?, ?, ?,
+          NULL, NULL, NULL, NULL,
+          NULL, ?, NULL, NULL,
+          'jira', ?, ?, ?, ?,
+          NULL, 1, ?, ?
+        )
+      `);
+      const updateTask = this.database.prepare(`
+        UPDATE tasks SET
+          identifier = ?, title = ?, description = ?, status = ?, priority = ?, labels = ?,
+          sort_order = ?, creator_type = ?, creator_id = ?, creator_name = ?, creator_avatar_url = ?,
+          assignee_type = ?, assignee_id = ?, assignee_name = ?, assignee_avatar_url = ?,
+          due_date = ?, external_origin = ?, external_id = ?, external_key = ?, external_url = ?,
+          archived_at = NULL,
+          version = version + 1, updated_at = ?
+        WHERE id = ?
+      `);
+
+      for (const issue of issues) {
+        const existing = findExisting.get(issue.externalOrigin, issue.externalId);
+        seenTaskIds.add(existing?.id ?? issue.id);
+        const labels = JSON.stringify(issue.labels);
+        if (!existing) {
+          insertTask.run(
+            issue.id,
+            issue.identifier,
+            JIRA_PROJECT_ID,
+            issue.title,
+            issue.description,
+            issue.status,
+            issue.priority,
+            labels,
+            issue.sortOrder,
+            issue.creator.type,
+            issue.creator.id,
+            issue.creator.name,
+            issue.creator.avatarUrl,
+            issue.assignee.type,
+            issue.assignee.id,
+            issue.assignee.name,
+            issue.assignee.avatarUrl,
+            issue.dueDate,
+            issue.externalOrigin,
+            issue.externalId,
+            issue.externalKey,
+            issue.externalUrl,
+            issue.createdAt,
+            issue.updatedAt,
+          );
+          continue;
+        }
+
+        const changed = existing.identifier !== issue.identifier
+          || existing.title !== issue.title
+          || existing.description !== issue.description
+          || existing.status !== issue.status
+          || existing.priority !== issue.priority
+          || existing.labels !== labels
+          || existing.sort_order !== issue.sortOrder
+          || existing.creator_type !== issue.creator.type
+          || existing.creator_id !== issue.creator.id
+          || existing.creator_name !== issue.creator.name
+          || existing.creator_avatar_url !== issue.creator.avatarUrl
+          || existing.assignee_type !== issue.assignee.type
+          || existing.assignee_id !== issue.assignee.id
+          || existing.assignee_name !== issue.assignee.name
+          || existing.assignee_avatar_url !== issue.assignee.avatarUrl
+          || existing.due_date !== issue.dueDate
+          || existing.external_origin !== issue.externalOrigin
+          || existing.external_id !== issue.externalId
+          || existing.external_key !== issue.externalKey
+          || existing.external_url !== issue.externalUrl
+          || existing.archived_at !== null;
+        if (!changed) continue;
+        updateTask.run(
+          issue.identifier,
+          issue.title,
+          issue.description,
+          issue.status,
+          issue.priority,
+          labels,
+          issue.sortOrder,
+          issue.creator.type,
+          issue.creator.id,
+          issue.creator.name,
+          issue.creator.avatarUrl,
+          issue.assignee.type,
+          issue.assignee.id,
+          issue.assignee.name,
+          issue.assignee.avatarUrl,
+          issue.dueDate,
+          issue.externalOrigin,
+          issue.externalId,
+          issue.externalKey,
+          issue.externalUrl,
+          issue.updatedAt,
+          existing.id,
+        );
+      }
+
+      if (archiveMissing) {
+        const existingTasks = this.database.prepare(`
+          SELECT id FROM tasks
+          WHERE project_id = ? AND external_source = 'jira' AND archived_at IS NULL
+        `).all(JIRA_PROJECT_ID);
+        const archiveTask = this.database.prepare(`
+          UPDATE tasks
+          SET archived_at = ?, version = version + 1, updated_at = ?
+          WHERE id = ?
+        `);
+        for (const task of existingTasks) {
+          if (!seenTaskIds.has(task.id)) {
+            archiveTask.run(timestamp, timestamp, task.id);
+          }
+        }
+      }
+      this.database.prepare("UPDATE projects SET updated_at = ? WHERE id = ?")
+        .run(timestamp, JIRA_PROJECT_ID);
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  deleteProject(id) {
+    const project = this.getProject(id);
+    if (!project) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${id}' does not exist`);
+    }
+    if (!id.startsWith("temp-")) {
+      throw new ApiError(403, "PROJECT_DELETE_FORBIDDEN", "Only manually created projects can be deleted");
+    }
+    const result = this.database.prepare(`
+      DELETE FROM projects
+      WHERE id = ?
+        AND NOT EXISTS (SELECT 1 FROM tasks WHERE project_id = ?)
+    `).run(id, id);
+    if (result.changes !== 1) {
+      const issueCount = Number(this.database.prepare(`
+        SELECT COUNT(*) AS issue_count FROM tasks WHERE project_id = ?
+      `).get(id).issue_count);
+      throw new ApiError(409, "PROJECT_NOT_EMPTY", "Project still contains issues", { issueCount });
+    }
+    return project;
+  }
+
   getProject(id) {
     const row = this.database.prepare(`
       SELECT
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at,
         COUNT(tasks.id) AS issue_count
@@ -744,10 +1236,115 @@ export class TaskboardDatabase {
         projects.id,
         projects.name,
         projects.workspace_path,
+        projects.labels,
         projects.created_at,
         projects.updated_at
     `).get(id);
     return row ? projectFromRow(row) : null;
+  }
+
+  addProjectLabel(projectId, label) {
+    const project = this.database.prepare("SELECT labels FROM projects WHERE id = ?").get(projectId);
+    if (!project) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+    }
+    const labels = JSON.parse(project.labels);
+    if (!labels.includes(label)) {
+      this.database.prepare(`
+        UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+      `).run(JSON.stringify([...labels, label]), now(), projectId);
+    }
+    return this.getProject(projectId);
+  }
+
+  deleteProjectLabel(projectId, label) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const project = this.database.prepare("SELECT labels FROM projects WHERE id = ?").get(projectId);
+      if (!project) {
+        throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
+      }
+      const timestamp = now();
+      const labels = JSON.parse(project.labels);
+      if (labels.includes(label)) {
+        this.database.prepare(`
+          UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+        `).run(JSON.stringify(labels.filter((current) => current !== label)), timestamp, projectId);
+      }
+      const updateTask = this.database.prepare(`
+        UPDATE tasks
+        SET labels = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `);
+      for (const task of this.database.prepare(`
+        SELECT id, labels FROM tasks WHERE project_id = ?
+      `).all(projectId)) {
+        const taskLabels = JSON.parse(task.labels);
+        if (taskLabels.includes(label)) {
+          updateTask.run(
+            JSON.stringify(taskLabels.filter((current) => current !== label)),
+            timestamp,
+            task.id,
+          );
+        }
+      }
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return this.getProject(projectId);
+  }
+
+  getProjectSummary(projectId) {
+    const row = this.database.prepare(`
+      SELECT project_id, summary, generated_at, attempted_at, error
+      FROM project_summaries
+      WHERE project_id = ?
+    `).get(projectId);
+    return row ? projectSummaryFromRow(row) : {
+      projectId,
+      summary: null,
+      generatedAt: null,
+      attemptedAt: null,
+      error: null,
+    };
+  }
+
+  listProjectSummaries() {
+    return this.database.prepare(`
+      SELECT project_id, summary, generated_at, attempted_at, error
+      FROM project_summaries
+      ORDER BY project_id
+    `).all().map(projectSummaryFromRow);
+  }
+
+  saveProjectSummary(projectId, summary) {
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO project_summaries (
+        project_id, summary, generated_at, attempted_at, error
+      ) VALUES (?, ?, ?, ?, NULL)
+      ON CONFLICT(project_id) DO UPDATE SET
+        summary = excluded.summary,
+        generated_at = excluded.generated_at,
+        attempted_at = excluded.attempted_at,
+        error = NULL
+    `).run(projectId, summary, timestamp, timestamp);
+    return this.getProjectSummary(projectId);
+  }
+
+  saveProjectSummaryError(projectId, error) {
+    const timestamp = now();
+    this.database.prepare(`
+      INSERT INTO project_summaries (
+        project_id, summary, generated_at, attempted_at, error
+      ) VALUES (?, NULL, NULL, ?, ?)
+      ON CONFLICT(project_id) DO UPDATE SET
+        attempted_at = excluded.attempted_at,
+        error = excluded.error
+    `).run(projectId, timestamp, error);
+    return this.getProjectSummary(projectId);
   }
 
   getWorkflowWorkspace(projectId) {
@@ -1133,15 +1730,56 @@ export class TaskboardDatabase {
   }
 
   listAiChatThreads() {
-    return this.database.prepare(`
+    const rows = this.database.prepare(`
       SELECT * FROM ai_chat_threads
       ORDER BY updated_at DESC, id
-    `).all().map((row) => this.#aiChatThreadWithCurrentRun(row));
+    `).all();
+    if (rows.length === 0) return [];
+
+    const currentRuns = new Map();
+    for (const row of this.database.prepare(`
+      SELECT * FROM ai_chat_runs
+      WHERE status = 'running'
+      ORDER BY thread_id, started_at DESC, id DESC
+    `).all()) {
+      if (!currentRuns.has(row.thread_id)) currentRuns.set(row.thread_id, aiChatRunFromRow(row));
+    }
+
+    const latestTodos = new Map();
+    for (const row of this.database.prepare(`
+      SELECT id, thread_id, run_id, data, created_at
+      FROM ai_chat_events
+      WHERE type = 'todo_list'
+      ORDER BY thread_id, created_at DESC, rowid DESC
+    `).all()) {
+      if (latestTodos.has(row.thread_id)) continue;
+      const currentRun = currentRuns.get(row.thread_id);
+      if (currentRun && row.run_id !== currentRun.id) continue;
+      const progress = parseAiChatTodoProgress(row);
+      if (progress) latestTodos.set(row.thread_id, progress);
+    }
+
+    return rows.map((row) => {
+      const thread = aiChatThreadFromRow(row);
+      thread.currentRun = currentRuns.get(thread.id) ?? null;
+      thread.latestTodo = latestTodos.get(thread.id) ?? null;
+      return thread;
+    });
   }
 
   getAiChatThread(id) {
     const row = this.database.prepare("SELECT * FROM ai_chat_threads WHERE id = ?").get(id);
     return row ? this.#aiChatThreadWithCurrentRun(row) : null;
+  }
+
+  hasAiChatThreadProjectConflict(issueRef, projectId) {
+    return Boolean(this.database.prepare(`
+      SELECT 1
+      FROM ai_chat_threads
+      WHERE (origin_issue_id = ? OR origin_issue_identifier = ?)
+        AND origin_project_id != ?
+      LIMIT 1
+    `).get(issueRef, issueRef, projectId));
   }
 
   createAiChatThread(input) {
@@ -1400,50 +2038,89 @@ export class TaskboardDatabase {
         created_at,
         id
     `;
-    return this.database.prepare(sql).all(...values).map((row) => this.#taskWithRelations(row));
+    const rows = this.database.prepare(sql).all(...values);
+    const commentsByTask = this.#commentsForTaskActivity(rows.map((row) => row.id));
+    const activitiesByTask = this.#activitiesForTasks(rows.map((row) => row.id));
+    const previewImagesByTask = this.#taskPreviewImages(rows.map((row) => row.id));
+    return rows.map((row) => attachTaskActivity(
+      this.#taskWithRelations(row),
+      commentsByTask.get(row.id) ?? [],
+      activitiesByTask.get(row.id) ?? [],
+      previewImagesByTask.get(row.id) ?? null,
+    ));
   }
 
   getTask(id) {
     const row = this.database.prepare("SELECT * FROM tasks WHERE id = ? OR identifier = ?").get(id, id);
-    return row ? this.#taskWithRelations(row) : null;
+    if (!row) return null;
+    const task = this.#taskWithRelations(row);
+    const comments = this.#commentsForTaskActivity([task.id]).get(task.id) ?? [];
+    const activities = this.#activitiesForTasks([task.id]).get(task.id) ?? [];
+    const previewImage = this.#taskPreviewImages([task.id]).get(task.id) ?? null;
+    return attachTaskActivity(task, comments, activities, previewImage);
   }
 
   createTask(input) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const project = this.database.prepare(`
-        SELECT id, next_task_number FROM projects WHERE id = ?
+        SELECT
+          projects.id,
+          projects.labels,
+          projects.next_task_number,
+          (
+            SELECT tasks.identifier
+            FROM tasks
+            WHERE tasks.project_id = projects.id
+            ORDER BY tasks.created_at, tasks.id
+            LIMIT 1
+          ) AS first_identifier
+        FROM projects
+        WHERE projects.id = ?
       `).get(input.projectId);
       if (!project) {
         throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${input.projectId}' does not exist`);
       }
 
-      const number = project.next_task_number;
-      const identifier = `${projectPrefix(project.id)}-${number}`;
+      const prefix = project.first_identifier
+        ? project.first_identifier.replace(/-\d+$/, "")
+        : projectPrefix(project.id);
+      const maximum = this.database.prepare(`
+        SELECT MAX(CAST(substr(identifier, ?) AS INTEGER)) AS number
+        FROM tasks
+        WHERE identifier GLOB ?
+      `).get(prefix.length + 2, `${prefix}-[0-9]*`).number;
+      const number = Math.max(project.next_task_number, maximum === null ? 1 : maximum + 1);
+      const identifier = `${prefix}-${number}`;
       const id = randomUUID();
       const timestamp = now();
       let sortOrder = input.sortOrder;
       if (sortOrder === undefined) {
         const row = this.database.prepare(`
-          SELECT COALESCE(MAX(sort_order), 0) AS maximum
+          SELECT MIN(sort_order) AS minimum
           FROM tasks
           WHERE project_id = ? AND status = ? AND archived_at IS NULL
         `).get(input.projectId, input.status);
-        sortOrder = row.maximum + 1000;
+        sortOrder = row.minimum === null ? 1000 : row.minimum - 1000;
       }
 
       this.database.prepare(`
-        UPDATE projects SET next_task_number = next_task_number + 1, updated_at = ? WHERE id = ?
-      `).run(timestamp, input.projectId);
+        UPDATE projects SET next_task_number = ?, labels = ?, updated_at = ? WHERE id = ?
+      `).run(
+        number + 1,
+        JSON.stringify([...new Set([...JSON.parse(project.labels), ...input.labels])]),
+        timestamp,
+        input.projectId,
+      );
       this.database.prepare(`
         INSERT INTO tasks (
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
           workflow_id, git_branch, worktree_path, worktree_branch,
-          due_date, recurrence_interval, recurrence_unit,
+          start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -1463,11 +2140,12 @@ export class TaskboardDatabase {
         input.assignee.id,
         input.assignee.name,
         input.assignee.avatarUrl,
-        input.workflowId,
+        input.workflowId ?? null,
         input.developmentContext?.type === "branch" ? input.developmentContext.branch : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.path : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.branch : null,
-        input.dueDate,
+        input.startDate ?? null,
+        input.dueDate ?? null,
         input.recurrence?.interval ?? null,
         input.recurrence?.unit ?? null,
         timestamp,
@@ -1481,9 +2159,39 @@ export class TaskboardDatabase {
     }
   }
 
-  updateTask(id, version, changes, threadId) {
+  updateTask(id, version, changes, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    const activityChanges = taskFieldChanges(current, changes);
+    const targetProject = Object.hasOwn(changes, "projectId")
+      ? this.database.prepare("SELECT id, name, workspace_path, labels FROM projects WHERE id = ?").get(changes.projectId)
+      : null;
+    if (Object.hasOwn(changes, "projectId") && !targetProject) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${changes.projectId}' does not exist`);
+    }
+    const projectChanged = Boolean(targetProject && targetProject.id !== current.projectId);
+    if (projectChanged) {
+      const relation = this.database.prepare(`
+        SELECT 1
+        FROM task_relations
+        WHERE source_task_id = ? OR target_task_id = ?
+        LIMIT 1
+      `).get(current.id, current.id);
+      if (relation) {
+        throw new ApiError(
+          409,
+          "CROSS_PROJECT_RELATION",
+          "Remove issue relations before moving the issue to another project",
+        );
+      }
+      if (this.hasAiChatThreadProjectConflict(current.id, targetProject.id)) {
+        throw new ApiError(
+          409,
+          "AI_CHAT_PROJECT_MOVE_BLOCKED",
+          "Delete issue-linked AI conversations before moving the issue to another project",
+        );
+      }
+    }
     const dueDate = Object.hasOwn(changes, "dueDate") ? changes.dueDate : current.dueDate;
     const recurrence = Object.hasOwn(changes, "recurrence") ? changes.recurrence : current.recurrence;
     if (recurrence && !dueDate) {
@@ -1491,12 +2199,14 @@ export class TaskboardDatabase {
     }
 
     const columns = {
+      projectId: "project_id",
       title: "title",
       description: "description",
       status: "status",
       priority: "priority",
       labels: "labels",
       workflowId: "workflow_id",
+      startDate: "start_date",
       dueDate: "due_date",
     };
     const assignments = [];
@@ -1529,7 +2239,17 @@ export class TaskboardDatabase {
       assignments.push(`${columns[key]} = ?`);
       values.push(key === "labels" ? JSON.stringify(value) : value);
     }
-    if (threadId !== undefined) {
+    if (Object.hasOwn(changes, "status") && changes.status !== current.status) {
+      const placementProjectId = projectChanged ? targetProject.id : current.projectId;
+      const row = this.database.prepare(`
+        SELECT MIN(sort_order) AS minimum
+        FROM tasks
+        WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+      `).get(placementProjectId, changes.status, current.id);
+      assignments.push("sort_order = ?");
+      values.push(row.minimum === null ? 1000 : row.minimum - 1000);
+    }
+    if (threadId !== undefined && !Object.hasOwn(changes, "projectId")) {
       assignments.push("thread_id = ?");
       values.push(threadId);
     }
@@ -1545,6 +2265,24 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      if (projectChanged) {
+        this.database.prepare(`
+          UPDATE projects SET updated_at = ? WHERE id IN (?, ?)
+        `).run(timestamp, current.projectId, targetProject.id);
+      }
+      const destinationProjectId = projectChanged ? targetProject.id : current.projectId;
+      const destinationProject = this.database.prepare(`
+        SELECT labels FROM projects WHERE id = ?
+      `).get(destinationProjectId);
+      const taskLabels = Object.hasOwn(changes, "labels") ? changes.labels : current.labels;
+      const projectLabels = JSON.parse(destinationProject.labels);
+      const mergedLabels = [...new Set([...projectLabels, ...taskLabels])];
+      if (mergedLabels.length !== projectLabels.length) {
+        this.database.prepare(`
+          UPDATE projects SET labels = ?, updated_at = ? WHERE id = ?
+        `).run(JSON.stringify(mergedLabels), timestamp, destinationProjectId);
+      }
+      this.#recordTaskActivity(current.id, actor, activityChanges, timestamp);
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1553,13 +2291,20 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  moveTask(id, version, status, sortOrder, threadId) {
+  moveTask(id, version, status, sortOrder, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     if (current.archivedAt !== null) {
       throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
     }
-    if (sortOrder === undefined) {
+    if (status !== current.status && sortOrder === undefined) {
+      const row = this.database.prepare(`
+        SELECT MIN(sort_order) AS minimum
+        FROM tasks
+        WHERE project_id = ? AND status = ? AND archived_at IS NULL AND id != ?
+      `).get(current.projectId, status, current.id);
+      sortOrder = row.minimum === null ? 1000 : row.minimum - 1000;
+    } else if (sortOrder === undefined) {
       const row = this.database.prepare(`
         SELECT COALESCE(MAX(sort_order), 0) AS maximum
         FROM tasks
@@ -1579,6 +2324,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        taskFieldChanges(current, { status }),
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1587,7 +2338,7 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  archiveTask(id, version, threadId) {
+  archiveTask(id, version, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     const timestamp = now();
@@ -1601,6 +2352,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        [{ field: "archivedAt", before: current.archivedAt, after: timestamp }],
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1609,7 +2366,7 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  restoreTask(id, version, threadId) {
+  restoreTask(id, version, threadId, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
     if (current.archivedAt === null) {
@@ -1626,6 +2383,12 @@ export class TaskboardDatabase {
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        [{ field: "archivedAt", before: current.archivedAt, after: null }],
+        timestamp,
+      );
       this.database.exec("COMMIT");
     } catch (error) {
       this.database.exec("ROLLBACK");
@@ -1634,7 +2397,30 @@ export class TaskboardDatabase {
     return this.getTask(current.id);
   }
 
-  addTaskRelation(id, version, type, relatedId, threadId) {
+  deleteArchivedTask(id, version) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.#requireTask(id);
+      this.#requireVersion(current, version);
+      if (current.archivedAt === null) {
+        throw new ApiError(409, "TASK_NOT_ARCHIVED", "Only archived tasks can be deleted");
+      }
+      const attachmentIds = this.database.prepare(
+        "SELECT id FROM attachments WHERE task_id = ? ORDER BY created_at, id",
+      ).all(current.id).map((attachment) => attachment.id);
+      const result = this.database.prepare(
+        "DELETE FROM tasks WHERE id = ? AND version = ? AND archived_at IS NOT NULL",
+      ).run(current.id, version);
+      if (result.changes !== 1) this.#throwMissingOrConflict(id, version);
+      this.database.exec("COMMIT");
+      return { task: current, attachmentIds };
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  addTaskRelation(id, version, type, relatedId, threadId, actor) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const task = this.#requireTask(id);
@@ -1674,12 +2460,21 @@ export class TaskboardDatabase {
         }
       }
 
+      const timestamp = now();
+      const previousRelation = type === "parent" && task.relations.parent
+        ? relationActivityValue(type, task.relations.parent)
+        : null;
       this.database.prepare(`
         INSERT INTO task_relations (
           relation_type, source_task_id, target_task_id, created_at
         ) VALUES (?, ?, ?, ?)
-      `).run(relationType, sourceTaskId, targetTaskId, now());
-      this.#touchTask(task.id, version, threadId);
+      `).run(relationType, sourceTaskId, targetTaskId, timestamp);
+      this.#touchTask(task.id, version, threadId, timestamp);
+      this.#recordTaskActivity(task.id, actor, [{
+        field: "relation",
+        before: previousRelation,
+        after: relationActivityValue(type, relatedTask),
+      }], timestamp);
       this.database.exec("COMMIT");
       return {
         task: this.getTask(task.id),
@@ -1691,7 +2486,7 @@ export class TaskboardDatabase {
     }
   }
 
-  removeTaskRelation(id, version, type, relatedId, threadId) {
+  removeTaskRelation(id, version, type, relatedId, threadId, actor) {
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const task = this.#requireTask(id);
@@ -1710,7 +2505,13 @@ export class TaskboardDatabase {
       if (removed.changes !== 1) {
         throw new ApiError(404, "RELATION_NOT_FOUND", "This issue relation does not exist");
       }
-      this.#touchTask(task.id, version, threadId);
+      const timestamp = now();
+      this.#touchTask(task.id, version, threadId, timestamp);
+      this.#recordTaskActivity(task.id, actor, [{
+        field: "relation",
+        before: relationActivityValue(type, relatedTask),
+        after: null,
+      }], timestamp);
       this.database.exec("COMMIT");
       return {
         task: this.getTask(task.id),
@@ -1720,6 +2521,15 @@ export class TaskboardDatabase {
       this.database.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  listTaskActivities(taskId) {
+    const task = this.#requireTask(taskId);
+    return this.database.prepare(`
+      SELECT * FROM task_activities
+      WHERE task_id = ?
+      ORDER BY created_at, id
+    `).all(task.id).map(taskActivityFromRow);
   }
 
   listComments(taskId) {
@@ -1850,7 +2660,76 @@ export class TaskboardDatabase {
       LIMIT 1
     `).get(thread.id);
     thread.currentRun = currentRun ? aiChatRunFromRow(currentRun) : null;
+    const todoRows = this.database.prepare(`
+      SELECT id, thread_id, run_id, data, created_at
+      FROM ai_chat_events
+      WHERE thread_id = ? AND type = 'todo_list'
+      ORDER BY created_at DESC, rowid DESC
+    `).all(thread.id);
+    thread.latestTodo = todoRows
+      .filter((row) => !thread.currentRun || row.run_id === thread.currentRun.id)
+      .map(parseAiChatTodoProgress)
+      .find(Boolean) ?? null;
     return thread;
+  }
+
+  #commentsForTaskActivity(taskIds) {
+    const commentsByTask = new Map(taskIds.map((taskId) => [taskId, []]));
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT
+          id, task_id,
+          CASE WHEN thread_id IS NULL THEN NULL ELSE substr(body, 1, 512) END AS body,
+          thread_id, author_type, author_id, author_name,
+          author_avatar_url, version, updated_at
+        FROM comments
+        WHERE task_id IN (${placeholders})
+        ORDER BY task_id, id
+      `).all(...chunk);
+      for (const row of rows) commentsByTask.get(row.task_id)?.push(row);
+    }
+    return commentsByTask;
+  }
+
+  #activitiesForTasks(taskIds) {
+    const activitiesByTask = new Map(taskIds.map((taskId) => [taskId, []]));
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT
+          id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
+        FROM task_activities
+        WHERE task_id IN (${placeholders})
+        ORDER BY task_id, created_at, id
+      `).all(...chunk);
+      for (const row of rows) activitiesByTask.get(row.task_id)?.push(row);
+    }
+    return activitiesByTask;
+  }
+
+  #taskPreviewImages(taskIds) {
+    const imagesByTask = new Map();
+    for (let offset = 0; offset < taskIds.length; offset += 400) {
+      const chunk = taskIds.slice(offset, offset + 400);
+      if (chunk.length === 0) continue;
+      const placeholders = chunk.map(() => "?").join(", ");
+      const rows = this.database.prepare(`
+        SELECT * FROM attachments
+        WHERE task_id IN (${placeholders})
+          AND comment_id IS NULL
+          AND content_type LIKE 'image/%'
+        ORDER BY task_id, created_at, id
+      `).all(...chunk);
+      for (const row of rows) {
+        if (!imagesByTask.has(row.task_id)) imagesByTask.set(row.task_id, attachmentFromRow(row));
+      }
+    }
+    return imagesByTask;
   }
 
   #attachmentsForComment(commentId) {
@@ -1972,12 +2851,30 @@ export class TaskboardDatabase {
     }
   }
 
-  #touchTask(id, version, threadId) {
+  #recordTaskActivity(taskId, actor, changes, timestamp) {
+    if (changes.length === 0) return;
+    this.database.prepare(`
+      INSERT INTO task_activities (
+        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, changes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(),
+      taskId,
+      actor.type,
+      actor.id,
+      actor.name,
+      actor.avatarUrl,
+      JSON.stringify(changes),
+      timestamp,
+    );
+  }
+
+  #touchTask(id, version, threadId, timestamp) {
     const result = this.database.prepare(`
       UPDATE tasks
       SET thread_id = COALESCE(?, thread_id), version = version + 1, updated_at = ?
       WHERE id = ? AND version = ?
-    `).run(threadId ?? null, now(), id, version);
+    `).run(threadId ?? null, timestamp, id, version);
     if (result.changes !== 1) {
       this.#throwMissingOrConflict(id, version);
     }

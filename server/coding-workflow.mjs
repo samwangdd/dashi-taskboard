@@ -306,6 +306,7 @@ export class CodingWorkflowService {
         "in_review",
         undefined,
         task.threadId ?? undefined,
+        AGENT_ACTOR,
       );
     }
     const body = commitSha

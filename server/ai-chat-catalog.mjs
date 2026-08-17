@@ -3,6 +3,8 @@ import { readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
+import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
+import { executableCommand } from "../shared/executable-command.mjs";
 import { ApiError } from "./database.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -51,12 +53,19 @@ export async function loadDeviceWorkspaces(codexStatePath, database) {
   return workspaces;
 }
 
-export async function resolveAiWorkspace(projectId, codexStatePath, database) {
-  const project = await database.getProject(projectId);
-  if (!project) {
+async function loadMappedWorkspaces(projectMappings) {
+  const workspaces = new Map();
+  for (const [projectId, mappedPath] of Object.entries(projectMappings)) {
+    const workspacePath = await existingDirectory(mappedPath);
+    if (workspacePath) workspaces.set(projectId, workspacePath);
+  }
+  return workspaces;
+}
+
+function resolvedWorkspace(projectId, project, workspaces) {
+  if (!project || project.id !== projectId) {
     throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${projectId}' does not exist`);
   }
-  const workspaces = await loadDeviceWorkspaces(codexStatePath, database);
   const workspacePath = workspaces.get(projectId);
   if (!workspacePath) {
     throw new ApiError(
@@ -70,6 +79,17 @@ export async function resolveAiWorkspace(projectId, codexStatePath, database) {
     addDirectories: [...new Set(workspaces.values())].filter((candidate) => candidate !== workspacePath),
     project,
   };
+}
+
+export async function resolveAiWorkspace(projectId, codexStatePath, database) {
+  const project = await database.getProject(projectId);
+  const workspaces = await loadDeviceWorkspaces(codexStatePath, database);
+  return resolvedWorkspace(projectId, project, workspaces);
+}
+
+export async function resolveMappedAiWorkspace(projectId, project, projectMappings = {}) {
+  const workspaces = await loadMappedWorkspaces(projectMappings);
+  return resolvedWorkspace(projectId, project, workspaces);
 }
 
 function sanitizeModels(value) {
@@ -117,7 +137,8 @@ function sanitizeModels(value) {
 
 function listSkills(codexExecutable, workspacePath, processEnv) {
   return new Promise((resolve, reject) => {
-    const child = spawn(codexExecutable, ["app-server", "--stdio"], {
+    const command = executableCommand(codexExecutable, ["app-server", "--stdio"]);
+    const child = spawn(command.executable, command.args, {
       cwd: workspacePath,
       env: processEnv,
       stdio: ["pipe", "pipe", "ignore"],
@@ -231,21 +252,20 @@ function sanitizeSkills(entries) {
 
 export async function discoverAiCatalog({
   codexExecutable,
-  codexStatePath,
-  database,
-  projectId,
+  workspacePath,
   processEnv,
 }) {
-  const { workspacePath } = await resolveAiWorkspace(projectId, codexStatePath, database);
+  const environment = withoutTaskboardLauncherEnvironment(processEnv);
+  const modelCommand = executableCommand(codexExecutable, ["debug", "models"]);
   const [modelResult, skillEntries] = await Promise.all([
-    execFileAsync(codexExecutable, ["debug", "models"], {
+    execFileAsync(modelCommand.executable, modelCommand.args, {
       cwd: workspacePath,
-      env: processEnv,
+      env: environment,
       encoding: "utf8",
       timeout: CATALOG_TIMEOUT_MS,
       maxBuffer: CATALOG_MAX_BUFFER,
     }),
-    listSkills(codexExecutable, workspacePath, processEnv),
+    listSkills(codexExecutable, workspacePath, environment),
   ]);
   const modelCatalog = JSON.parse(modelResult.stdout);
   return {

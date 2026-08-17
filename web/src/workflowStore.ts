@@ -1,3 +1,4 @@
+import { taskboardStorage } from "./storage";
 import type { WorkflowOption } from "./types";
 import { CODING_WORKFLOW_ID, CODING_WORKFLOW_NAME } from "../../shared/coding-workflow.mjs";
 
@@ -21,7 +22,7 @@ export function workflowStorageKey(projectId: string): string {
 
 export function readLegacyWorkflowWorkspace(projectId: string): unknown | null {
   try {
-    const raw = window.localStorage.getItem(workflowStorageKey(projectId));
+    const raw = taskboardStorage.getItem(workflowStorageKey(projectId));
     return raw ? JSON.parse(raw) : null;
   } catch {
     return null;
@@ -29,7 +30,7 @@ export function readLegacyWorkflowWorkspace(projectId: string): unknown | null {
 }
 
 export function clearLegacyWorkflowWorkspace(projectId: string): void {
-  window.localStorage.removeItem(workflowStorageKey(projectId));
+  taskboardStorage.removeItem(workflowStorageKey(projectId));
 }
 
 export function workflowOptionsFromWorkspace(workspace: unknown): WorkflowOption[] {

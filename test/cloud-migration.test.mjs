@@ -32,7 +32,13 @@ const fixtures = [];
 const timestamp = "2026-07-24T12:00:00.000Z";
 const execFile = promisify(execFileCallback);
 const projectRoot = path.resolve(import.meta.dirname, "..");
-const wranglerExecutable = path.join(projectRoot, "node_modules", ".bin", "wrangler");
+const wranglerExecutable = path.join(
+  projectRoot,
+  "node_modules",
+  "wrangler",
+  "bin",
+  "wrangler.js",
+);
 const wranglerConfig = path.join(projectRoot, "wrangler.jsonc");
 
 afterEach(async () => {
@@ -379,6 +385,19 @@ function expectedProjectCounts() {
       tasks: 1,
       comments: 1,
       attachments: 1,
+      task_relations: 0,
+      workflow_workspaces: 0,
+    },
+  };
+}
+
+function expectedCloudBaselineCounts() {
+  return {
+    local: {
+      projects: 1,
+      tasks: 0,
+      comments: 0,
+      attachments: 0,
       task_relations: 0,
       workflow_workspaces: 0,
     },
@@ -754,9 +773,12 @@ test("real D1 batch atomically imports a bundle containing local and maps develo
       ),
       /intentional migration failure/i,
     );
-    assert.equal(
-      (await failingCloud.db.prepare("SELECT COUNT(*) AS count FROM projects").first()).count,
-      0,
+    assert.deepEqual(
+      await createCloudBindingMigrationAdapters({
+        d1: failingCloud.db,
+        r2: failingCloud.attachments,
+      }).d1.countByProject(),
+      expectedCloudBaselineCounts(),
     );
     assert.deepEqual(await failingCloud.listAttachmentKeys(), []);
   } finally {
@@ -841,6 +863,20 @@ test("cloud import refuses non-empty D1 and pre-existing R2 targets", async () =
   assert.equal(nonEmptyD1.calls.length, 0);
   assert.equal(untouchedR2.objects.size, 0);
 
+  const nonEmptyGlobalD1 = createD1Adapter(bundle, {
+    initialCounts: {
+      local: { ...expectedCloudBaselineCounts().local, tasks: 1 },
+    },
+  });
+  await assert.rejects(
+    importCloudMigrationBundle(bundle, {
+      d1: nonEmptyGlobalD1,
+      r2: createR2Adapter(),
+    }),
+    /D1.*not empty|non-empty.*D1/i,
+  );
+  assert.equal(nonEmptyGlobalD1.calls.length, 0);
+
   const occupiedR2 = createR2Adapter();
   const occupiedKey = bundle.attachments[0].objectKey;
   occupiedR2.objects.set(occupiedKey, {
@@ -906,16 +942,18 @@ test("versioned bundle round-trips through private manifest, data, and attachmen
 
   await writeCloudMigrationBundle(bundle, outputDirectory);
 
-  assert.equal((await stat(outputDirectory)).mode & 0o777, 0o700);
-  assert.equal((await stat(path.join(outputDirectory, "data"))).mode & 0o777, 0o700);
-  assert.equal(
-    (await stat(path.join(outputDirectory, "attachments"))).mode & 0o777,
-    0o700,
-  );
-  assert.equal(
-    (await stat(path.join(outputDirectory, "manifest.json"))).mode & 0o777,
-    0o600,
-  );
+  if (process.platform !== "win32") {
+    assert.equal((await stat(outputDirectory)).mode & 0o777, 0o700);
+    assert.equal((await stat(path.join(outputDirectory, "data"))).mode & 0o777, 0o700);
+    assert.equal(
+      (await stat(path.join(outputDirectory, "attachments"))).mode & 0o777,
+      0o700,
+    );
+    assert.equal(
+      (await stat(path.join(outputDirectory, "manifest.json"))).mode & 0o777,
+      0o600,
+    );
+  }
 
   const restored = await readCloudMigrationBundle(outputDirectory);
   assert.deepEqual(restored.counts, bundle.counts);
@@ -994,16 +1032,17 @@ test("Wrangler adapter requires remote opt-in and keeps transfer files private",
     remote: true,
     environment: { TASKBOARD_MIGRATION_REMOTE: "1" },
     runCommand: async (_executable, args) => {
-      calls.push(args);
-      const fileIndex = args.indexOf("--file");
+      const commandArgs = args[0] === wranglerExecutable ? args.slice(1) : args;
+      calls.push(commandArgs);
+      const fileIndex = commandArgs.indexOf("--file");
       if (fileIndex !== -1) {
-        const filename = args[fileIndex + 1];
+        const filename = commandArgs[fileIndex + 1];
         transferFiles.push(filename);
-        if (args[0] === "r2" && args[2] === "get") {
+        if (commandArgs[0] === "r2" && commandArgs[2] === "get") {
           await writeFile(filename, downloadedBody);
         }
       }
-      if (args.includes("--json")) return { stdout: '[{"results":[]}]' };
+      if (commandArgs.includes("--json")) return { stdout: '[{"results":[]}]' };
       return { stdout: "" };
     },
   });
@@ -1036,8 +1075,10 @@ test("Wrangler adapter requires remote opt-in and keeps transfer files private",
       assert.ok(!args.includes("--persist-to"));
     }
     for (const filename of transferFiles) {
-      assert.equal((await stat(filename)).mode & 0o777, 0o600);
-      assert.equal((await stat(path.dirname(filename))).mode & 0o777, 0o700);
+      if (process.platform !== "win32") {
+        assert.equal((await stat(filename)).mode & 0o777, 0o600);
+        assert.equal((await stat(path.dirname(filename))).mode & 0o777, 0o700);
+      }
     }
   } finally {
     await adapters.cleanup();
@@ -1093,7 +1134,7 @@ test("one-time Wrangler adapter migrates and verifies local persistence without 
   const adapterPath = path.join(projectRoot, "scripts", "wrangler-cloud-adapter.mjs");
 
   async function applyMigrations(persistTo) {
-    await execFile(wranglerExecutable, [
+    await execFile(process.execPath, [wranglerExecutable,
       "d1",
       "migrations",
       "apply",
@@ -1189,7 +1230,10 @@ test("one-time Wrangler adapter migrates and verifies local persistence without 
     configPath: wranglerConfig,
   });
   try {
-    assert.deepEqual(await failureAdapters.d1.countByProject(), {});
+    assert.deepEqual(
+      await failureAdapters.d1.countByProject(),
+      expectedCloudBaselineCounts(),
+    );
     for (const attachment of bundle.attachments) {
       assert.equal(await failureAdapters.r2.head(attachment.id), null);
     }

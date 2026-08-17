@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>第一课：服务实例不是 workspace</title>
+  <link rel="stylesheet" href="../assets/lesson.css">
+</head>
+<body>
+<main>
+  <p class="eyebrow">Lesson 0001 · 约 8 分钟</p>
+  <h1>服务实例不是 workspace</h1>
+  <p class="lede">这一课只建立一个能力：看到 Taskboard 页面或运行 <code>taskctl</code> 时，能准确说出请求最终由哪份代码、哪个进程和哪个数据库处理。</p>
+
+  <h2>真实启动路径</h2>
+  <div class="flow" aria-label="Taskboard development request flow">
+    <section class="node"><strong>入口</strong><code>npm run dev</code><br><small><a href="../scripts/dev.mjs">scripts/dev.mjs</a></small></section>
+    <section class="node"><strong>两个进程</strong>Vite <code>5173</code><br>API <code>47823</code><br><small><a href="../web/vite.config.ts">vite.config.ts</a></small></section>
+    <section class="node"><strong>数据变化</strong><code>.data/taskboard.sqlite</code><br><small><a href="../server/app.mjs">server/app.mjs</a></small></section>
+    <section class="node"><strong>可见结果</strong>浏览器刷新<br>CLI 返回 JSON</section>
+  </div>
+  <p>浏览器访问 <code>5173</code> 时，Vite 把 <code>/api</code> 固定代理到 <code>TASKBOARD_PORT</code>，默认是 <code>47823</code>。因此“页面来自新 checkout”并不能证明“API 也来自新 checkout”。真正决定 API 身份的是端口当前归哪个 PID。</p>
+
+  <h2>三个容易混在一起的 workspace</h2>
+  <div class="facts">
+    <section class="panel"><strong>Taskboard checkout</strong><p>包含 <code>server/</code>、<code>web/</code> 和自己的默认 <code>.data</code>。它决定启动哪版代码。</p></section>
+    <section class="panel"><strong>Service instance</strong><p>一个正在监听的 Node PID，加上端口、数据目录和环境变量。客户端实际上只认识它的 URL。</p></section>
+    <section class="panel"><strong>Project workspacePath</strong><p>数据库或 Codex 状态里保存的目标仓库路径。它决定 agent 应在哪个业务仓库工作，不决定 Taskboard HTTP 服务是谁。</p></section>
+    <section class="panel warning"><strong>关键后果</strong><p><code>cd</code> 到另一个 worktree 不会自动改写已启动服务，也不会自动改变全局 <code>taskctl</code> 的 URL。</p></section>
+  </div>
+
+  <h2>你机器上的现场证据</h2>
+  <section class="panel answer">
+    <ul>
+      <li><code>47823</code> 当前由 PID <code>89134</code> 监听。</li>
+      <li>该 PID 的 cwd 是 <code>~/codeLab/dashi-taskboard</code>，数据库也是这个 checkout 下的 <code>.data/taskboard.sqlite</code>。</li>
+      <li>全局 <code>~/.local/bin/taskctl</code> 却执行 <code>~/orca/workspaces/dashi-taskboard/main/cli/taskctl.mjs</code>。</li>
+      <li>包装器默认把请求发往共享的 <code>http://127.0.0.1:47823</code>。</li>
+    </ul>
+    <p>所以这次现象不是玄学缓存：<strong>CLI 代码入口和服务代码根目录可以来自不同 checkout，而默认 URL 又让所有 workspace 汇聚到同一个端口。</strong></p>
+  </section>
+
+  <h2>为什么端口成了隐式单例锁</h2>
+  <p>每个 checkout 的默认后端端口都是 <code>47823</code>，默认 Vite 端口都是 <code>5173</code>。Vite 开了 <code>strictPort</code>，不会自动找下一个端口。因此并行运行需要给每份 checkout 分配一对端口：</p>
+  <pre>TASKBOARD_WEB_PORT=5174 TASKBOARD_PORT=47901 npm run dev</pre>
+  <p>随后，CLI 也必须显式指向同一个实例：</p>
+  <pre>TASKBOARD_URL=http://127.0.0.1:47901 taskctl project list</pre>
+
+  <h2>一分钟检索练习</h2>
+  <section class="panel quiz">
+    <p>你在 worktree B 里运行 <code>taskctl</code>，但没有设置 <code>TASKBOARD_URL</code>。端口 <code>47823</code> 正由 worktree A 启动的服务监听。请求会由谁处理？</p>
+    <label><input type="radio" name="q" value="b"> B，因为 shell 当前目录是 B</label>
+    <label><input type="radio" name="q" value="a"> A，因为客户端连接的是 A 占用的端口</label>
+    <label><input type="radio" name="q" value="db"> 两者，因为 SQLite 会自动合并</label>
+    <button type="button" onclick="checkAnswer()">检查答案</button>
+    <output id="result"></output>
+  </section>
+
+  <h2>接下来怎么学</h2>
+  <p>先用<a href="../reference/taskboard-service-identity.html">服务身份诊断卡</a>检查一次你想启动的另一个 workspace。把四项结果发给我，我们再进入第二课：<strong>项目 <code>workspacePath</code> 如何变成 agent 的实际工作目录</strong>。</p>
+  <p>推荐的一手资料：先读 <a href="../scripts/dev.mjs">scripts/dev.mjs</a>，再读 <a href="../web/vite.config.ts">web/vite.config.ts</a>；两份文件加起来不到 80 行，已经能证明整个开发请求路径。</p>
+  <p>任何一步不清楚，都可以直接追问我；不要靠记命令，先说清每条命令在验证哪一个身份。</p>
+
+  <p class="meta">Mission: identify the active Taskboard service before changing it.</p>
+</main>
+<script>
+function checkAnswer() {
+  const selected = document.querySelector('input[name="q"]:checked');
+  const result = document.getElementById('result');
+  if (!selected) { result.textContent = '先选择一个答案。'; return; }
+  result.textContent = selected.value === 'a'
+    ? '正确：URL 选择服务，cwd 不会接管已经监听的端口。'
+    : '再想一次：沿着客户端 URL 找到端口，再从端口找到 PID。';
+}
+</script>
+</body>
+</html>

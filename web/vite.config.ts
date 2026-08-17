@@ -16,6 +16,7 @@ function resolvePort(name: string, fallback: number) {
 
 export default defineConfig({
   root: fileURLToPath(new URL(".", import.meta.url)),
+  base: "./",
   plugins: [react()],
   build: {
     outDir: fileURLToPath(new URL("../dist/web", import.meta.url)),

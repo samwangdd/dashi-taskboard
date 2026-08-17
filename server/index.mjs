@@ -13,7 +13,10 @@ async function main() {
   loadLocalEnv(PROJECT_ROOT);
   const app = createTaskboardServer();
   const host = resolveHost();
-  const address = await app.listen({ host, port: resolvePort() });
+  const listenFd = process.env.CODEX_TASKBOARD_LISTEN_FD === undefined
+    ? null
+    : Number(process.env.CODEX_TASKBOARD_LISTEN_FD);
+  const address = await app.listen({ host, port: resolvePort(), fd: listenFd });
   console.log(`Claude Taskboard listening on http://127.0.0.1:${address.port}`);
   if (host === "0.0.0.0") {
     const addresses = Object.values(os.networkInterfaces())

@@ -104,6 +104,13 @@ export interface AiChatRun {
   finishedAt?: string | null;
 }
 
+export interface AiChatTodoProgress {
+  completed: number;
+  total: number;
+  eventId: string;
+  updatedAt: string;
+}
+
 export interface AiChatThread {
   id: string;
   title: string;
@@ -116,6 +123,7 @@ export interface AiChatThread {
   createdAt: string;
   updatedAt: string;
   currentRun?: AiChatRun | null;
+  latestTodo?: AiChatTodoProgress | null;
 }
 
 export interface AiChatEvent {
@@ -186,14 +194,25 @@ export interface Project {
   id: string;
   name: string;
   workspacePath: string | null;
+  source: "local" | "jira";
+  labels: string[];
   issueCount: number;
   createdAt: string;
   updatedAt: string;
 }
 
+export interface ProjectSummary {
+  projectId: string;
+  summary: string | null;
+  updatedAt: string | null;
+  refreshing: boolean;
+  error: string | null;
+}
+
 export interface TaskRelationSummary {
   id: string;
   identifier: string;
+  externalKey?: string | null;
   projectId: string;
   title: string;
   status: TaskStatus;
@@ -210,6 +229,14 @@ export interface TaskRelations {
   related: TaskRelationSummary[];
 }
 
+export interface TaskConversationRef {
+  threadId: string;
+  source: "task" | "comment";
+  sourceId: string;
+  title: string;
+  updatedAt: string;
+}
+
 export interface Task {
   id: string;
   identifier: string;
@@ -221,6 +248,11 @@ export interface Task {
   labels: string[];
   sortOrder: number;
   threadId: string | null;
+  conversationRefs: TaskConversationRef[];
+  participants: ActorIdentity[];
+  previewImage: Attachment | null;
+  activityKey: string;
+  activityUpdatedAt: string;
   creatorType: ActorType;
   creatorId: string;
   creatorName: string;
@@ -228,13 +260,29 @@ export interface Task {
   assignee: ActorIdentity;
   workflowId: string | null;
   developmentContext: DevelopmentContext | null;
+  startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
+  source: "local" | "jira";
+  externalOrigin?: string | null;
+  externalKey?: string | null;
+  externalUrl: string | null;
   archivedAt: string | null;
   relations: TaskRelations;
   version: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface JiraConnection {
+  configured: boolean;
+  baseUrl: string | null;
+  username: string | null;
+  displayName: string | null;
+  projects: string[];
+  projectId: string;
+  lastSyncedAt: string | null;
+  insecureHttp: boolean;
 }
 
 export interface Comment {
@@ -252,6 +300,23 @@ export interface Comment {
   updatedAt: string;
 }
 
+export interface TaskActivityChange {
+  field: string;
+  before: unknown;
+  after: unknown;
+}
+
+export interface TaskChangeActivity {
+  id: string;
+  taskId: string;
+  actorType: ActorType;
+  actorId: string;
+  actorName: string;
+  actorAvatarUrl: string | null;
+  changes: TaskActivityChange[];
+  createdAt: string;
+}
+
 export interface Attachment {
   id: string;
   taskId: string;
@@ -264,6 +329,7 @@ export interface Attachment {
 
 export interface HostContext {
   user?: ActorIdentity;
+  language?: string;
   workspacePath?: string;
   threadId?: string;
   theme?: "light" | "dark";
@@ -271,6 +337,11 @@ export interface HostContext {
   projects?: Array<{ id: string; name: string }>;
   titlebarLeftInset?: number;
   sidebarCollapsed?: boolean;
+  threadRunning?: boolean;
+  threadTodoProgress?: {
+    completed: number;
+    total: number;
+  };
 }
 
 export interface TaskDraft {
@@ -279,9 +350,10 @@ export interface TaskDraft {
   status: TaskStatus;
   priority: TaskPriority;
   labels: string[];
-  assigneeTarget?: AssigneeTarget;
   workflowId: string | null;
+  assigneeTarget?: AssigneeTarget;
   developmentContext: DevelopmentContext | null;
+  startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
 }

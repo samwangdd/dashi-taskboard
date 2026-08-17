@@ -43,12 +43,20 @@ async function createFixture() {
     realpath(otherWorkspacePath),
   ]);
   const capturePath = path.join(directory, "capture.jsonl");
+  const environmentCapturePath = path.join(directory, "environment-capture.jsonl");
   const descendantPath = path.join(directory, "descendant-alive");
+  const descendantDelayMs = process.platform === "win32" ? 1_500 : 300;
   const executable = path.join(directory, "fake-codex.mjs");
   await writeFile(executable, `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 const args = process.argv.slice(2);
+if (process.env.FAKE_ENVIRONMENT_CAPTURE_PATH) {
+  appendFileSync(process.env.FAKE_ENVIRONMENT_CAPTURE_PATH, JSON.stringify({
+    args,
+    launcherKeys: Object.keys(process.env).filter((name) => name.startsWith("CODEX_TASKBOARD_")),
+  }) + "\\n");
+}
 if (args[0] === "debug" && args[1] === "models") {
   if (args.length !== 2) process.exit(2);
   process.stdout.write(JSON.stringify({models:[{
@@ -70,7 +78,7 @@ if (args[0] === "app-server") {
       if (!line.trim()) continue;
       const message = JSON.parse(line);
       if (message.id === 1) process.stdout.write('{"id":1,"result":{"platformFamily":"unix"}}\\n');
-      if (message.id === 2) process.stdout.write('{"id":2,"result":{"data":[{"skills":[{"name":"real-skill","enabled":true,"scope":"repo","interface":{"displayName":"Real Skill"}},{"name":"disabled","enabled":false,"scope":"user"}]}]}}\\n');
+      if (message.id === 2) process.stdout.write('{"id":2,"result":{"data":[{"skills":[{"name":"real-skill","enabled":true,"scope":"repo","description":"Real fixture skill","path":"/fixture/real-skill/SKILL.md","interface":{"displayName":"Real Skill"}},{"name":"disabled","enabled":false,"scope":"user"}]}]}}\\n');
     }
   });
 } else if (args[0] === "exec") {
@@ -85,7 +93,7 @@ if (args[0] === "app-server") {
     if (prompt.includes("MALFORMED_STUBBORN") || prompt.includes("CALLBACK_FATAL_STUBBORN")) {
       spawn(process.execPath, [
         "-e",
-        'process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(process.env.FAKE_DESCENDANT_PATH, "alive"), 300); setInterval(() => {}, 1000)',
+        'process.on("SIGTERM", () => {}); setTimeout(() => require("node:fs").writeFileSync(process.env.FAKE_DESCENDANT_PATH, "alive"), ${descendantDelayMs}); setInterval(() => {}, 1000)',
       ], {env:process.env,stdio:"ignore"});
       process.on("SIGTERM", () => {});
       setInterval(() => {}, 1000);
@@ -147,6 +155,11 @@ if (args[0] === "app-server") {
       ...process.env,
       FAKE_CAPTURE_PATH: capturePath,
       FAKE_DESCENDANT_PATH: descendantPath,
+      FAKE_ENVIRONMENT_CAPTURE_PATH: environmentCapturePath,
+      CODEX_TASKBOARD_INSTANCE_TOKEN: "must-not-reach-codex",
+      CODEX_TASKBOARD_INSTANCE_SECRET: "must-not-reach-codex",
+      CODEX_TASKBOARD_PORT: "47823",
+      CODEX_TASKBOARD_VERSION: "0.2.0",
     },
     killGraceMs: 50,
   });
@@ -154,8 +167,10 @@ if (args[0] === "app-server") {
     capturePath,
     database,
     databasePath,
+    descendantDelayMs,
     descendantPath,
     directory,
+    environmentCapturePath,
     otherWorkspace,
     service,
     workspace,
@@ -179,7 +194,13 @@ test("Codex turns use stdin, explicit resume ids, server-owned cwd and sanitized
       supportedReasoningEfforts: ["low", "medium", "high"],
       serviceTiers: [{ id: "priority", name: "Fast" }],
     }]);
-    assert.deepEqual(catalog.skills, [{ id: "real-skill", label: "Real Skill", scope: "repo" }]);
+    assert.deepEqual(catalog.skills, [{
+      id: "real-skill",
+      label: "Real Skill",
+      description: "Real fixture skill",
+      path: "/fixture/real-skill/SKILL.md",
+      scope: "repo",
+    }]);
 
     const thread = await fixture.service.createThread({
       projectId: "project",
@@ -190,7 +211,7 @@ test("Codex turns use stdin, explicit resume ids, server-owned cwd and sanitized
     assert.equal(thread.origin.workspacePath, fixture.workspace);
 
     const first = await fixture.service.startTurn(thread.id, {
-      message: "HIDDEN_SENTINEL first",
+      message: "HIDDEN_SENTINEL \uFFFC first",
       skillIds: ["real-skill"],
     });
     await waitFor(() => fixture.service.getRun(first.id)?.status !== "running");
@@ -198,10 +219,17 @@ test("Codex turns use stdin, explicit resume ids, server-owned cwd and sanitized
     await waitFor(() => fixture.service.getRun(second.id)?.status !== "running");
 
     const captures = (await readFile(fixture.capturePath, "utf8")).trim().split("\n").map(JSON.parse);
+    const environmentCaptures = (
+      await readFile(fixture.environmentCapturePath, "utf8")
+    ).trim().split("\n").map(JSON.parse);
+    assert.ok(environmentCaptures.length >= 3);
+    assert.equal(environmentCaptures.every((entry) => entry.launcherKeys.length === 0), true);
     assert.deepEqual(captures[0].args, [
       "exec", "--json", "--color", "never",
       "-C", fixture.workspace,
       "-s", "workspace-write",
+      "-c", 'approval_policy="on-request"',
+      "-c", 'approvals_reviewer="auto_review"',
       "--add-dir", fixture.otherWorkspace,
       "-m", "gpt-real",
       "-c", 'model_reasoning_effort="high"',
@@ -209,12 +237,16 @@ test("Codex turns use stdin, explicit resume ids, server-owned cwd and sanitized
     ]);
     assert.equal(captures[0].args.join(" ").includes("HIDDEN_SENTINEL"), false);
     assert.match(captures[0].prompt, /\[\$manage-taskboard\]\(\/fixture\/manage-taskboard\/SKILL\.md\) e-taskboard/);
-    assert.match(captures[0].prompt, /\$real-skill/);
-    assert.match(captures[0].prompt, /HIDDEN_SENTINEL first/);
+    assert.match(
+      captures[0].prompt,
+      /HIDDEN_SENTINEL \[\$real-skill\]\(\/fixture\/real-skill\/SKILL\.md\) first/,
+    );
     assert.deepEqual(captures[1].args, [
       "exec", "--json", "--color", "never",
       "-C", fixture.workspace,
       "-s", "workspace-write",
+      "-c", 'approval_policy="on-request"',
+      "-c", 'approvals_reviewer="auto_review"',
       "--add-dir", fixture.otherWorkspace,
       "-m", "gpt-real",
       "-c", 'model_reasoning_effort="high"',
@@ -301,9 +333,9 @@ test("parser and event callback failures kill a SIGTERM-resistant process group"
       await rm(fixture.descendantPath, { force: true });
       const thread = await fixture.service.createThread({ projectId: "project" });
       const run = await fixture.service.startTurn(thread.id, { message });
-      await waitFor(() => fixture.service.getRun(run.id).status === "failed", 700);
+      await waitFor(() => fixture.service.getRun(run.id).status === "failed");
       assert.equal(fixture.service.getRun(run.id).error, expectedError);
-      await new Promise((resolve) => setTimeout(resolve, 350));
+      await new Promise((resolve) => setTimeout(resolve, fixture.descendantDelayMs + 50));
       await assert.rejects(readFile(fixture.descendantPath), (error) => error.code === "ENOENT");
     }
   } finally {

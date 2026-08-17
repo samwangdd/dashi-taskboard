@@ -6,13 +6,14 @@ import vm from "node:vm";
 import { parseTaskboardAutomationHostRequest } from "../shared/taskboard-automation.mjs";
 
 const sourceUrl = new URL("../inject/codex-taskboard.user.js", import.meta.url);
-const source = await readFile(sourceUrl, "utf8");
+const source = (await readFile(sourceUrl, "utf8")).replaceAll("\r\n", "\n");
 const webStyles = await readFile(new URL("../web/src/styles.css", import.meta.url), "utf8");
 const webApp = await readFile(new URL("../web/src/App.tsx", import.meta.url), "utf8");
+const embeddedHost = await readFile(new URL("../web/src/embeddedHost.mjs", import.meta.url), "utf8");
 
 test("injection is an idempotent IIFE guarded by its current source hash", () => {
   assert.match(source, /^\(\(\) => \{/);
-  assert.match(source, /const VERSION = "0\.6\.8"/);
+  assert.match(source, /const VERSION = "0\.6\.13"/);
   assert.match(source, /const SOURCE_HASH = window\.__CODEX_TASKBOARD_SOURCE_HASH__/);
   assert.match(source, /const SENTINEL_KEY = "__codexTaskboardInjection__"/);
   assert.match(source, /previous\?\.sourceHash === SOURCE_HASH/);
@@ -21,11 +22,17 @@ test("injection is an idempotent IIFE guarded by its current source hash", () =>
   assert.match(source, /window\[SENTINEL_KEY\] = api/);
 });
 
-test("embedded page uses the local taskboard URL and supports a runtime override", () => {
+test("embedded page uses the launcher URL inside an opaque sandbox", () => {
   assert.match(source, /http:\/\/127\.0\.0\.1:47823\/\?host=codex/);
   assert.match(source, /window\.__CODEX_TASKBOARD_URL__/);
-  assert.match(source, /nextFrame\.src = taskboardUrl\.href/);
-  assert.match(source, /frameOrigin = taskboardUrl\.origin/);
+  assert.match(source, /nextFrame\.name = frameName/);
+  assert.match(source, /nextFrame\.src = "about:blank"/);
+  assert.match(source, /requestHost\("load-frame", \{ frameName, frameCapability: capability \}\)/);
+  assert.match(source, /frameCapability = crypto\.randomUUID\(\)/);
+  assert.match(source, /nextFrame\.setAttribute\("sandbox", "allow-scripts/);
+  assert.match(source, /taskboardOrigin = taskboardUrl\.origin/);
+  assert.match(source, /frameOrigin = "null"/);
+  assert.doesNotMatch(source, /allow-same-origin/);
 });
 
 test("entry clones the native Plugins row and the page covers the complete Codex workspace", () => {
@@ -112,12 +119,12 @@ test("the embedded header exposes Codex's native sidebar expansion when collapse
 });
 
 test("opening asks the resident launcher to ensure the service and rebuilds failed frames", () => {
-  assert.match(source, /const HOST_BINDING_NAME = "__codexTaskboardHostV1"/);
+  assert.match(source, /const HOST_REQUEST_MESSAGE = "__codexTaskboardHostRequestV1"/);
   assert.match(source, /return requestHost\("ensure"\)/);
   assert.match(source, /result\.restarted/);
   assert.match(source, /loadTaskboardFrame\(\)/);
   assert.match(source, /waitForFrameReady\(\)/);
-  assert.match(source, /hostResponse: onHostResponse/);
+  assert.match(source, /function onHostBridgeMessage/);
   assert.match(source, /function hasLiveHostBinding/);
   assert.match(source, /HOST_HEARTBEAT_MAX_AGE_MS/);
 });
@@ -146,14 +153,31 @@ test("reopening reuses a ready cache-busted iframe without showing the startup p
   assert.doesNotMatch(prepareSource, /async function prepareTaskboard\(generation\) \{\s*showLoading\(\);/);
 });
 
-test("iframe messages require both the exact origin and source window", () => {
+test("opaque iframe messages require the current document capability", () => {
   assert.match(
     source,
     /event\.source !== frame\.contentWindow \|\| event\.origin !== frameOrigin/,
   );
   assert.match(source, /message\.type === "taskboard:open-thread"/);
   assert.match(source, /message\.type === "taskboard:create-thread"/);
-  assert.match(source, /postMessage\(message, frameOrigin\)/);
+  assert.match(source, /message\.capability !== frameCapability/);
+  assert.match(source, /message\.challenge !== frameChallenge/);
+  assert.match(source, /nextFrame\.addEventListener\("load", challengeFrameDocument\)/);
+  assert.match(source, /type: "taskboard:frame-challenge"/);
+  assert.match(source, /frameCapability = ""/);
+  assert.doesNotMatch(source, /nextFrame\.addEventListener\("load", postHostContext\)/);
+  assert.match(source, /postMessage\(message, frameOrigin === "null" \? "\*" : frameOrigin\)/);
+});
+
+test("HTTP and HTTPS links are opened by the authenticated host instead of a sandbox popup", () => {
+  assert.match(embeddedHost, /a\[target="_blank"\]/);
+  assert.match(embeddedHost, /url\.protocol !== "http:" && url\.protocol !== "https:"/);
+  assert.match(embeddedHost, /event\.preventDefault\(\)/);
+  assert.match(embeddedHost, /type: "taskboard:open-external"/);
+  assert.match(embeddedHost, /challenge: activeFrameChallenge/);
+  assert.match(source, /message\.type === "taskboard:open-external"/);
+  assert.match(source, /requestHost\("open-external", \{ url: url\.href \}\)/);
+  assert.match(source, /url\.protocol !== "http:" && url\.protocol !== "https:"/);
 });
 
 test("the iframe automation contract is forwarded through the fixed host binding", () => {
@@ -171,7 +195,10 @@ test("the iframe automation contract is forwarded through the fixed host binding
   assert.match(source, /requestId,\s*ok: true,\s*item: response\.item/);
   assert.match(source, /items: response\.items/);
   assert.match(source, /requestId,\s*ok: false,\s*error:/);
-  assert.match(source, /binding\(JSON\.stringify\(\{ \.\.\.payload, id, action \}\)\)/);
+  assert.match(source, /type: HOST_REQUEST_MESSAGE/);
+  assert.match(source, /capability: HOST_CAPABILITY/);
+  assert.match(source, /event\.source !== window/);
+  assert.doesNotMatch(source, /window\[HOST_BINDING_NAME\]/);
 });
 
 test("complete App automation payloads cross the injected forwarder into the current parser", () => {
@@ -189,9 +216,13 @@ test("complete App automation payloads cross the injected forwarder into the cur
     workspacePath: "/tmp/local-project",
     skillPath: "/tmp/manage-taskboard/SKILL.md",
     automationId: "automation-1",
+    enabledByUser: true,
+    quotaAware: true,
     intervalMinutes: 10,
     model: "gpt-5.6-sol",
     reasoningEffort: "ultra",
+    enabledByUser: true,
+    quotaAware: false,
   };
 
   for (const operation of ["list", "pause", "ensure-active"]) {
@@ -213,27 +244,44 @@ test("only a loopback Taskboard iframe can request native automation", () => {
   assert.match(source, /hostname === "127\.0\.0\.1" \|\| hostname === "localhost"/);
   assert.match(
     source,
-    /if \(!isLocalTaskboardOrigin\(frameOrigin\)\) \{\s*postToFrame\(\{\s*type: "taskboard:automation-response"/,
+    /if \(!isLocalTaskboardOrigin\(taskboardOrigin\)\) \{\s*postToFrame\(\{\s*type: "taskboard:automation-response"/,
   );
 });
 
-test("issues open an unsent native Codex composer in the exact workspace with a Skill mention", () => {
-  assert.match(source, /function createThreadForTask\(payload\)/);
-  assert.match(source, /\[data-app-action-sidebar-select-project\]/);
-  assert.match(source, /data-codex-composer/);
-  assert.match(source, /type: "electron-set-active-workspace-root"/);
-  assert.match(source, /root: workspacePath/);
-  assert.doesNotMatch(source, /prefillPrompt: prompt/);
-  assert.match(source, /requestHostTaskComposerPrefill\(\{/);
-  assert.match(source, /requestHost\("prefill-task-composer"/);
-  assert.match(source, /function waitForPreparedComposer\(identifier, skillPath\)/);
-  assert.match(source, /\[skill-mention-name\]/);
-  assert.match(source, /mention\.getAttribute\("skill-mention-path"\) === skillPath/);
-  assert.doesNotMatch(source, /submit\.click\(\)/);
-  assert.match(source, /type: "taskboard:thread-prepared"/);
-  assert.doesNotMatch(source, /function waitForCreatedThread/);
-  assert.doesNotMatch(source, /type: "taskboard:thread-created"/);
-  assert.doesNotMatch(webApp, /taskboard:thread-created/);
+test("issues start a native Codex conversation in the confirmed workspace with the task title", () => {
+  assert.match(source, /async function createThreadForTask\(payload\)/);
+  assert.match(source, /async function nativeProjectContext\(\)/);
+  assert.match(source, /async function activeNativeWorkspaceRoots\(\)/);
+  assert.match(source, /requestNativeFetch\("active-workspace-roots", \{\}\)/);
+  assert.match(source, /function normalizeNativeRootPath\(value\)/);
+  assert.match(source, /async function resolveNativeProject\(requestedProjectId, workspacePath\)/);
+  assert.match(source, /workspacePath\) \{\s*return normalizeNativeRootPath\(workspacePath\) \? \{ targetRoot: workspacePath \} : null/);
+  assert.match(source, /const targetRoot = project\?\.rootPaths\[0\]/);
+  assert.match(source, /async function waitForNativeProject\(targetRoot\)/);
+  const waitStart = source.indexOf("async function waitForNativeProject");
+  const waitSource = source.slice(waitStart, source.indexOf("async function createThreadForTask", waitStart));
+  assert.match(waitSource, /selectedNativeProjectId\(\)/);
+  assert.match(waitSource, /activeNativeWorkspaceRoots\(\)/);
+  assert.match(waitSource, /projectId\s*&&\s*normalizeNativeRootPath\(activeRoots\[0\]\) === normalizedTargetRoot/);
+  assert.match(
+    source,
+    /requestNativeFetch\("add-workspace-root-option", \{\s*root: target\.targetRoot,\s*setActive: true,\s*origin: window\.location\.origin,/,
+  );
+  assert.match(source, /if \(switched\?\.success !== true\)/);
+  assert.match(source, /await waitForNativeProject\(target\.targetRoot\)/);
+  assert.match(source, /const previousThreadId = normalizeThreadId/);
+  assert.match(source, /const focusComposerNonce = crypto\.randomUUID\(\)/);
+  assert.match(source, /state: \{\s*focusComposerNonce,\s*prefillPrompt: instruction,/);
+  assert.match(source, /const HOST_REQUEST_TIMEOUT_MS = 12_000/);
+  assert.match(source, /function requestHost\(action, payload = \{\}, timeoutMs = HOST_REQUEST_TIMEOUT_MS\)/);
+  assert.doesNotMatch(source, /CONVERSATION_REQUEST_TIMEOUT_MS/);
+  assert.match(source, /requestHostTaskConversationStart\(\{\s*taskId,\s*previousThreadId,\s*targetRoot: target\.targetRoot,\s*instruction,\s*title,/);
+  assert.match(
+    source,
+    /requestHost\("start-task-conversation", \{\s*taskId,\s*previousThreadId,\s*targetRoot,\s*instruction,\s*title,\s*\}, null\)/,
+  );
+  assert.match(source, /lastNativeThreadId = startedThreadId/);
+  assert.match(source, /type: "taskboard:thread-prepared", payload: \{ taskId, threadId: started\.threadId \}/);
   assert.match(
     webApp,
     /const instruction = buildThreadInstruction\(\{\s*identifier: task\.identifier,\s*projectName: selectedProject\?\.name,\s*projectId: task\.projectId,\s*workspacePath,\s*\}\);/,
@@ -254,6 +302,7 @@ test("issues open an unsent native Codex composer in the exact workspace with a 
   assert.match(webApp, /skillDisplayName: "Manage Taskboard"/);
   assert.match(webApp, /skillPath: manageTaskboardSkillPath/);
   assert.match(webApp, /instruction,/);
+  assert.match(webApp, /title: task\.title,/);
   assert.match(webApp, /type: "taskboard:create-thread"/);
   assert.match(webApp, /type: "taskboard:open-thread", payload: \{ threadId \}/);
 });
@@ -263,9 +312,10 @@ test("the standalone web page opens linked Codex tasks through the app deep link
 });
 
 test("the injected app opens an existing local Codex task instead of a new composer", () => {
+  const openThreadStart = source.indexOf("async function openThread");
   const openThreadSource = source.slice(
-    source.indexOf("async function openThread"),
-    source.indexOf("function projectRowById"),
+    openThreadStart,
+    source.indexOf("async function nativeProjectContext", openThreadStart),
   );
   assert.match(openThreadSource, /if \(row\?\.isConnected\) \{\s*row\.click\?\.\(\);\s*return;/);
   assert.match(openThreadSource, /await dispatchHostMessage\(\{\s*type: "navigate-to-route",\s*path: routeForThread\(normalizedThreadId\)/);
@@ -280,11 +330,10 @@ test("host navigation follows Codex's renderer message bus", () => {
   assert.doesNotMatch(source, /new CustomEvent\("codex-message-from-view"/);
 });
 
-test("the standalone web page opens unlinked issues as prefilled empty Codex tasks", () => {
-  assert.match(webApp, /const query = new URLSearchParams\(\)/);
-  assert.match(webApp, /query\.set\("path", workspacePath\)/);
+test("the standalone web page opens a new Codex conversation with the same contextual prompt", () => {
+  assert.match(webApp, /if \(workspacePath\) query\.set\("path", workspacePath\)/);
   assert.match(webApp, /query\.set\("prompt", prompt\)/);
-  assert.match(webApp, /window\.location\.assign\(`codex:\/\/new\?/);
+  assert.match(webApp, /window\.location\.assign\(`codex:\/\/new\?\$\{query\.toString\(\)\.replace\(/);
 });
 
 test("host context captures all Codex projects even when the sidebar section is collapsed", () => {
@@ -298,7 +347,8 @@ test("host context captures all Codex projects even when the sidebar section is 
   assert.match(source, /requestHostEnsure\(taskboardUrl\),\s*captureHostContext\(\),/);
   assert.match(source, /let lastNativeThreadId = ""/);
   assert.match(source, /clickedThreadId.*lastNativeThreadId/s);
-  assert.match(source, /activeThreadId \|\| lastNativeThreadId \|\| normalizeThreadId\(threadIdFromLocation\(\)\)/);
+  assert.match(source, /const currentThreadId = activeThreadId \|\| runningThreadId \|\| lastNativeThreadId/);
+  assert.match(source, /const threadId = currentThreadId \|\| lastNativeThreadId \|\| normalizeThreadId\(threadIdFromLocation\(\)\)/);
   assert.match(source, /replace\(\/\^\(\?:local\|cloud\):\/i, ""\)/);
   assert.match(source, /function findTasksSection\(\)/);
 });

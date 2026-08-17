@@ -16,7 +16,14 @@ import {
 export const SCHEMA_VERSION = 2;
 export const DEFAULT_API_URL = "http://127.0.0.1:47823";
 
-const BOOLEAN_OPTIONS = new Set(["json", "ui", "help"]);
+const sourceRuntimeFile = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+  ".data",
+  "launcher-runtime.json",
+);
+const BOOLEAN_OPTIONS = new Set(["json", "ui", "help", "archived"]);
+const GLOBAL_OPTIONS = new Set(["runtime-file"]);
 
 const COMMAND_OPTIONS = new Map([
   ["project list", new Set(["json"])],
@@ -25,7 +32,7 @@ const COMMAND_OPTIONS = new Map([
   ["cloud login", new Set(["url", "actor-name", "json"])],
   ["cloud status", new Set(["json"])],
   ["cloud logout", new Set(["json"])],
-  ["issue list", new Set(["project", "status", "json"])],
+  ["issue list", new Set(["project", "status", "archived", "json"])],
   ["issue get", new Set(["json"])],
   [
     "issue create",
@@ -42,6 +49,7 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "start-date",
       "due-date",
       "recurrence-interval",
       "recurrence-unit",
@@ -51,6 +59,7 @@ const COMMAND_OPTIONS = new Map([
   [
     "issue update",
     new Set([
+      "project",
       "title",
       "description",
       "description-file",
@@ -62,6 +71,7 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "start-date",
       "due-date",
       "recurrence-interval",
       "recurrence-unit",
@@ -78,6 +88,7 @@ const COMMAND_OPTIONS = new Map([
   ["comment update", new Set(["body", "thread-id", "if-version", "json"])],
   ["comment delete", new Set(["thread-id", "if-version", "json"])],
   ["attachment download", new Set(["output", "json"])],
+  ["attachment upload", new Set(["file", "task", "comment", "content-type", "json"])],
   ["context current", new Set(["cwd", "json"])],
   ["coding start", new Set(["json"])],
   ["coding get", new Set(["json"])],
@@ -107,6 +118,7 @@ const OPTION_VALUES = new Map([
   ["git-branch", "BRANCH"],
   ["worktree-path", "PATH"],
   ["worktree-branch", "BRANCH"],
+  ["start-date", "YYYY-MM-DD"],
   ["due-date", "YYYY-MM-DD"],
   ["recurrence-interval", "N"],
   ["recurrence-unit", "day|week|month|year"],
@@ -116,6 +128,10 @@ const OPTION_VALUES = new Map([
   ["body", "TEXT"],
   ["body-file", "FILE"],
   ["output", "PATH"],
+  ["file", "FILE"],
+  ["task", "ISSUE_ID"],
+  ["comment", "COMMENT_ID"],
+  ["content-type", "MIME_TYPE"],
   ["cwd", "PATH"],
   ["workflow", "WORKFLOW_ID"],
   ["contract-file", "FILE"],
@@ -466,19 +482,24 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download, context current, coding start/get/artifacts/contract/handoff/check/verdict/commit",
+      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current, coding start/get/artifacts/contract/handoff/check/verdict/commit",
     );
   }
   validateOptions(parsed.options, allowedOptions);
 
-  const env = overrides.env ?? process.env;
+  const processEnv = overrides.env ?? process.env;
+  const env = parsed.options["runtime-file"] === undefined
+    ? processEnv
+    : { ...processEnv, CODEX_TASKBOARD_RUNTIME_FILE: parsed.options["runtime-file"] };
   const usesCompanionControl = command.startsWith("cloud ")
     || command.startsWith("coding ")
     || command === "project map";
   const api = createApiClient(overrides, {
-    baseUrl: usesCompanionControl || env.TASKBOARD_COMPANION_URL !== undefined
-      ? resolveCompanionUrl(env)
-      : undefined,
+    baseUrl: usesCompanionControl
+      || env.TASKBOARD_COMPANION_URL !== undefined
+      || env.CODEX_TASKBOARD_COMPANION_URL !== undefined
+      ? await resolveCompanionUrl(env, overrides)
+      : await resolveTaskboardBaseUrl(env, overrides),
   });
   switch (command) {
     case "project list":
@@ -577,6 +598,9 @@ async function execute(parsed, overrides) {
     case "attachment download":
       expectOperandCount(parsed, 1);
       return downloadAttachment(api, parsed.operands[0], parsed.options, overrides);
+    case "attachment upload":
+      expectOperandCount(parsed, 0);
+      return uploadAttachment(api, parsed.options, overrides);
     case "context current":
       expectOperandCount(parsed, 0);
       return currentContext(api, parsed.options, overrides);
@@ -639,13 +663,15 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
   }
 
   const env = overrides.env ?? process.env;
-  const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? env.TASKBOARD_URL ?? DEFAULT_API_URL);
+  const baseUrl = normalizeBaseUrl(
+    explicitBaseUrl ?? env.TASKBOARD_URL ?? env.CODEX_TASKBOARD_URL ?? DEFAULT_API_URL,
+  );
 
   return {
     async request(method, pathname, body) {
       let response;
       try {
-        response = await fetchImplementation(new URL(pathname, `${baseUrl}/`), {
+        response = await fetchImplementation(resolveApiUrl(baseUrl, pathname), {
           method,
           headers: {
             accept: "application/json",
@@ -682,7 +708,7 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
     async download(pathname) {
       let response;
       try {
-        response = await fetchImplementation(new URL(pathname, `${baseUrl}/`), {
+        response = await fetchImplementation(resolveApiUrl(baseUrl, pathname), {
           headers: {
             accept: "*/*",
             "x-taskboard-client": "taskctl",
@@ -713,6 +739,44 @@ function createApiClient(overrides, { baseUrl: explicitBaseUrl } = {}) {
         size: Number(response.headers.get("content-length")) || bytes.byteLength,
       };
     },
+    async upload(pathname, { body, contentType, filename }) {
+      let response;
+      try {
+        response = await fetchImplementation(resolveApiUrl(baseUrl, pathname), {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": contentType,
+            "x-taskboard-client": "taskctl",
+            "x-taskboard-filename": encodeURIComponent(filename),
+          },
+          body,
+        });
+      } catch (error) {
+        throw new TaskctlError(`Cannot reach taskboard service at ${baseUrl}`, {
+          code: "SERVICE_UNAVAILABLE",
+          exitCode: 3,
+          details: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      const payload = await readResponse(response);
+      if (!response.ok) {
+        const apiError = extractApiError(payload, response.status);
+        throw new TaskctlError(apiError.message, {
+          code: apiError.code,
+          exitCode: response.status === 409 ? 5 : 4,
+          details: apiError.details,
+        });
+      }
+      if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+        throw new TaskctlError("Taskboard service returned an invalid JSON response", {
+          code: "INVALID_RESPONSE",
+          exitCode: 4,
+        });
+      }
+      return payload;
+    },
   };
 }
 
@@ -735,6 +799,86 @@ async function downloadAttachment(api, attachmentId, options, overrides) {
     contentType: downloaded.contentType,
     size: downloaded.size,
   };
+}
+
+async function uploadAttachment(api, options, overrides) {
+  const taskId = options.task;
+  const commentId = options.comment;
+  if (Boolean(taskId) === Boolean(commentId)) {
+    throw usageError("attachment upload requires exactly one of --task or --comment");
+  }
+
+  const filePath = resolveInputPath(requiredOption(options, "file"), overrides);
+  const read = overrides.readFile ?? readFile;
+  let bytes;
+  try {
+    bytes = await read(filePath);
+  } catch (error) {
+    throw new TaskctlError(`Cannot read attachment file: ${filePath}`, {
+      code: "FILE_READ_FAILED",
+      exitCode: 2,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  const filename = path.basename(filePath);
+  if (!filename || filename === "." || filename === "..") {
+    throw usageError("Attachment --file must include a valid filename");
+  }
+
+  const contentType = options["content-type"]
+    ? String(options["content-type"]).trim().toLowerCase()
+    : guessContentType(filename);
+  if (!contentType) {
+    throw usageError("--content-type cannot be empty");
+  }
+
+  const body = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  const pathname = taskId
+    ? `${taskPath(taskId)}/attachments`
+    : `${commentPath(commentId)}/attachments`;
+  const payload = await api.upload(pathname, {
+    body,
+    contentType,
+    filename,
+  });
+
+  return {
+    attachment: payload.attachment ?? null,
+    file: filePath,
+    target: taskId
+      ? { type: "task", id: taskId }
+      : { type: "comment", id: commentId },
+  };
+}
+
+function guessContentType(filename) {
+  switch (path.extname(filename).toLowerCase()) {
+    case ".png":
+      return "image/png";
+    case ".jpg":
+    case ".jpeg":
+      return "image/jpeg";
+    case ".gif":
+      return "image/gif";
+    case ".webp":
+      return "image/webp";
+    case ".svg":
+      return "image/svg+xml";
+    case ".md":
+      return "text/markdown";
+    case ".txt":
+      return "text/plain";
+    case ".json":
+      return "application/json";
+    case ".pdf":
+      return "application/pdf";
+    case ".html":
+    case ".htm":
+      return "text/html";
+    default:
+      return "application/octet-stream";
+  }
 }
 
 async function cloudLogin(api, rawUrl, actorName, overrides) {
@@ -810,9 +954,13 @@ async function listIssues(api, options) {
   if (options.status !== undefined) {
     assertStatus(options.status);
   }
+  if (options.archived !== undefined && !["true", "false", "all"].includes(options.archived)) {
+    throw usageError("--archived must be true, false, or all");
+  }
   const search = new URLSearchParams();
   if (options.project !== undefined) search.set("projectId", options.project);
   if (options.status !== undefined) search.set("status", options.status);
+  if (options.archived !== undefined) search.set("archived", options.archived);
   const query = search.size > 0 ? `?${search}` : "";
   return api.request("GET", `/api/tasks${query}`);
 }
@@ -836,6 +984,7 @@ async function createIssue(api, options, overrides) {
     ...optionalField("workflowId", options.workflow),
     threadId,
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
   });
@@ -849,12 +998,14 @@ async function updateIssue(api, taskId, options, overrides) {
   const recurrence = recurrenceFromOptions(options);
   const threadId = resolveThreadId(options, overrides);
   const patch = {
+    ...optionalField("projectId", options.project),
     ...optionalField("title", options.title),
     ...optionalField("status", options.status),
     ...optionalField("priority", options.priority),
     ...optionalField("labels", options.labels === undefined ? undefined : parseLabels(options.labels)),
     ...optionalField("workflowId", options.workflow),
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
   };
@@ -1090,7 +1241,7 @@ function optionalField(name, value) {
 
 function validateOptions(options, allowedOptions) {
   for (const name of Object.keys(options)) {
-    if (!allowedOptions.has(name)) {
+    if (!allowedOptions.has(name) && !GLOBAL_OPTIONS.has(name)) {
       throw usageError(`Unknown option --${name}`);
     }
   }
@@ -1165,10 +1316,44 @@ function normalizeBaseUrl(rawUrl) {
   return url.toString().replace(/\/$/, "");
 }
 
-function resolveCompanionUrl(env) {
+function resolveApiUrl(baseUrl, pathname) {
+  return new URL(pathname.replace(/^\//, ""), `${baseUrl}/`);
+}
+
+async function resolveTaskboardBaseUrl(env, overrides) {
+  if (env.TASKBOARD_URL !== undefined) return env.TASKBOARD_URL;
+  if (env.CODEX_TASKBOARD_URL !== undefined) return env.CODEX_TASKBOARD_URL;
+  const configuredDescriptorPath = env.CODEX_TASKBOARD_RUNTIME_FILE;
+  const descriptorPath = configuredDescriptorPath ?? sourceRuntimeFile;
+  let descriptor;
+  try {
+    const read = configuredDescriptorPath === undefined
+      ? readFile
+      : (overrides.readFile ?? readFile);
+    descriptor = JSON.parse(await read(descriptorPath, "utf8"));
+  } catch (error) {
+    if (configuredDescriptorPath === undefined && error?.code === "ENOENT") {
+      return DEFAULT_API_URL;
+    }
+    throw new TaskctlError("Cannot read the active Taskboard launcher endpoint", {
+      code: "SERVICE_UNAVAILABLE",
+      exitCode: 3,
+      details: error instanceof Error ? error.message : String(error),
+    });
+  }
+  if (descriptor?.version !== 1 || typeof descriptor.url !== "string") {
+    throw new TaskctlError("The active Taskboard launcher endpoint is invalid", {
+      code: "INVALID_RESPONSE",
+      exitCode: 4,
+    });
+  }
+  return descriptor.url;
+}
+
+async function resolveCompanionUrl(env, overrides) {
   const rawUrl = env.TASKBOARD_COMPANION_URL
-    ?? env.TASKBOARD_URL
-    ?? DEFAULT_API_URL;
+    ?? env.CODEX_TASKBOARD_COMPANION_URL
+    ?? await resolveTaskboardBaseUrl(env, overrides);
   let url;
   try {
     url = new URL(rawUrl);
@@ -1178,18 +1363,21 @@ function resolveCompanionUrl(env) {
   const isLoopback = url.hostname === "localhost"
     || url.hostname === "127.0.0.1"
     || url.hostname === "[::1]";
+  const instanceToken = url.pathname.replace(/^\//, "").replace(/\/$/, "");
+  const hasValidPathname = url.pathname === "/"
+    || (/^[a-z0-9-]{16,128}$/i.test(instanceToken) && !instanceToken.includes("/"));
   if (
     !isLoopback
     || (url.protocol !== "http:" && url.protocol !== "https:")
     || url.username
     || url.password
-    || (url.pathname !== "/" && url.pathname !== "")
+    || !hasValidPathname
     || url.search
     || url.hash
   ) {
-    throw usageError("Local companion URL must be a loopback HTTP or HTTPS origin");
+    throw usageError("Local companion URL must be a loopback HTTP or HTTPS endpoint");
   }
-  return url.origin;
+  return url.toString().replace(/\/$/, "");
 }
 
 async function readResponse(response) {

@@ -2,7 +2,7 @@ const HOST_REQUEST_ERROR = "自动认领配置暂时无法应用，请刷新后�
 const AUTOMATION_SCHEMA_DIAGNOSTIC = "AUTOMATION_SCHEMA_MISMATCH";
 
 function parseHostRequest(payload, parseAutomationRequest) {
-  if (typeof payload !== "string" || payload.length > 4_096) {
+  if (typeof payload !== "string" || payload.length > 16_384) {
     return { id: null, request: null, error: HOST_REQUEST_ERROR };
   }
 
@@ -20,6 +20,32 @@ function parseHostRequest(payload, parseAutomationRequest) {
   ) ? request.id : null;
   if (!id) return { id: null, request: null, error: HOST_REQUEST_ERROR };
   if (request.action === "ensure") return { id, request, error: null };
+  if (
+    request.action === "load-frame"
+    && typeof request.frameName === "string"
+    && /^codex-taskboard-[a-f0-9-]{36,80}$/i.test(request.frameName)
+    && typeof request.frameCapability === "string"
+    && /^[a-f0-9-]{36,80}$/i.test(request.frameCapability)
+  ) return { id, request, error: null };
+  if (request.action === "open-external" && typeof request.url === "string") {
+    try {
+      const url = new URL(request.url);
+      if ((url.protocol === "http:" || url.protocol === "https:") && url.href.length <= 2_048) {
+        return { id, request: { ...request, url: url.href }, error: null };
+      }
+    } catch {}
+  }
+  if (
+    request.action === "open-attachment"
+    && typeof request.attachmentId === "string"
+    && /^[a-f0-9-]{36}$/i.test(request.attachmentId)
+    && typeof request.filename === "string"
+    && request.filename.length > 0
+    && request.filename.length <= 240
+    && request.filename !== "."
+    && request.filename !== ".."
+    && !/[\u0000-\u001f\u007f/\\]/.test(request.filename)
+  ) return { id, request, error: null };
   if (request.action === "automation") {
     const parsed = parseAutomationRequest(request);
     return parsed
@@ -32,18 +58,22 @@ function parseHostRequest(payload, parseAutomationRequest) {
         };
   }
   if (
-    request.action === "prefill-task-composer"
+    request.action === "start-task-conversation"
+    && typeof request.taskId === "string"
+    && request.taskId.length > 0
+    && request.taskId.length <= 128
+    && !/[\u0000-\u001f\u007f]/.test(request.taskId)
+    && typeof request.previousThreadId === "string"
+    && request.previousThreadId.length <= 240
+    && typeof request.targetRoot === "string"
+    && request.targetRoot.length > 0
+    && request.targetRoot.length <= 4_096
     && typeof request.instruction === "string"
     && request.instruction.length > 0
     && request.instruction.length <= 1_024
-    && typeof request.skillName === "string"
-    && /^[a-z0-9][a-z0-9-]{0,79}$/i.test(request.skillName)
-    && typeof request.skillDisplayName === "string"
-    && request.skillDisplayName.length > 0
-    && request.skillDisplayName.length <= 120
-    && typeof request.skillPath === "string"
-    && request.skillPath.length > 0
-    && request.skillPath.length <= 1_024
+    && typeof request.title === "string"
+    && request.title.length > 0
+    && request.title.length <= 240
   ) {
     return { id, request, error: null };
   }
@@ -51,6 +81,13 @@ function parseHostRequest(payload, parseAutomationRequest) {
 }
 
 export async function handleHostBindingPayload(params, handlers) {
+  if (
+    typeof handlers.isAuthorizedContext === "function"
+    && !handlers.isAuthorizedContext(params.executionContextId)
+  ) {
+    return { responded: false, accepted: false };
+  }
+
   const parsed = parseHostRequest(params.payload, handlers.parseAutomationRequest);
   if (!parsed.request) {
     if (!parsed.id) return { responded: false, accepted: false };
@@ -67,10 +104,16 @@ export async function handleHostBindingPayload(params, handlers) {
     let result;
     if (parsed.request.action === "ensure") {
       result = await handlers.ensure();
+    } else if (parsed.request.action === "load-frame") {
+      result = await handlers.loadFrame(parsed.request);
+    } else if (parsed.request.action === "open-external") {
+      result = await handlers.openExternal(parsed.request);
+    } else if (parsed.request.action === "open-attachment") {
+      result = await handlers.openAttachment(parsed.request);
     } else if (parsed.request.action === "automation") {
       result = await handlers.runAutomation(parsed.request, params.executionContextId);
     } else {
-      result = await handlers.prefill(parsed.request, params.executionContextId);
+      result = await handlers.startConversation(parsed.request, params.executionContextId);
     }
     await handlers.sendResponse(params.executionContextId, {
       id: parsed.request.id,

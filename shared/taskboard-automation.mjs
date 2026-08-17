@@ -68,11 +68,29 @@ export function buildTaskboardAutomationName(request) {
 }
 
 export function buildTaskboardAutomationPrompt(request) {
+  const automationName = buildTaskboardAutomationName(request);
+  const taskctlCommand = buildTaskctlCommand(request);
   return [
     buildTaskboardLoopPromptOpening(request),
+    `本轮所有 taskctl 操作都使用完整命令前缀 ${taskctlCommand}，不要使用 PATH 中的 taskctl。`,
+    `开始时先运行 ${taskctlCommand} issue list --project ${request.taskboardProjectId} --status todo --json。若没有 todo，使用 Codex automation_update 将名为「${automationName}」的当前自动化设为 PAUSED，保留其他字段，然后结束；不要创建或打开新的任务会话。`,
     ...TASKBOARD_BASE_INSTRUCTIONS,
+    `本次处理或交接后，再次运行 ${taskctlCommand} issue list --project ${request.taskboardProjectId} --status todo --json。若没有 todo，使用 Codex automation_update 将名为「${automationName}」的当前自动化设为 PAUSED，保留其他字段，避免后续创建空会话。`,
     codingWorkflowAutomationInstructions(),
   ].join("\n");
+}
+
+function buildTaskctlCommand(request) {
+  const cliPath = path.resolve(path.dirname(request.skillPath), "../..", "cli/taskctl.mjs");
+  const command = `${shellQuote(process.execPath)} ${shellQuote(cliPath)}`;
+  const runtimeFilePath = process.env.CODEX_TASKBOARD_RUNTIME_FILE;
+  return runtimeFilePath
+    ? `${command} --runtime-file ${shellQuote(runtimeFilePath)}`
+    : command;
+}
+
+function shellQuote(value) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 export function buildTaskboardAutomationSpec(request) {
@@ -87,6 +105,27 @@ export function buildTaskboardAutomationSpec(request) {
     reasoningEffort: request.reasoningEffort,
     rrule: `RRULE:FREQ=MINUTELY;INTERVAL=${request.intervalMinutes}`,
   };
+}
+
+export function taskboardAutomationPolicyOperation(request, {
+  explicit,
+  previousQuotaState,
+  quotaState,
+  currentStatus,
+}) {
+  if (!request.enabledByUser) return "pause";
+  if (
+    !explicit
+    && currentStatus === "PAUSED"
+    && (!request.quotaAware || previousQuotaState === "available")
+  ) return "list";
+  if (request.quotaAware && quotaState !== "available") return "pause";
+  if (
+    explicit
+    || currentStatus === undefined
+    || (request.quotaAware && previousQuotaState !== "available")
+  ) return "ensure-active";
+  return "ensure-active";
 }
 
 export async function reconcileTaskboardAutomation(request, rpc) {

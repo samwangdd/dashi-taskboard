@@ -1,71 +1,127 @@
 import { useEffect, useState } from "react";
 import type { DragEvent } from "react";
-import type { Task, TaskStatus } from "../types";
-import { ColumnVisibilityMenu } from "./ColumnVisibilityMenu";
-import { LinearIcon, LinearStatusIcon } from "./LinearIcon";
+import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
+import { taskStatusLabel, useTaskboardI18n } from "../i18n";
+import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
+import {
+  TaskboardIcon,
+  taskboardIconSource,
+  type TaskboardIconName,
+} from "./TaskboardIcon";
 
 export const STATUS_DETAILS: Record<
   TaskStatus,
   { label: string; tone: string }
 > = {
-  backlog: { label: "积压事项", tone: "backlog" },
-  todo: { label: "待办事项", tone: "todo" },
-  in_progress: { label: "进行中", tone: "progress" },
-  in_review: { label: "审核中", tone: "review" },
-  blocked: { label: "已阻塞", tone: "blocked" },
+  backlog: { label: "待立项", tone: "backlog" },
+  todo: { label: "等待认领", tone: "todo" },
+  in_progress: { label: "处理中", tone: "progress" },
+  in_review: { label: "等你确认", tone: "review" },
+  blocked: { label: "遇到阻碍", tone: "blocked" },
   done: { label: "完成", tone: "done" },
-  canceled: { label: "已取消", tone: "canceled" },
+  canceled: { label: "取消", tone: "canceled" },
 };
 
+const STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
+  backlog: "statusTodo",
+  todo: "statusTodo",
+  in_progress: "statusProgress",
+  in_review: "statusReview",
+  blocked: "statusBlocked",
+  done: "statusReview",
+  canceled: "statusBlocked",
+};
+
+const COLUMN_STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
+  backlog: "statusTodo",
+  todo: "columnStatusTodo",
+  in_progress: "columnStatusProgress",
+  in_review: "columnStatusReview",
+  blocked: "columnStatusBlocked",
+  done: "statusReview",
+  canceled: "statusBlocked",
+};
+
+const COLUMN_ADD_ICONS: Partial<Record<TaskStatus, TaskboardIconName>> = {
+  todo: "columnAddTodo",
+  in_progress: "columnAddProgress",
+  in_review: "columnAddReview",
+  blocked: "columnAddBlocked",
+};
+
+export function statusIconSource(status: TaskStatus) {
+  return taskboardIconSource(STATUS_ICONS[status]);
+}
+
 export function StatusIcon({ status }: { status: TaskStatus }) {
-  return <LinearStatusIcon status={status} />;
+  return <TaskboardIcon name={STATUS_ICONS[status]} />;
+}
+
+function ColumnStatusIcon({ status }: { status: TaskStatus }) {
+  return <TaskboardIcon name={COLUMN_STATUS_ICONS[status]} />;
 }
 
 interface BoardColumnProps {
+  scrollRef: (element: HTMLDivElement | null) => void;
   status: TaskStatus;
-  statusIndex: number;
   tasks: Task[];
+  presentations: Record<string, TaskCardPresentation>;
+  now: number;
+  emptyMessage: string;
   isDropTarget: boolean;
   draggedTaskId: string | null;
   draggedTaskHeight: number;
   movingTaskId: string | null;
   settlingTaskId: string | null;
   contextMenuTaskId: string | null;
+  availableLabels: string[];
+  currentUser: ActorIdentity;
+  createEnabled?: boolean;
+  onCreateLabel: (label: string) => Promise<void>;
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
+  onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
+  onComplete: (task: Task) => void;
   onContextMenu: (task: Task, position: { x: number; y: number }) => void;
-  onMove: (task: Task, status: TaskStatus) => void;
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
   onDragEnter: (status: TaskStatus) => void;
   onDrop: (status: TaskStatus, taskId: string, beforeTaskId: string | null) => void;
-  onOpenThread: (threadId: string) => void;
-  onHide: (status: TaskStatus) => void;
+  onOpenConversation: (conversation: TaskConversationItem) => void;
 }
 
 export function BoardColumn({
+  scrollRef,
   status,
-  statusIndex,
   tasks,
+  presentations,
+  now,
+  emptyMessage,
   isDropTarget,
   draggedTaskId,
   draggedTaskHeight,
   movingTaskId,
   settlingTaskId,
   contextMenuTaskId,
+  availableLabels,
+  currentUser,
+  createEnabled = true,
+  onCreateLabel,
   onCreate,
   onEdit,
+  onUpdate,
+  onComplete,
   onContextMenu,
-  onMove,
   onDragStart,
   onDragEnd,
   onDragEnter,
   onDrop,
-  onOpenThread,
-  onHide,
+  onOpenConversation,
 }: BoardColumnProps) {
+  const { language, text } = useTaskboardI18n();
   const details = STATUS_DETAILS[status];
+  const label = taskStatusLabel(language, status);
   const [dropBeforeTaskId, setDropBeforeTaskId] = useState<string | null | undefined>();
   const taskIndexes = new Map(tasks.map((task, index) => [task.id, index]));
   const remainingTasks = tasks.filter((task) => task.id !== draggedTaskId);
@@ -128,55 +184,58 @@ export function BoardColumn({
     >
       <header className="column-header">
         <div className="column-heading">
-          <span className={`status-icon status-icon-${details.tone}`}>
-            <StatusIcon status={status} />
+          <span className={`column-status-icon status-icon-${details.tone}`}>
+            <ColumnStatusIcon status={status} />
           </span>
-          <h2 id={`column-${status}`}>{details.label}</h2>
-          <span className="task-count" aria-label={`${tasks.length} 个议题`}>{tasks.length}</span>
+          <h2 id={`column-${status}`}>
+            {label}{tasks.length > 0 && (
+              status === "todo" || status === "in_progress" || status === "in_review"
+            ) ? ` ${tasks.length}` : ""}
+          </h2>
         </div>
-        <div className="column-actions">
-          {tasks.length > 0 && (
-            <ColumnVisibilityMenu
-              label={details.label}
-              action="hide"
-              className="icon-button column-menu"
-              onAction={() => onHide(status)}
-            />
-          )}
-          <button
-            type="button"
-            className="icon-button add-task-button"
-            onClick={() => onCreate(status)}
-            aria-label={`在${details.label}中新建议题`}
-            title={`添加到${details.label}`}
-          >
-            <LinearIcon name="plus" />
-          </button>
-        </div>
+        {createEnabled && (
+          <div className="column-actions">
+            <button
+              type="button"
+              className="icon-button add-task-button"
+              onClick={() => onCreate(status)}
+              aria-label={text(`在${label}中新建议题`, `Create issue in ${label}`)}
+              title={text(`添加到${label}`, `Add to ${label}`)}
+            >
+              <TaskboardIcon name={COLUMN_ADD_ICONS[status] ?? "columnAdd"} />
+            </button>
+          </div>
+        )}
       </header>
 
-      <div className="column-list">
+      <div className="column-list" ref={scrollRef}>
         {tasks.map((task) => {
           const dragShift = getTaskDragShift(task);
           return (
             <TaskCard
               key={task.id}
               task={task}
-              statusIndex={statusIndex}
+              presentation={presentations[task.id]}
+              now={now}
               isDragging={draggedTaskId === task.id}
               dragShift={dragShift}
               isMoving={movingTaskId === task.id}
               isSettling={settlingTaskId === task.id}
               isContextMenuOpen={contextMenuTaskId === task.id}
+              availableLabels={availableLabels}
+              currentUser={currentUser}
+              onCreateLabel={onCreateLabel}
               onEdit={onEdit}
+              onUpdate={onUpdate}
+              onComplete={onComplete}
               onContextMenu={onContextMenu}
-              onMove={onMove}
               onDragStart={onDragStart}
               onDragEnd={onDragEnd}
-              onOpenThread={onOpenThread}
+              onOpenConversation={onOpenConversation}
             />
           );
         })}
+        {tasks.length === 0 && <div className="column-empty">{emptyMessage}</div>}
       </div>
     </section>
   );

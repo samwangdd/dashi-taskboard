@@ -1,8 +1,13 @@
 import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
+
+import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
+import { signalProcessTree } from "../shared/process-tree.mjs";
 
 const VISIBLE_TEXT_LIMIT = 65_536;
 const STDERR_LIMIT = 65_536;
 const SKILL_MARKER = "\uFFFC";
+const TURN_OWNER_PATH = fileURLToPath(new URL("./ai-turn-owner.mjs", import.meta.url));
 const ITEM_TYPES = new Set([
   "agent_message",
   "command_execution",
@@ -441,10 +446,10 @@ export function spawnCodexTurn({
   onRawEvent,
   maxLineBytes = 1_048_576,
 }) {
-  const child = spawn(executable, args, {
+  const child = spawn(process.execPath, [TURN_OWNER_PATH, executable, JSON.stringify(args)], {
     detached: true,
-    env,
-    stdio: ["pipe", "pipe", "pipe"],
+    env: withoutTaskboardLauncherEnvironment(env),
+    stdio: ["pipe", "pipe", "pipe", "pipe"],
   });
 
   let stdoutBuffer = Buffer.alloc(0);
@@ -461,13 +466,7 @@ export function spawnCodexTurn({
   });
 
   function terminateProcessGroup() {
-    if (Number.isInteger(child.pid)) {
-      try {
-        process.kill(-child.pid, "SIGKILL");
-        return;
-      } catch {}
-    }
-    child.kill("SIGKILL");
+    signalProcessTree(child, "SIGKILL");
   }
 
   function rejectWithDiagnostic(error) {
@@ -550,6 +549,7 @@ export function spawnCodexTurn({
     ]);
   });
   child.on("error", rejectWithDiagnostic);
+  child.on("exit", () => child.stdio[3].destroy());
   child.on("close", (exitCode, signal) => {
     finishStdout();
     if (settled) return;
@@ -564,6 +564,7 @@ export function spawnCodexTurn({
     resolveCompletion({ exitCode, signal });
   });
   child.stdin.on("error", () => {});
+  child.stdio[3].on("error", () => {});
   child.stdin.end(prompt);
 
   return { child, completion };

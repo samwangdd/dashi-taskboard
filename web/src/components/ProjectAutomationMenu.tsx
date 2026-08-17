@@ -7,12 +7,13 @@ import {
   type AutomationModel,
   type AutomationReasoningEffort,
 } from "../../../shared/taskboard-automation-options.mjs";
+import { TaskboardIcon } from "./TaskboardIcon";
+import { useTaskboardI18n } from "../i18n";
 import {
   CODING_WORKFLOW_MODELS,
   DEFAULT_CODING_WORKFLOW_CONFIG,
 } from "../../../shared/coding-workflow.mjs";
 import type { CodingWorkflowSettings, WorkflowOption } from "../types";
-import { LinearIcon } from "./LinearIcon";
 import { usePopoverAnchor } from "./usePopoverAnchor";
 
 type AutomationStatus = "ACTIVE" | "PAUSED";
@@ -61,13 +62,13 @@ const DEFAULT_OPTIONS: AutomationOptions = {
   reasoningEffort: "high",
 };
 
-const EFFORT_LABELS: Record<AutomationReasoningEffort, string> = {
-  low: "轻度",
-  medium: "中",
-  high: "高",
-  xhigh: "极高 (xhigh)",
-  max: "最高",
-  ultra: "极高 (ultra)",
+const EFFORT_LABELS: Record<AutomationReasoningEffort, readonly [string, string]> = {
+  low: ["轻度", "Low"],
+  medium: ["中", "Medium"],
+  high: ["高", "High"],
+  xhigh: ["极高 (xhigh)", "Extra high (xhigh)"],
+  max: ["最高", "Maximum"],
+  ultra: ["极高 (ultra)", "Ultra"],
 };
 
 export function ProjectAutomationMenu({
@@ -83,6 +84,7 @@ export function ProjectAutomationMenu({
   onChange,
   onCodingChange,
 }: ProjectAutomationMenuProps) {
+  const { locale, text } = useTaskboardI18n();
   const wasPendingRef = useRef(pending);
   const [open, setOpen] = useState(false);
   const closeMenu = useCallback(() => setOpen(false), []);
@@ -95,16 +97,16 @@ export function ProjectAutomationMenu({
   const status = automation?.status ?? "PAUSED";
   const quota = automation?.quota;
   const stateLabel = !automation?.enabledByUser
-    ? "已暂停"
+    ? text("已暂停", "Paused")
     : automation.quotaAware && quota?.state === "blocked"
-      ? "额度暂停"
+      ? text("额度暂停", "Paused by quota")
       : automation.quotaAware && quota?.state === "unavailable"
-        ? "额度不可用"
+        ? text("额度不可用", "Quota unavailable")
         : automation.quotaAware && (!quota || quota.state === "unknown")
-          ? "额度未知"
+          ? text("额度未知", "Quota unknown")
           : status === "ACTIVE"
-            ? "运行中"
-            : "已暂停";
+            ? text("运行中", "Running")
+            : text("已暂停", "Paused");
   const disabled = pending || Boolean(unavailableReason);
 
   useEffect(() => {
@@ -140,17 +142,17 @@ export function ProjectAutomationMenu({
       ref={menuRef}
       className="project-automation-menu no-drag"
       role="dialog"
-      aria-label="自动认领待办设置"
+      aria-label={text("自动认领待办设置", "Auto-claim settings")}
       style={{ left: position.left, top: position.top, visibility: position.ready ? "visible" : "hidden" }}
     >
       <div className="project-automation-menu-heading">
-        <strong>自动认领待办</strong>
+        <strong>{text("自动认领待办", "Auto-claim tasks")}</strong>
         <span className={status === "ACTIVE" ? "is-active" : "is-paused"}>
           {stateLabel}
         </span>
       </div>
       <div className="project-automation-switch">
-        <span>自动认领开关</span>
+        <span>{text("自动认领开关", "Auto-claim")}</span>
         <button
           type="button"
           className={`board-setting-switch${draft.enabledByUser ? " is-on" : ""}`}
@@ -166,7 +168,7 @@ export function ProjectAutomationMenu({
         </button>
       </div>
       <div className="project-automation-switch">
-        <span>根据额度启用/关闭</span>
+        <span>{text("根据额度启用/关闭", "Use quota limits")}</span>
         <button
           type="button"
           className={`board-setting-switch${draft.quotaAware ? " is-on" : ""}`}
@@ -183,22 +185,31 @@ export function ProjectAutomationMenu({
       </div>
       {draft.quotaAware && (
         <div className={`project-automation-quota is-${quota?.state ?? "unknown"}`}>
-          {quota?.state === "available" && "当前额度可用"}
+          {quota?.state === "available" && text("当前额度可用", "Quota is available")}
           {quota?.state === "blocked" && (
             quota.resetsAt
-              ? `额度已用尽，预计 ${formatResetTime(quota.resetsAt)} 恢复`
-              : "额度已用尽，自动认领已暂停"
+              ? text(
+                `额度已用尽，预计 ${formatResetTime(quota.resetsAt, locale)} 恢复`,
+                `Quota is exhausted. Expected reset: ${formatResetTime(quota.resetsAt, locale)}.`,
+              )
+              : text("额度已用尽，自动认领已暂停", "Quota is exhausted. Auto-claim is paused.")
           )}
           {quota?.state === "unavailable" && (
             quota.reason === "api-key"
-              ? "API Key 模式不支持读取订阅额度"
-              : "当前账户无法读取额度"
+              ? text(
+                "API Key 模式不支持读取订阅额度",
+                "API key mode cannot read subscription quota.",
+              )
+              : text("当前账户无法读取额度", "This account cannot read quota information.")
           )}
-          {(!quota || quota.state === "unknown") && "额度状态未知，自动认领已暂停"}
+          {(!quota || quota.state === "unknown") && text(
+            "额度状态未知，自动认领已暂停",
+            "Quota status is unknown. Auto-claim is paused.",
+          )}
         </div>
       )}
       <label className="project-automation-field">
-        <span>间隔</span>
+        <span>{text("间隔", "Interval")}</span>
         <select
           value={draft.intervalMinutes}
           disabled={disabled}
@@ -207,11 +218,13 @@ export function ProjectAutomationMenu({
             intervalMinutes: Number(event.target.value) as IntervalMinutes,
           })}
         >
-          {[5, 10, 15, 30, 60].map((minutes) => <option key={minutes} value={minutes}>{minutes} 分钟</option>)}
+          {[5, 10, 15, 30, 60].map((minutes) => (
+            <option key={minutes} value={minutes}>{text(`${minutes} 分钟`, `${minutes} min`)}</option>
+          ))}
         </select>
       </label>
       <label className="project-automation-field">
-        <span>模型</span>
+        <span>{text("模型", "Model")}</span>
         <select
           value={draft.model}
           disabled={disabled}
@@ -223,7 +236,7 @@ export function ProjectAutomationMenu({
         </select>
       </label>
       <label className="project-automation-field">
-        <span>推理强度</span>
+        <span>{text("推理强度", "Reasoning effort")}</span>
         <select
           value={draft.reasoningEffort}
           disabled={disabled}
@@ -233,7 +246,7 @@ export function ProjectAutomationMenu({
           })}
         >
           {getAutomationModel(draft.model).efforts.map((effort) => (
-            <option key={effort} value={effort}>{EFFORT_LABELS[effort]}</option>
+            <option key={effort} value={effort}>{text(...EFFORT_LABELS[effort])}</option>
           ))}
         </select>
       </label>
@@ -319,11 +332,15 @@ export function ProjectAutomationMenu({
         ref={triggerRef}
         type="button"
         className={`project-automation-trigger no-drag ${status === "ACTIVE" ? "is-active" : "is-paused"}`}
-        aria-label={status === "ACTIVE" ? "自动认领" : "无自动化"}
+        aria-label={status === "ACTIVE"
+          ? text("自动认领中", "Auto-claiming")
+          : text("自动化", "Automation")}
         aria-busy={pending}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={status === "ACTIVE" ? "自动认领" : "无自动化"}
+        title={status === "ACTIVE"
+          ? text("自动认领中", "Auto-claiming")
+          : text("自动化", "Automation")}
         onClick={() => {
           if (!open) {
             resetPosition();
@@ -332,16 +349,18 @@ export function ProjectAutomationMenu({
           setOpen((current) => !current);
         }}
       >
-        <LinearIcon name={status === "ACTIVE" ? "play" : "pause"} />
-        <span>{status === "ACTIVE" ? "自动认领" : "无自动化"}</span>
+        <TaskboardIcon name={status === "ACTIVE" ? "automationPause" : "automationPlay"} />
+        <span>{status === "ACTIVE"
+          ? text("自动认领中", "Auto-claiming")
+          : text("自动化", "Automation")}</span>
       </button>
       {menu}
     </>
   );
 }
 
-function formatResetTime(value: number) {
-  return new Intl.DateTimeFormat("zh-CN", {
+function formatResetTime(value: number, locale: string) {
+  return new Intl.DateTimeFormat(locale, {
     month: "numeric",
     day: "numeric",
     hour: "2-digit",

@@ -48,7 +48,7 @@ test("the loop prompt keeps the shared taskboard instructions verbatim", () => {
       `loop prompt is missing the shared instruction: ${instruction}`,
     );
   }
-  assert.ok(prompt.includes("每次仅处理一个 todo"));
+  assert.ok(prompt.includes("每次仅处理一个符合依赖条件的 todo"));
   assert.ok(prompt.includes("不要直接标记为 done"));
 });
 
@@ -142,19 +142,15 @@ test("the coding loop instructions drop model names but keep the protocol steps"
   assert.ok(loop.includes("默认非 UI 使用标准 verifier 模型，UI 使用 UI verifier 模型"));
 });
 
-test("extracting the shared instructions leaves the automation prompt byte-identical", () => {
-  assert.equal(
-    buildTaskboardAutomationPrompt(AUTOMATION_REQUEST),
-    [
-      `[$manage-taskboard](${LOOP_INPUT.skillPath}) e-taskboard 每 60 分钟检查任务面板中的「sync-spells」项目（项目 ID：${LOOP_INPUT.taskboardProjectId}，项目目录：${LOOP_INPUT.workspacePath}）。`,
-      "每次仅处理一个 todo：先用 issue get 读取最新议题内容，并用 comment list 读取全部评论，确认是否包含已完成后被打回的返工要求。",
-      "认领时使用最新 version 将议题移动到 in_progress；若发生版本冲突或最新状态已变化，立即跳过，避免多个 Agent 抢同一任务。",
-      "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
-      "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
-      "先检查议题 workflowId；只有非 coding 议题才执行上一条普通交付规则。",
-      codingWorkflowAutomationInstructions(),
-    ].join("\n"),
-  );
+test("the automation and copyable loop keep the shared instructions verbatim", () => {
+  const shared = TASKBOARD_BASE_INSTRUCTIONS.join("\n");
+  const automation = buildTaskboardAutomationPrompt(AUTOMATION_REQUEST);
+  const loop = buildTaskboardLoopPrompt(LOOP_INPUT);
+
+  assert.ok(automation.includes(shared));
+  assert.ok(loop.includes(shared));
+  assert.ok(automation.includes("本轮所有 taskctl 操作都使用完整命令前缀"));
+  assert.ok(automation.includes(codingWorkflowAutomationInstructions()));
 });
 
 test("the automation prompt keeps naming models while the loop prompt does not", () => {
