@@ -497,7 +497,7 @@ export function DashboardView({
                 aria-label={summaryReady ? summary : text("Codex 正在整理项目总结", "Codex is preparing the project summary")}
               >{displayedSummary}</p>
             </div>
-            <img className="dashboard-codex-mark" src="codex-agent-logo.png" alt="" aria-hidden="true" />
+            <img className="dashboard-codex-mark" src="/codex-app-icon.png" alt="" aria-hidden="true" />
           </section>
         </div>
 
