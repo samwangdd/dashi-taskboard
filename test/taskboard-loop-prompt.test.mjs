@@ -55,9 +55,10 @@ test("the loop prompt keeps the shared taskboard instructions verbatim", () => {
 test("the loop prompt claims todo by status and visibly yields claimed work", () => {
   const prompt = buildTaskboardLoopPrompt(LOOP_INPUT);
 
-  assert.ok(prompt.includes("A todo remains claimable even when threadId has a value"));
-  assert.ok(prompt.includes("continue only when its threadId belongs to the current session"));
-  assert.ok(prompt.includes("emit a visible report instead of ending silently"));
+  assert.ok(prompt.includes("todo 无论历史 threadId 是否有值都可认领"));
+  assert.ok(prompt.includes("仅当 threadId 属于当前会话时才可继续"));
+  assert.ok(prompt.includes("输出可见报告，不得静默结束"));
+  assert.doesNotMatch(prompt, /A todo remains|After issue get|If the move has/);
   assert.doesNotMatch(prompt, /send_message_to_thread/);
 });
 
