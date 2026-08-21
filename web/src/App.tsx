@@ -23,6 +23,7 @@ import {
   ApiError,
   addTaskRelation,
   archiveTask as archiveTaskRequest,
+  bindCodingAndClaim as bindCodingAndClaimRequest,
   createProjectLabel as createProjectLabelRequest,
   createProject as createProjectRequest,
   createTask as createTaskRequest,
@@ -2307,6 +2308,26 @@ export function App() {
     }
   }
 
+  async function bindCodingAndClaim(task: Task): Promise<Task> {
+    setActionError(null);
+    try {
+      const claimed = await bindCodingAndClaimRequest(task);
+      setTasks((current) => sortTasks(current.map((candidate) => (
+        candidate.id === claimed.id ? claimed : candidate
+      ))));
+      return claimed;
+    } catch (error) {
+      setActionError(error instanceof ApiError && error.code === "VERSION_CONFLICT"
+        ? text(
+          "This issue changed elsewhere. The board has been synced.",
+          "This issue changed elsewhere. The board has been synced.",
+        )
+        : errorMessage(error));
+      if (selectedProjectId) void refreshTasks(selectedProjectId, { quiet: true });
+      throw error;
+    }
+  }
+
   async function persistProjectLabel(label: string) {
     setActionError(null);
     try {
@@ -3152,6 +3173,7 @@ export function App() {
             onCreateLabel={persistProjectLabel}
             onDeleteLabel={removeProjectLabel}
             onUpdate={(current, changes) => updateTaskProperties(current, changes)}
+            onBindCodingAndClaim={bindCodingAndClaim}
             onOpenTask={openTaskDetail}
             onAddRelation={(current, type, relatedTaskId) => (
               mutateTaskRelation("add", current, type, relatedTaskId)

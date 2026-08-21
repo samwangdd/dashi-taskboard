@@ -153,6 +153,17 @@ test("the automation and copyable loop keep the shared instructions verbatim", (
   assert.ok(automation.includes(codingWorkflowAutomationInstructions()));
 });
 
+test("automation reports code-shaped issues that are missing a workflow without mutating them", () => {
+  const instructions = TASKBOARD_BASE_INSTRUCTIONS.join("\n");
+
+  assert.match(instructions, /workflowId is null/);
+  assert.match(instructions, /full description and comments/);
+  assert.match(instructions, /must not use title keywords/);
+  assert.match(instructions, /skip the issue and report a workflow configuration error/);
+  assert.match(instructions, /taskctl coding claim/);
+  assert.match(instructions, /must not silently change workflowId/);
+});
+
 test("the automation prompt keeps naming models while the loop prompt does not", () => {
   const automation = buildTaskboardAutomationPrompt(AUTOMATION_REQUEST);
 

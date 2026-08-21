@@ -174,15 +174,28 @@ test("issue editing selects a project workflow without owning its configuration"
     appSource.indexOf("function taskToDraft"),
     appSource.indexOf("function isEditableTarget"),
   );
-  assert.match(taskDraftSource, /workflowId: string \| null/);
+  assert.match(taskDraftSource, /workflowId\?: string \| null/);
   assert.match(taskToDraftSource, /workflowId: task\.workflowId/);
   assert.match(appSource, /const \[workflowOptions, setWorkflowOptions\] = useState<WorkflowOption\[\]>/);
   assert.match(appSource, /workflowOptionsFromWorkspace\(record\.workspace\)/);
   assert.match(editorSource, /workflows: WorkflowOption\[\]/);
   assert.match(editorSource, /const \[workflowId, setWorkflowId\]/);
+  assert.match(
+    editorSource,
+    /task \|\| workflowTouchedRef\.current[\s\S]*?workflowId: workflowId \|\| null/,
+  );
   assert.match(editorSource, /className="property-control property-workflow"/);
   assert.doesNotMatch(editorSource, /CodingWorkflowConfig|orchestratorModel|verifierModel/);
   assert.doesNotMatch(detailSource, /detail-property-label">工作流|workflowId: event\.target\.value/);
+});
+
+test("existing issues without a workflow offer one atomic coding claim action", () => {
+  assert.match(apiSource, /export async function bindCodingAndClaim/);
+  assert.match(apiSource, /\/api\/local\/coding\/tasks\/\$\{encodeURIComponent\(task\.id\)\}\/claim/);
+  assert.match(detailSource, /currentTask\.workflowId === null/);
+  assert.match(detailSource, /Missing Workflow/);
+  assert.match(detailSource, /Bind Coding & Claim/);
+  assert.match(appSource, /onBindCodingAndClaim=\{bindCodingAndClaim\}/);
 });
 
 test("comments stage, upload, render and delete their own attachments", () => {

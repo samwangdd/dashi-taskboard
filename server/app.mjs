@@ -451,6 +451,15 @@ function parseCodingWorkflowSettings(body) {
   };
 }
 
+function parseCodingClaim(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["version", "threadId"]));
+  return {
+    version: parseVersion(body.version),
+    threadId: parseThreadId(body.threadId),
+  };
+}
+
 function parseCodingContract(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set(["version", "contract"]));
@@ -680,7 +689,7 @@ function parseTaskCreate(body) {
     sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
     threadId: parseThreadId(body.threadId),
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
-    workflowId: parseWorkflowId(body.workflowId ?? null),
+    ...(body.workflowId === undefined ? {} : { workflowId: parseWorkflowId(body.workflowId) }),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
@@ -2165,6 +2174,23 @@ export function createTaskboardServer(options = {}) {
       }
 
       const codingTaskRunRoute = pathname.match(/^\/api\/local\/coding\/tasks\/([^/]+)\/runs$/);
+      const codingTaskClaimRoute = pathname.match(/^\/api\/local\/coding\/tasks\/([^/]+)\/claim$/);
+      if (codingTaskClaimRoute) {
+        assertNoQuery(url.searchParams, "/api/local/coding/tasks/:id/claim");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const taskId = decodeRouteSegment(codingTaskClaimRoute[1], "Task id");
+        const task = database.getTask(taskId);
+        if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${taskId}' does not exist`);
+        const input = parseCodingClaim(await readJson(request));
+        const result = await codingWorkflow.bindAndClaim(task, {
+          ...input,
+          actor: actorFromRequest(request),
+        });
+        events.emit("task.moved", { task: result.task });
+        events.emit("coding.run.updated", { task: result.task, run: result.codingRun });
+        return sendJson(response, 200, result);
+      }
+
       if (codingTaskRunRoute) {
         assertNoQuery(url.searchParams, "/api/local/coding/tasks/:id/runs");
         if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);

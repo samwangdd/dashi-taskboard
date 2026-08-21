@@ -364,7 +364,7 @@ export function TaskEditor({
         status,
         priority,
         labels: selectedLabels,
-        workflowId: workflowId || null,
+        ...(task || workflowTouchedRef.current ? { workflowId: workflowId || null } : {}),
         ...(assigneeTarget ? { assigneeTarget } : {}),
         developmentContext,
         startDate: startDate || null,

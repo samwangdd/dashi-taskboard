@@ -2094,6 +2094,9 @@ export class TaskboardDatabase {
       const identifier = `${prefix}-${number}`;
       const id = randomUUID();
       const timestamp = now();
+      const workflowId = Object.hasOwn(input, "workflowId")
+        ? input.workflowId
+        : this.getCodingWorkflowSettings(input.projectId).defaultWorkflowId;
       let sortOrder = input.sortOrder;
       if (sortOrder === undefined) {
         const row = this.database.prepare(`
@@ -2140,7 +2143,7 @@ export class TaskboardDatabase {
         input.assignee.id,
         input.assignee.name,
         input.assignee.avatarUrl,
-        input.workflowId ?? null,
+        workflowId,
         input.developmentContext?.type === "branch" ? input.developmentContext.branch : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.path : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.branch : null,
@@ -2336,6 +2339,56 @@ export class TaskboardDatabase {
       throw error;
     }
     return this.#announceStatusChange(this.getTask(current.id), current.status);
+  }
+
+  bindCodingAndClaim(id, version, threadId, actor, startRevision) {
+    let previousStatus;
+    let runId;
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const current = this.#requireTask(id);
+      this.#requireVersion(current, version);
+      if (current.archivedAt !== null) {
+        throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be claimed");
+      }
+      if (current.status !== "todo") {
+        throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
+      }
+      if (current.workflowId !== null) {
+        throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
+      }
+      const row = this.database.prepare(`
+        SELECT MIN(sort_order) AS minimum
+        FROM tasks
+        WHERE project_id = ? AND status = 'in_progress' AND archived_at IS NULL AND id != ?
+      `).get(current.projectId, current.id);
+      const sortOrder = row.minimum === null ? 1000 : row.minimum - 1000;
+      const timestamp = now();
+      const result = this.database.prepare(`
+        UPDATE tasks
+        SET workflow_id = ?, status = 'in_progress', sort_order = ?,
+            thread_id = COALESCE(?, thread_id), version = version + 1, updated_at = ?
+        WHERE id = ? AND version = ?
+      `).run(CODING_WORKFLOW_ID, sortOrder, threadId ?? null, timestamp, current.id, version);
+      if (result.changes !== 1) this.#throwMissingOrConflict(id, version);
+      this.#recordTaskActivity(
+        current.id,
+        actor,
+        taskFieldChanges(current, { workflowId: CODING_WORKFLOW_ID, status: "in_progress" }),
+        timestamp,
+      );
+      const codingRun = this.createOrResumeCodingRun(current.id, startRevision);
+      runId = codingRun.id;
+      previousStatus = current.status;
+      this.database.exec("COMMIT");
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+    return {
+      task: this.#announceStatusChange(this.getTask(id), previousStatus),
+      codingRun: this.getCodingRun(runId),
+    };
   }
 
   archiveTask(id, version, threadId, actor) {
