@@ -22,6 +22,8 @@ export const TASKBOARD_BASE_INSTRUCTIONS = Object.freeze([
   "issue get 后必须用 status 判断占用状态。todo 无论历史 threadId 是否有值都可认领。若议题已是 in_progress，仅当 threadId 属于当前会话时才可继续；否则保持不变、让路给所属会话并输出可见报告，不得静默结束。不得依赖任何宿主专有的跨会话投递能力。",
   "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
   "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
+  "凡涉及 UI verified，必须在 issue comments 中附上实现截图。",
+  "每次运行结束时，简洁汇报本次是否成功认领、处理的议题 ID、最终状态，以及因版本冲突、状态变化、没有 todo 或其他原因而跳过的情况。",
   "先检查议题 workflowId；只有非 coding 议题才执行上一条普通交付规则。",
 ]);
 

@@ -163,6 +163,20 @@ test("the automation and copyable loop keep the shared instructions verbatim", (
   assert.ok(automation.includes(codingWorkflowAutomationInstructions()));
 });
 
+test("the automation and copyable loop require UI evidence and a final run summary", () => {
+  const prompts = [
+    buildTaskboardAutomationPrompt(AUTOMATION_REQUEST),
+    buildTaskboardLoopPrompt(LOOP_INPUT),
+  ];
+
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes("凡涉及 UI verified，必须在 issue comments 中附上实现截图"));
+    assert.ok(prompt.includes(
+      "每次运行结束时，简洁汇报本次是否成功认领、处理的议题 ID、最终状态，以及因版本冲突、状态变化、没有 todo 或其他原因而跳过的情况",
+    ));
+  }
+});
+
 test("the automation prompt keeps naming models while the loop prompt does not", () => {
   const automation = buildTaskboardAutomationPrompt(AUTOMATION_REQUEST);
 
