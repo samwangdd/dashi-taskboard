@@ -18,11 +18,13 @@ export const TASKBOARD_BASE_INSTRUCTIONS = Object.freeze([
   "每次仅处理一个符合依赖条件的 todo：选定后先用 issue get 读取最新议题内容，并用 comment list 读取全部评论。根据描述和最新评论判断是否允许开始；若其中写明等待、暂不执行或当前不应开始，立即跳过并报告，不改状态。评论也包含已完成后被打回的返工要求。",
   "完成 issue get 和 comment list 后、移动状态前，必须再次运行 issue get，并复核 relations.blockedBy 仍为空或其中每个依赖的 status 都严格等于 done。若依赖条件不再满足，立即跳过并结束本轮，不改状态，也不暂停自动化。",
   "When workflowId is null, use the full description and comments to judge whether the issue has explicit code implementation requirements; this judgment may only produce a suggestion and must not use title keywords. If it does, skip the issue and report a workflow configuration error that recommends taskctl coding claim; you must not silently change workflowId or continue through ordinary delivery.",
-  "确认允许开始后，必须在读取代码、下载附件、分析或实施前，使用刚读取的 version 将仍可认领的 todo 移到 in_progress；写入成功前不得继续。不得认领已被其他会话绑定或其他 Agent 领取的议题。",
-  "若因 version 陈旧发生版本冲突，重新运行 issue get 和 comment list；仅当仍为可认领 todo、未绑定其他会话、未归档且描述和最新评论未变化时，用最新 version 重试一次。若已被认领、状态或要求已变、已归档、服务或永久 API 错误，或重试仍失败，立即跳过该议题、退出并报告；不得抢占或循环重试。",
-  "若首次 issue get 返回 threadId，议题已绑定原会话：不要在当前自动化会话认领；使用 Codex send_message_to_thread 向原会话发送继续处理指令，由原会话按上述协议判断和认领，然后结束当前自动化会话。若没有 threadId，则在当前自动化会话处理。",
+  "完成上述准入判断并确认允许开始后，必须在读取代码、下载附件、开展进一步分析或实施前，使用刚读取的 version 将 todo 移到 in_progress。todo 即使 threadId 有值仍可认领，因为 threadId 只记录最近一次修改议题的会话，不是占用锁。写入成功前不得继续，且不得认领 status 不是 todo 的议题。",
+  "若移动状态时因 version 陈旧发生冲突，重新运行 issue get 和 comment list；仅当议题仍为可认领的 todo、未归档且描述和最新评论未变化时，使用最新 version 重试一次。若议题已被认领、状态或要求已变化、已归档、服务或 API 发生永久错误，或重试仍失败，立即跳过、退出并报告；不得抢占或循环重试。",
+  "issue get 后必须用 status 判断占用状态。todo 无论历史 threadId 是否有值都可认领。若议题已是 in_progress，仅当 threadId 属于当前会话时才可继续；否则保持不变、让路给所属会话并输出可见报告，不得静默结束。不得依赖任何宿主专有的跨会话投递能力。",
   "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
   "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用最新 version 将议题移动到 in_review；不要直接标记为 done。",
+  "凡涉及 UI verified，必须在 issue comments 中附上实现截图。",
+  "每次运行结束时，简洁汇报本次是否成功认领、处理的议题 ID、最终状态，以及因版本冲突、状态变化、没有 todo 或其他原因而跳过的情况。",
   "先检查议题 workflowId；只有非 coding 议题才执行上一条普通交付规则。",
 ]);
 

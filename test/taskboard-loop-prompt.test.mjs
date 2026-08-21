@@ -52,6 +52,18 @@ test("the loop prompt keeps the shared taskboard instructions verbatim", () => {
   assert.ok(prompt.includes("不要直接标记为 done"));
 });
 
+test("the loop prompt claims todo by status and visibly yields claimed work", () => {
+  const prompt = buildTaskboardLoopPrompt(LOOP_INPUT);
+
+  assert.ok(prompt.includes("完成上述准入判断并确认允许开始后"));
+  assert.doesNotMatch(prompt, /下载附件、分析或实施前/);
+  assert.ok(prompt.includes("todo 无论历史 threadId 是否有值都可认领"));
+  assert.ok(prompt.includes("仅当 threadId 属于当前会话时才可继续"));
+  assert.ok(prompt.includes("输出可见报告，不得静默结束"));
+  assert.doesNotMatch(prompt, /A todo remains|After issue get|If the move has/);
+  assert.doesNotMatch(prompt, /send_message_to_thread/);
+});
+
 test("the loop prompt honours the requested interval", () => {
   for (const intervalMinutes of [5, 10, 15, 30, 60]) {
     const prompt = buildTaskboardLoopPrompt({ ...LOOP_INPUT, intervalMinutes });
@@ -151,6 +163,20 @@ test("the automation and copyable loop keep the shared instructions verbatim", (
   assert.ok(loop.includes(shared));
   assert.ok(automation.includes("本轮所有 taskctl 操作都使用完整命令前缀"));
   assert.ok(automation.includes(codingWorkflowAutomationInstructions()));
+});
+
+test("the automation and copyable loop require UI evidence and a final run summary", () => {
+  const prompts = [
+    buildTaskboardAutomationPrompt(AUTOMATION_REQUEST),
+    buildTaskboardLoopPrompt(LOOP_INPUT),
+  ];
+
+  for (const prompt of prompts) {
+    assert.ok(prompt.includes("凡涉及 UI verified，必须在 issue comments 中附上实现截图"));
+    assert.ok(prompt.includes(
+      "每次运行结束时，简洁汇报本次是否成功认领、处理的议题 ID、最终状态，以及因版本冲突、状态变化、没有 todo 或其他原因而跳过的情况",
+    ));
+  }
 });
 
 test("automation reports code-shaped issues that are missing a workflow without mutating them", () => {
