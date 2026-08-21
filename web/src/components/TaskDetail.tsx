@@ -624,7 +624,7 @@ export function TaskDetail({
       ));
       setCurrentTask(await onBindCodingAndClaim(
         currentTask,
-        currentTask.developmentContext ? undefined : currentWorktree,
+        currentWorktree,
       ));
     } catch (error) {
       onError(issueMessageFor(error));

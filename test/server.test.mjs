@@ -1340,6 +1340,10 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
       title: "Historical coding issue",
       status: "todo",
       workflowId: null,
+      developmentContext: {
+        type: "branch",
+        branch: "codex/claim-test",
+      },
     },
   });
   const claimed = await request(
