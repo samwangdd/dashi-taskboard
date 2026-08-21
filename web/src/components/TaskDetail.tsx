@@ -10,6 +10,7 @@ import {
   createComment,
   deleteAttachment,
   deleteComment,
+  getLatestCodingRun,
   listAttachments,
   listComments,
   listTaskActivities,
@@ -31,6 +32,7 @@ import type {
   ActorIdentity,
   Attachment,
   Comment,
+  CodingRunSummary,
   DevelopmentContext,
   DevelopmentScan,
   IssueRelationType,
@@ -435,6 +437,7 @@ export function TaskDetail({
   const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
   const [claimingCoding, setClaimingCoding] = useState(false);
+  const [codingRun, setCodingRun] = useState<CodingRunSummary | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
   const [attachmentsError, setAttachmentsError] = useState<TaskDetailError | null>(null);
@@ -474,6 +477,18 @@ export function TaskDetail({
   const editingDraft = serializeInlineMedia(editingSegments);
   const displayIdentifier = currentTask.externalKey ?? currentTask.identifier;
   const editingInlineImages = inlineMediaImages(editingSegments);
+
+  useEffect(() => {
+    if (currentTask.workflowId !== "coding") {
+      setCodingRun(null);
+      return;
+    }
+    const controller = new AbortController();
+    void getLatestCodingRun(currentTask.id, controller.signal).then(setCodingRun, (error) => {
+      if ((error as Error).name !== "AbortError") setCodingRun(null);
+    });
+    return () => controller.abort();
+  }, [currentTask.id, currentTask.workflowId, currentTask.activityKey]);
 
   useEffect(() => {
     const taskChanged = currentTask.id !== task.id;
@@ -1578,6 +1593,20 @@ export function TaskDetail({
               </button>
             </div>
             <h2>{text("属性", "Properties")}</h2>
+            <div className="detail-property-row">
+              <span className="detail-property-label">Workflow</span>
+              <span className="detail-property-readonly">
+                {currentTask.workflowId === "coding" ? "Coding" : currentTask.workflowId ?? "Not set"}
+              </span>
+            </div>
+            <div className="detail-property-row">
+              <span className="detail-property-label">Run phase</span>
+              <span className="detail-property-readonly">
+                {codingRun?.phase
+                  ? `${codingRun.phase.charAt(0).toUpperCase()}${codingRun.phase.slice(1).replaceAll("_", " ")}`
+                  : "Not started"}
+              </span>
+            </div>
             <div className="detail-property-row">
               <span className="detail-property-label">{text("状态", "Status")}</span>
               <TaskPropertyPicker

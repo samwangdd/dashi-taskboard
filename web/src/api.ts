@@ -8,6 +8,7 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
+  CodingRunSummary,
   CodingWorkflowSettings,
   DevelopmentContext,
   DevelopmentScan,
@@ -536,6 +537,14 @@ export async function bindCodingAndClaim(
     },
   );
   return data.task;
+}
+
+export async function getLatestCodingRun(taskId: string, signal?: AbortSignal): Promise<CodingRunSummary | null> {
+  const data = await request<{ run: CodingRunSummary | null }>(
+    `/api/local/coding/tasks/${encodeURIComponent(taskId)}/runs`,
+    { signal },
+  );
+  return data.run;
 }
 
 export async function archiveTask(task: Task, threadId?: string): Promise<Task> {

@@ -1374,6 +1374,14 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
   assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
   assert.equal(claimed.body.codingRun.startRevision, revision);
 
+  const visibleRun = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/runs`,
+  );
+  assert.equal(visibleRun.response.status, 200);
+  assert.equal(visibleRun.body.run.id, claimed.body.codingRun.id);
+  assert.equal(visibleRun.body.run.phase, "orchestrating");
+
   const stale = await request(
     baseUrl,
     `/api/local/coding/tasks/${created.body.task.id}/claim`,
