@@ -350,7 +350,7 @@ export interface TaskDraft {
   status: TaskStatus;
   priority: TaskPriority;
   labels: string[];
-  workflowId: string | null;
+  workflowId?: string | null;
   assigneeTarget?: AssigneeTarget;
   developmentContext: DevelopmentContext | null;
   startDate: string | null;

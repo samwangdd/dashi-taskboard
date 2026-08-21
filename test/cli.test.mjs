@@ -234,6 +234,27 @@ test("issue create reads a description file and parses labels", async () => {
   });
 });
 
+test("coding claim calls the atomic Bind Coding & Claim endpoint", async () => {
+  let requestedUrl;
+  let requestBody;
+  const result = await run(
+    ["coding", "claim", "TASK-1", "--if-version", "7"],
+    async (url, init) => {
+      requestedUrl = url.toString();
+      requestBody = JSON.parse(init.body);
+      return response({
+        task: { id: "TASK-1", status: "in_progress", workflowId: "coding", version: 8 },
+        codingRun: { id: "RUN-1", taskId: "TASK-1" },
+      });
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(requestedUrl, "http://127.0.0.1:47823/api/local/coding/tasks/TASK-1/claim");
+  assert.deepEqual(requestBody, { version: 7, threadId: "thread-current" });
+  assert.equal(result.stdout.codingRun.id, "RUN-1");
+});
+
 test("issue update sends an explicit optimistic concurrency version", async () => {
   const calls = [];
   const result = await run(
@@ -670,6 +691,7 @@ test("--help --json emits a structured help object with schemaVersion", async ()
       "attachment download",
       "attachment upload",
       "context current",
+      "coding claim",
       "coding start",
       "coding get",
       "coding artifacts",

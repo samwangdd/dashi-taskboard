@@ -90,6 +90,7 @@ const COMMAND_OPTIONS = new Map([
   ["attachment download", new Set(["output", "json"])],
   ["attachment upload", new Set(["file", "task", "comment", "content-type", "json"])],
   ["context current", new Set(["cwd", "json"])],
+  ["coding claim", new Set(["thread-id", "if-version", "json"])],
   ["coding start", new Set(["json"])],
   ["coding get", new Set(["json"])],
   ["coding artifacts", new Set(["json"])],
@@ -204,6 +205,14 @@ const COMMAND_HELP = new Map([
     },
   ],
   ["context current", { operands: "", summary: "Report the project for the current directory." }],
+  [
+    "coding claim",
+    {
+      operands: "ISSUE_ID",
+      summary: "Bind the Coding workflow and atomically claim an issue.",
+      required: ["if-version"],
+    },
+  ],
   ["coding start", { operands: "ISSUE_ID", summary: "Start a coding workflow run for an issue." }],
   ["coding get", { operands: "RUN_ID", summary: "Read one coding run." }],
   ["coding artifacts", { operands: "RUN_ID", summary: "List a coding run's artifacts." }],
@@ -482,7 +491,7 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current, coding start/get/artifacts/contract/handoff/check/verdict/commit",
+      "Expected one of: project list/create/map, cloud login/status/logout, issue list/get/create/update/move/archive/restore/relation, comment list/add/update/delete, attachment download/upload, context current, coding claim/start/get/artifacts/contract/handoff/check/verdict/commit",
     );
   }
   validateOptions(parsed.options, allowedOptions);
@@ -604,6 +613,16 @@ async function execute(parsed, overrides) {
     case "context current":
       expectOperandCount(parsed, 0);
       return currentContext(api, parsed.options, overrides);
+    case "coding claim":
+      expectOperandCount(parsed, 1);
+      return api.request(
+        "POST",
+        `/api/local/coding/tasks/${encodeURIComponent(parsed.operands[0])}/claim`,
+        {
+          version: explicitVersion(parsed.options["if-version"]),
+          threadId: resolveThreadId(parsed.options, overrides),
+        },
+      );
     case "coding start":
       expectOperandCount(parsed, 1);
       return api.request(

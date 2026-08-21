@@ -523,6 +523,17 @@ export async function moveTask(
   return data.task;
 }
 
+export async function bindCodingAndClaim(task: Task): Promise<Task> {
+  const data = await request<{ task: Task }>(
+    `/api/local/coding/tasks/${encodeURIComponent(task.id)}/claim`,
+    {
+      method: "POST",
+      body: JSON.stringify({ version: task.version }),
+    },
+  );
+  return data.task;
+}
+
 export async function archiveTask(task: Task, threadId?: string): Promise<Task> {
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/archive`,

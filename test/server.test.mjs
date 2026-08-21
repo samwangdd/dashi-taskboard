@@ -1,15 +1,18 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
+import { promisify } from "node:util";
 
 import { createTaskboardServer } from "../server/index.mjs";
 
 const runningApps = [];
+const run = promisify(execFile);
 
 afterEach(async () => {
   while (runningApps.length > 0) {
@@ -1285,6 +1288,98 @@ test("tasks can bind, change, and unbind one project workflow", async () => {
   });
   assert.equal(invalidResult.response.status, 400);
   assert.equal(invalidResult.body.error.code, "INVALID_FIELD");
+});
+
+test("task creation inherits the project workflow only when workflowId is omitted", async () => {
+  const baseUrl = await startServer();
+  const currentSettings = await request(baseUrl, "/api/local/coding/projects/local/settings");
+  const savedSettings = await request(baseUrl, "/api/local/coding/projects/local/settings", {
+    method: "PUT",
+    body: {
+      version: currentSettings.body.settings.version,
+      defaultWorkflowId: "coding",
+      config: currentSettings.body.settings.config,
+    },
+  });
+  assert.equal(savedSettings.response.status, 200);
+
+  const inherited = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Inherit project workflow" },
+  });
+  assert.equal(inherited.response.status, 201);
+  assert.equal(inherited.body.task.workflowId, "coding");
+
+  const unbound = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Explicitly use no workflow", workflowId: null },
+  });
+  assert.equal(unbound.response.status, 201);
+  assert.equal(unbound.body.task.workflowId, null);
+});
+
+test("bind coding and claim atomically creates one frozen coding run", async () => {
+  let repository;
+  let revision;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "codex/claim-test", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    revision = (await run("git", ["-C", repository, "rev-parse", "HEAD"])).stdout.trim();
+    return {};
+  });
+
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Historical coding issue",
+      status: "todo",
+      workflowId: null,
+      developmentContext: {
+        type: "worktree",
+        path: repository,
+        branch: "codex/claim-test",
+      },
+    },
+  });
+  const claimed = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/claim`,
+    {
+      method: "POST",
+      body: { version: created.body.task.version, threadId: "thread-claim" },
+    },
+  );
+  assert.equal(claimed.response.status, 200);
+  assert.equal(claimed.body.task.workflowId, "coding");
+  assert.equal(claimed.body.task.status, "in_progress");
+  assert.equal(claimed.body.task.threadId, "thread-claim");
+  assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
+  assert.equal(claimed.body.codingRun.startRevision, revision);
+
+  const stale = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/claim`,
+    {
+      method: "POST",
+      body: { version: created.body.task.version, threadId: "thread-stale" },
+    },
+  );
+  assert.equal(stale.response.status, 409);
+  assert.equal(stale.body.error.code, "VERSION_CONFLICT");
+
+  const resumed = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/runs`,
+    { method: "POST" },
+  );
+  assert.equal(resumed.response.status, 200);
+  assert.equal(resumed.body.run.id, claimed.body.codingRun.id);
 });
 
 test("issues support parent, sub-issue, blocking, and related issue relationships", async () => {
