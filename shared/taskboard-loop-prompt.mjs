@@ -17,7 +17,7 @@ export const TASKBOARD_BASE_INSTRUCTIONS = Object.freeze([
   "从返回的 todo 中只选择依赖已完成的议题：relations.blockedBy 为空，或其中每个依赖的 status 都严格等于 done。无依赖的 todo 仍可并行处理。若有 todo 但全部被未完成依赖阻塞，本轮直接结束，不暂停自动化，也不创建或打开新的任务会话。",
   "每次仅处理一个符合依赖条件的 todo：选定后先用 issue get 读取最新议题内容，并用 comment list 读取全部评论。根据描述和最新评论判断是否允许开始；若其中写明等待、暂不执行或当前不应开始，立即跳过并报告，不改状态。评论也包含已完成后被打回的返工要求。",
   "完成 issue get 和 comment list 后、移动状态前，必须再次运行 issue get，并复核 relations.blockedBy 仍为空或其中每个依赖的 status 都严格等于 done。若依赖条件不再满足，立即跳过并结束本轮，不改状态，也不暂停自动化。",
-  "确认允许开始后，必须在读取代码、下载附件、分析或实施前，使用刚读取的 version 将 todo 移到 in_progress。todo 即使 threadId 有值仍可认领，因为 threadId 只记录最近一次修改议题的会话，不是占用锁。写入成功前不得继续，且不得认领 status 不是 todo 的议题。",
+  "完成上述准入判断并确认允许开始后，必须在读取代码、下载附件、开展进一步分析或实施前，使用刚读取的 version 将 todo 移到 in_progress。todo 即使 threadId 有值仍可认领，因为 threadId 只记录最近一次修改议题的会话，不是占用锁。写入成功前不得继续，且不得认领 status 不是 todo 的议题。",
   "若移动状态时因 version 陈旧发生冲突，重新运行 issue get 和 comment list；仅当议题仍为可认领的 todo、未归档且描述和最新评论未变化时，使用最新 version 重试一次。若议题已被认领、状态或要求已变化、已归档、服务或 API 发生永久错误，或重试仍失败，立即跳过、退出并报告；不得抢占或循环重试。",
   "issue get 后必须用 status 判断占用状态。todo 无论历史 threadId 是否有值都可认领。若议题已是 in_progress，仅当 threadId 属于当前会话时才可继续；否则保持不变、让路给所属会话并输出可见报告，不得静默结束。不得依赖任何宿主专有的跨会话投递能力。",
   "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
