@@ -10,7 +10,6 @@ import {
   createComment,
   deleteAttachment,
   deleteComment,
-  getLatestCodingRun,
   listAttachments,
   listComments,
   listTaskActivities,
@@ -32,7 +31,6 @@ import type {
   ActorIdentity,
   Attachment,
   Comment,
-  CodingRunSummary,
   DevelopmentContext,
   DevelopmentScan,
   IssueRelationType,
@@ -43,6 +41,7 @@ import type {
   TaskPriority,
   TaskRelationSummary,
   TaskStatus,
+  WorkflowOption,
 } from "../types";
 import {
   AGENT_ACTOR,
@@ -88,6 +87,7 @@ interface TaskDetailProps {
   tasks: Task[];
   currentUser: ActorIdentity;
   availableLabels: string[];
+  workflows: WorkflowOption[];
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
   commentsRevision: number;
@@ -95,7 +95,6 @@ interface TaskDetailProps {
   onCreateLabel: (label: string) => Promise<void>;
   onDeleteLabel: (label: string) => Promise<void>;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
-  onBindCodingAndClaim: (task: Task, developmentContext?: DevelopmentContext) => Promise<Task>;
   onOpenTask: (task: TaskRelationSummary) => void;
   onAddRelation: (
     task: Task,
@@ -408,6 +407,7 @@ export function TaskDetail({
   tasks,
   currentUser,
   availableLabels,
+  workflows,
   developmentScan,
   developmentScanLoading,
   commentsRevision,
@@ -415,7 +415,6 @@ export function TaskDetail({
   onCreateLabel,
   onDeleteLabel,
   onUpdate,
-  onBindCodingAndClaim,
   onOpenTask,
   onAddRelation,
   onRemoveRelation,
@@ -434,10 +433,8 @@ export function TaskDetail({
     () => createInlineMediaSegments(task.description),
   );
   const [editingDescription, setEditingDescription] = useState(false);
-  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
+  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | "workflow" | null>(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
-  const [claimingCoding, setClaimingCoding] = useState(false);
-  const [codingRun, setCodingRun] = useState<CodingRunSummary | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
   const [attachmentsError, setAttachmentsError] = useState<TaskDetailError | null>(null);
@@ -477,18 +474,6 @@ export function TaskDetail({
   const editingDraft = serializeInlineMedia(editingSegments);
   const displayIdentifier = currentTask.externalKey ?? currentTask.identifier;
   const editingInlineImages = inlineMediaImages(editingSegments);
-
-  useEffect(() => {
-    if (currentTask.workflowId !== "coding") {
-      setCodingRun(null);
-      return;
-    }
-    const controller = new AbortController();
-    void getLatestCodingRun(currentTask.id, controller.signal).then(setCodingRun, (error) => {
-      if ((error as Error).name !== "AbortError") setCodingRun(null);
-    });
-    return () => controller.abort();
-  }, [currentTask.id, currentTask.workflowId, currentTask.activityKey]);
 
   useEffect(() => {
     const taskChanged = currentTask.id !== task.id;
@@ -626,25 +611,6 @@ export function TaskDetail({
       return null;
     } finally {
       setSavingProperty(null);
-    }
-  }
-
-  async function bindCodingAndClaim() {
-    if (claimingCoding) return;
-    setClaimingCoding(true);
-    onError(null);
-    try {
-      const currentWorktree = developmentScan.contexts.find((context) => (
-        context.type === "worktree" && context.path === developmentScan.workspacePath
-      ));
-      setCurrentTask(await onBindCodingAndClaim(
-        currentTask,
-        currentWorktree,
-      ));
-    } catch (error) {
-      onError(issueMessageFor(error));
-    } finally {
-      setClaimingCoding(false);
     }
   }
 
@@ -980,16 +946,6 @@ export function TaskDetail({
                       <strong>Missing Workflow</strong>
                       <span>This issue is not bound to a delivery workflow.</span>
                     </div>
-                    {currentTask.status === "todo" && (
-                      <button
-                        className="button primary"
-                        type="button"
-                        disabled={claimingCoding}
-                        onClick={() => void bindCodingAndClaim()}
-                      >
-                        {claimingCoding ? "Binding…" : "Bind Coding & Claim"}
-                      </button>
-                    )}
                   </div>
                 )}
                 <IssueParentLink
@@ -1595,17 +1551,24 @@ export function TaskDetail({
             <h2>{text("属性", "Properties")}</h2>
             <div className="detail-property-row">
               <span className="detail-property-label">Workflow</span>
-              <span className="detail-property-readonly">
-                {currentTask.workflowId === "coding" ? "Coding" : currentTask.workflowId ?? "Not set"}
-              </span>
-            </div>
-            <div className="detail-property-row">
-              <span className="detail-property-label">Run phase</span>
-              <span className="detail-property-readonly">
-                {codingRun?.phase
-                  ? `${codingRun.phase.charAt(0).toUpperCase()}${codingRun.phase.slice(1).replaceAll("_", " ")}`
-                  : "Not started"}
-              </span>
+              <TaskPropertyPicker
+                value={currentTask.workflowId ?? ""}
+                options={[
+                  { value: "", label: "Not set", icon: <LinearIcon name="displayOptions" /> },
+                  ...workflows.map((workflow) => ({
+                    value: workflow.id,
+                    label: workflow.name,
+                    icon: <LinearIcon name="play" />,
+                  })),
+                ]}
+                open={propertyMenu === "workflow"}
+                disabled={savingProperty === "workflowId"}
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel="Workflow"
+                onOpenChange={(open) => setPropertyMenu(open ? "workflow" : null)}
+                onChange={(value) => void saveTask({ workflowId: value || null }, "workflowId")}
+              />
             </div>
             <div className="detail-property-row">
               <span className="detail-property-label">{text("状态", "Status")}</span>

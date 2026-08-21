@@ -2196,14 +2196,11 @@ export function createTaskboardServer(options = {}) {
 
       if (codingTaskRunRoute) {
         assertNoQuery(url.searchParams, "/api/local/coding/tasks/:id/runs");
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        await assertEmptyRequestBody(request, "POST /api/local/coding/tasks/:id/runs");
         const taskId = decodeRouteSegment(codingTaskRunRoute[1], "Task id");
         const task = database.getTask(taskId);
         if (!task) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${taskId}' does not exist`);
-        if (request.method === "GET") {
-          return sendJson(response, 200, { run: database.getLatestCodingRunForTask(task.id) });
-        }
-        if (request.method !== "POST") return methodNotAllowed(response, ["GET", "POST"]);
-        await assertEmptyRequestBody(request, "POST /api/local/coding/tasks/:id/runs");
         if (task.workflowId !== CODING_WORKFLOW_ID) {
           throw new ApiError(409, "NOT_CODING_WORKFLOW", "Task does not use the Coding workflow");
         }

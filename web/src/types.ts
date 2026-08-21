@@ -36,12 +36,6 @@ export interface DevelopmentScan {
   contexts: DevelopmentContext[];
 }
 
-export interface CodingRunSummary {
-  id: string;
-  taskId: string;
-  phase: string;
-}
-
 export interface TaskboardMetadata {
   manageTaskboardSkillPath?: string;
   capabilities?: TaskboardCapabilities;
