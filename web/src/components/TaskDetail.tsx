@@ -93,7 +93,7 @@ interface TaskDetailProps {
   onCreateLabel: (label: string) => Promise<void>;
   onDeleteLabel: (label: string) => Promise<void>;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
-  onBindCodingAndClaim: (task: Task) => Promise<Task>;
+  onBindCodingAndClaim: (task: Task, developmentContext?: DevelopmentContext) => Promise<Task>;
   onOpenTask: (task: TaskRelationSummary) => void;
   onAddRelation: (
     task: Task,
@@ -619,7 +619,13 @@ export function TaskDetail({
     setClaimingCoding(true);
     onError(null);
     try {
-      setCurrentTask(await onBindCodingAndClaim(currentTask));
+      const currentWorktree = developmentScan.contexts.find((context) => (
+        context.type === "worktree" && context.path === developmentScan.workspacePath
+      ));
+      setCurrentTask(await onBindCodingAndClaim(
+        currentTask,
+        currentTask.developmentContext ? undefined : currentWorktree,
+      ));
     } catch (error) {
       onError(issueMessageFor(error));
     } finally {

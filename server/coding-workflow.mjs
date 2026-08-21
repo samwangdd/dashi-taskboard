@@ -128,13 +128,19 @@ export class CodingWorkflowService {
     if (task.workflowId !== null) {
       throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
     }
-    const claim = await this.assertClaimable({ ...task, workflowId: CODING_WORKFLOW_ID });
+    const developmentContext = task.developmentContext ?? input.developmentContext;
+    const claim = await this.assertClaimable({
+      ...task,
+      workflowId: CODING_WORKFLOW_ID,
+      developmentContext,
+    });
     return this.database.bindCodingAndClaim(
       task.id,
       input.version,
       input.threadId,
       input.actor,
       claim.startRevision,
+      developmentContext,
     );
   }
 

@@ -1340,11 +1340,6 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
       title: "Historical coding issue",
       status: "todo",
       workflowId: null,
-      developmentContext: {
-        type: "worktree",
-        path: repository,
-        branch: "codex/claim-test",
-      },
     },
   });
   const claimed = await request(
@@ -1352,13 +1347,26 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
     `/api/local/coding/tasks/${created.body.task.id}/claim`,
     {
       method: "POST",
-      body: { version: created.body.task.version, threadId: "thread-claim" },
+      body: {
+        version: created.body.task.version,
+        threadId: "thread-claim",
+        developmentContext: {
+          type: "worktree",
+          path: repository,
+          branch: "codex/claim-test",
+        },
+      },
     },
   );
   assert.equal(claimed.response.status, 200);
   assert.equal(claimed.body.task.workflowId, "coding");
   assert.equal(claimed.body.task.status, "in_progress");
   assert.equal(claimed.body.task.threadId, "thread-claim");
+  assert.deepEqual(claimed.body.task.developmentContext, {
+    type: "worktree",
+    path: repository,
+    branch: "codex/claim-test",
+  });
   assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
   assert.equal(claimed.body.codingRun.startRevision, revision);
 

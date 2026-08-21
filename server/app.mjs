@@ -453,10 +453,13 @@ function parseCodingWorkflowSettings(body) {
 
 function parseCodingClaim(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "threadId"]));
+  assertAllowedKeys(body, new Set(["version", "threadId", "developmentContext"]));
   return {
     version: parseVersion(body.version),
     threadId: parseThreadId(body.threadId),
+    developmentContext: body.developmentContext === undefined
+      ? undefined
+      : parseDevelopmentContext(body.developmentContext),
   };
 }
 

@@ -119,6 +119,7 @@ import {
   type ActorIdentity,
   type AiChatThread,
   type CodingWorkflowSettings,
+  type DevelopmentContext,
   type DevelopmentScan,
   type HostContext,
   type IssueRelationType,
@@ -2308,10 +2309,13 @@ export function App() {
     }
   }
 
-  async function bindCodingAndClaim(task: Task): Promise<Task> {
+  async function bindCodingAndClaim(
+    task: Task,
+    developmentContext?: DevelopmentContext,
+  ): Promise<Task> {
     setActionError(null);
     try {
-      const claimed = await bindCodingAndClaimRequest(task);
+      const claimed = await bindCodingAndClaimRequest(task, developmentContext);
       setTasks((current) => sortTasks(current.map((candidate) => (
         candidate.id === claimed.id ? claimed : candidate
       ))));

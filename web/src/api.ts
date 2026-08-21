@@ -9,6 +9,7 @@ import type {
   Attachment,
   Comment,
   CodingWorkflowSettings,
+  DevelopmentContext,
   DevelopmentScan,
   HostContext,
   IssueRelationType,
@@ -523,12 +524,15 @@ export async function moveTask(
   return data.task;
 }
 
-export async function bindCodingAndClaim(task: Task): Promise<Task> {
+export async function bindCodingAndClaim(
+  task: Task,
+  developmentContext?: DevelopmentContext,
+): Promise<Task> {
   const data = await request<{ task: Task }>(
     `/api/local/coding/tasks/${encodeURIComponent(task.id)}/claim`,
     {
       method: "POST",
-      body: JSON.stringify({ version: task.version }),
+      body: JSON.stringify({ version: task.version, developmentContext }),
     },
   );
   return data.task;

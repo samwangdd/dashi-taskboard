@@ -2341,7 +2341,7 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  bindCodingAndClaim(id, version, threadId, actor, startRevision) {
+  bindCodingAndClaim(id, version, threadId, actor, startRevision, developmentContext) {
     let previousStatus;
     let runId;
     this.database.exec("BEGIN IMMEDIATE");
@@ -2367,14 +2367,29 @@ export class TaskboardDatabase {
       const result = this.database.prepare(`
         UPDATE tasks
         SET workflow_id = ?, status = 'in_progress', sort_order = ?,
-            thread_id = COALESCE(?, thread_id), version = version + 1, updated_at = ?
+            thread_id = COALESCE(?, thread_id), git_branch = ?, worktree_path = ?,
+            worktree_branch = ?, version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(CODING_WORKFLOW_ID, sortOrder, threadId ?? null, timestamp, current.id, version);
+      `).run(
+        CODING_WORKFLOW_ID,
+        sortOrder,
+        threadId ?? null,
+        developmentContext?.type === "branch" ? developmentContext.branch : null,
+        developmentContext?.type === "worktree" ? developmentContext.path : null,
+        developmentContext?.type === "worktree" ? developmentContext.branch : null,
+        timestamp,
+        current.id,
+        version,
+      );
       if (result.changes !== 1) this.#throwMissingOrConflict(id, version);
       this.#recordTaskActivity(
         current.id,
         actor,
-        taskFieldChanges(current, { workflowId: CODING_WORKFLOW_ID, status: "in_progress" }),
+        taskFieldChanges(current, {
+          workflowId: CODING_WORKFLOW_ID,
+          status: "in_progress",
+          developmentContext,
+        }),
         timestamp,
       );
       const codingRun = this.createOrResumeCodingRun(current.id, startRevision);
