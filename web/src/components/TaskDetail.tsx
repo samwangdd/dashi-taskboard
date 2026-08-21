@@ -93,6 +93,7 @@ interface TaskDetailProps {
   onCreateLabel: (label: string) => Promise<void>;
   onDeleteLabel: (label: string) => Promise<void>;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
+  onBindCodingAndClaim: (task: Task) => Promise<Task>;
   onOpenTask: (task: TaskRelationSummary) => void;
   onAddRelation: (
     task: Task,
@@ -412,6 +413,7 @@ export function TaskDetail({
   onCreateLabel,
   onDeleteLabel,
   onUpdate,
+  onBindCodingAndClaim,
   onOpenTask,
   onAddRelation,
   onRemoveRelation,
@@ -432,6 +434,7 @@ export function TaskDetail({
   const [editingDescription, setEditingDescription] = useState(false);
   const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | null>(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
+  const [claimingCoding, setClaimingCoding] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [attachmentsLoading, setAttachmentsLoading] = useState(true);
   const [attachmentsError, setAttachmentsError] = useState<TaskDetailError | null>(null);
@@ -608,6 +611,19 @@ export function TaskDetail({
       return null;
     } finally {
       setSavingProperty(null);
+    }
+  }
+
+  async function bindCodingAndClaim() {
+    if (claimingCoding) return;
+    setClaimingCoding(true);
+    onError(null);
+    try {
+      setCurrentTask(await onBindCodingAndClaim(currentTask));
+    } catch (error) {
+      onError(issueMessageFor(error));
+    } finally {
+      setClaimingCoding(false);
     }
   }
 
@@ -936,6 +952,25 @@ export function TaskDetail({
                   onKeyDown={handleTitleKeyDown}
                   onBlur={() => void saveTitle()}
                 />
+                {currentTask.workflowId === null && (
+                  <div className="missing-workflow-notice" role="status">
+                    <LinearIcon name="alert" />
+                    <div>
+                      <strong>Missing Workflow</strong>
+                      <span>This issue is not bound to a delivery workflow.</span>
+                    </div>
+                    {currentTask.status === "todo" && (
+                      <button
+                        className="button primary"
+                        type="button"
+                        disabled={claimingCoding}
+                        onClick={() => void bindCodingAndClaim()}
+                      >
+                        {claimingCoding ? "Binding…" : "Bind Coding & Claim"}
+                      </button>
+                    )}
+                  </div>
+                )}
                 <IssueParentLink
                   task={currentTask}
                   tasks={tasks}

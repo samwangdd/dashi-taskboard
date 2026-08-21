@@ -2525,6 +2525,39 @@ kbd {
   min-width: 0;
 }
 
+.missing-workflow-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 12px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warning) 9%, transparent);
+  color: var(--text-secondary);
+}
+
+.missing-workflow-notice > svg {
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+
+.missing-workflow-notice > div {
+  display: grid;
+  flex: 1 1 180px;
+  gap: 2px;
+  min-width: 0;
+}
+
+.missing-workflow-notice strong {
+  color: var(--text-primary);
+}
+
+.missing-workflow-notice span {
+  font-size: 12px;
+}
+
 .issue-parent-link {
   position: relative;
   display: flex;

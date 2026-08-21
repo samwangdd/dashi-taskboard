@@ -112,6 +112,32 @@ export class CodingWorkflowService {
     return this.database.createOrResumeCodingRun(task.id, claim.startRevision);
   }
 
+  async bindAndClaim(task, input) {
+    if (task.version !== input.version) {
+      throw new ApiError(409, "VERSION_CONFLICT", "Task was changed by another client", {
+        expectedVersion: input.version,
+        actualVersion: task.version,
+      });
+    }
+    if (task.archivedAt !== null) {
+      throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be claimed");
+    }
+    if (task.status !== "todo") {
+      throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
+    }
+    if (task.workflowId !== null) {
+      throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
+    }
+    const claim = await this.assertClaimable({ ...task, workflowId: CODING_WORKFLOW_ID });
+    return this.database.bindCodingAndClaim(
+      task.id,
+      input.version,
+      input.threadId,
+      input.actor,
+      claim.startRevision,
+    );
+  }
+
   async runScopedCheck(runId, input) {
     const run = this.#requireRun(runId);
     if (run.phase !== "implementing") {
