@@ -99,7 +99,7 @@ const COMMAND_OPTIONS = new Map([
   ["coding contract", new Set(["contract-file", "if-version", "json"])],
   ["coding handoff", new Set(["from-role", "to-role", "body", "body-file", "json"])],
   ["coding check", new Set(["kind", "files", "command", "json"])],
-  ["coding verdict", new Set(["result", "ui", "body", "body-file", "json"])],
+  ["coding verdict", new Set(["role", "result", "ui", "body", "body-file", "json"])],
   ["coding commit", new Set(["message", "json"])],
 ]);
 
@@ -141,10 +141,11 @@ const OPTION_VALUES = new Map([
   ["contract-file", "FILE"],
   ["from-role", "ROLE"],
   ["to-role", "ROLE"],
+  ["role", "reviewer|verifier|ui-verifier"],
   ["kind", "KIND"],
   ["files", "PATH,PATH"],
   ["command", "COMMAND"],
-  ["result", "pass|fail"],
+  ["result", "pass|fail|inconclusive"],
   ["message", "TEXT"],
 ]);
 
@@ -247,7 +248,7 @@ const COMMAND_HELP = new Map([
     "coding verdict",
     {
       operands: "RUN_ID",
-      summary: "Record a verifier verdict, optionally from the UI verifier.",
+      summary: "Record a reviewer or verifier verdict.",
       required: ["result", "body"],
     },
   ],
@@ -661,8 +662,10 @@ async function execute(parsed, overrides) {
     case "coding verdict":
       expectOperandCount(parsed, 1);
       return api.request("POST", `${codingRunPath(parsed.operands[0])}/verdicts`, {
+        ...(parsed.options.role === undefined
+          ? { ui: parsed.options.ui === true }
+          : { role: parsed.options.role }),
         result: requiredOption(parsed.options, "result"),
-        ui: parsed.options.ui === true,
         body: await resolveBody(parsed.options, overrides),
       });
     case "coding commit":

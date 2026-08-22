@@ -151,7 +151,9 @@ test("the coding loop instructions drop model names but keep the protocol steps"
   ]) {
     assert.ok(loop.includes(step), `coding loop instructions should keep step: ${step}`);
   }
-  assert.ok(loop.includes("默认非 UI 使用标准 verifier 模型，UI 使用 UI verifier 模型"));
+  assert.ok(loop.includes("reviewer 使用 orchestrator 模型"));
+  assert.ok(loop.includes("非 UI verifier 使用标准 verifier 模型，UI 使用 UI verifier 模型"));
+  assert.ok(loop.includes("已 handoff 的 reviewer、verifier 与 UI verifier 必须分别写 verdict"));
 });
 
 test("the automation and copyable loop keep the shared instructions verbatim", () => {

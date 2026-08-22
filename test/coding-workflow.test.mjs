@@ -123,6 +123,54 @@ test("terminal runs reject new role handoffs and unmatched completion returns nu
   assert.equal(database.completeCodingRunForTask(task.id), null);
 });
 
+test("every requested review role passes independently before commit", async () => {
+  const { database, implementingRun, service } = await createFixture();
+
+  await service.addHandoff(implementingRun.id, {
+    sourceRole: "implementer",
+    targetRole: "reviewer",
+    body: "review the changed contract",
+  });
+  await service.addHandoff(implementingRun.id, {
+    sourceRole: "implementer",
+    targetRole: "verifier",
+    body: "verify the changed behavior",
+  });
+  await service.addHandoff(implementingRun.id, {
+    sourceRole: "implementer",
+    targetRole: "ui-verifier",
+    body: "verify the changed UI",
+  });
+
+  const reviewed = await service.recordVerdict(implementingRun.id, {
+    role: "reviewer",
+    result: "pass",
+    body: "contract matches the implementation",
+  });
+  assert.equal(reviewed.run.phase, "verifying");
+
+  const verified = await service.recordVerdict(implementingRun.id, {
+    role: "verifier",
+    result: "pass",
+    body: "runtime evidence passes",
+  });
+  assert.equal(verified.run.phase, "verifying");
+
+  const uiVerified = await service.recordVerdict(implementingRun.id, {
+    result: "pass",
+    ui: true,
+    body: "legacy UI evidence passes",
+  });
+  assert.equal(uiVerified.run.phase, "ready_to_commit");
+  assert.deepEqual(
+    database.listCodingArtifacts(implementingRun.id)
+      .filter((artifact) => artifact.kind === "verification")
+      .map((artifact) => artifact.sourceRole)
+      .sort(),
+    ["reviewer", "ui-verifier", "verifier"],
+  );
+});
+
 test("a commit resumes after Git succeeds but the first database finalize fails", async () => {
   const { database, implementingRun, repository, service, task } = await createFixture();
   await writeFile(path.join(repository, "example.mjs"), "export const value = 2;\n");

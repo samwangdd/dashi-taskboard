@@ -265,15 +265,20 @@ export class CodingWorkflowService {
 
   async addHandoff(runId, input) {
     const run = this.#requireRun(runId);
-    const allowedPhase = input.targetRole === "orchestrator" ? "ready_to_commit" : "implementing";
-    if (!["implementer", "verifier", "ui-verifier", "orchestrator"].includes(input.targetRole)) {
+    const reviewRoles = ["reviewer", "verifier", "ui-verifier"];
+    if (!["implementer", ...reviewRoles, "orchestrator"].includes(input.targetRole)) {
       throw new ApiError(400, "INVALID_CODING_ROLE", "Coding handoff target role is invalid");
     }
-    if (run.phase !== allowedPhase) {
-      throw new ApiError(409, "INVALID_CODING_PHASE", `Handoff to ${input.targetRole} requires a ${allowedPhase} run`);
+    const validPhase = input.targetRole === "orchestrator"
+      ? run.phase === "ready_to_commit"
+      : reviewRoles.includes(input.targetRole)
+        ? ["implementing", "verifying"].includes(run.phase)
+        : run.phase === "implementing";
+    if (!validPhase) {
+      throw new ApiError(409, "INVALID_CODING_PHASE", `Handoff to ${input.targetRole} is not valid during ${run.phase}`);
     }
     let changedFiles = null;
-    if (input.sourceRole === "implementer" && ["verifier", "ui-verifier"].includes(input.targetRole)) {
+    if (input.sourceRole === "implementer" && reviewRoles.includes(input.targetRole)) {
       const task = this.database.getTask(run.taskId);
       const workspacePath = await this.workspaceForTask(task);
       changedFiles = await this.changedFiles(workspacePath);
@@ -308,10 +313,14 @@ export class CodingWorkflowService {
   }
 
   async recordVerdict(runId, input) {
+    const role = input.role ?? (input.ui ? "ui-verifier" : "verifier");
+    if (!["reviewer", "verifier", "ui-verifier"].includes(role)) {
+      throw new ApiError(400, "INVALID_CODING_ROLE", "Coding verdict role is invalid");
+    }
     if (!["pass", "fail", "inconclusive"].includes(input.result)) {
       throw new ApiError(400, "INVALID_VERDICT", "Coding verdict must be pass, fail, or inconclusive");
     }
-    const result = this.database.recordCodingVerdict(runId, input);
+    const result = this.database.recordCodingVerdict(runId, { ...input, role });
     if (result.blocked) {
       const task = this.database.getTask(result.run.taskId);
       const moved = this.database.moveTask(task.id, task.version, "blocked", undefined, task.threadId ?? undefined);
