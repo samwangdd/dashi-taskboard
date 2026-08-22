@@ -43,6 +43,34 @@ async function createTask(projectId, title, actorName = alice, extra = {}) {
   });
 }
 
+test("cloud tasks preserve a stable target branch across development context changes", async () => {
+  await createProject("target-branch-cloud");
+  const created = await createTask("target-branch-cloud", "Stable delivery target", alice, {
+    developmentContext: { type: "branch", branch: "release/next" },
+  });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.task.targetBranch, "release/next");
+
+  const moved = await cloud.request(`/api/tasks/${created.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: {
+      version: created.body.task.version,
+      developmentContext: { type: "worktree", branch: "codex/cloud-task" },
+    },
+  });
+  assert.equal(moved.response.status, 200);
+  assert.equal(moved.body.task.targetBranch, "release/next");
+
+  const retargeted = await cloud.request(`/api/tasks/${created.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: { version: moved.body.task.version, targetBranch: "release/later" },
+  });
+  assert.equal(retargeted.response.status, 200);
+  assert.equal(retargeted.body.task.targetBranch, "release/later");
+});
+
 test("Basic authentication protects static assets, APIs, and attachment content", async () => {
   for (const pathname of ["/", "/api/projects", "/api/attachments/missing/content"]) {
     const missing = await cloud.request(pathname);

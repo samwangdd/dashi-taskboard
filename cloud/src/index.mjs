@@ -627,6 +627,7 @@ function taskFromRow(row) {
     },
     workflowId: row.workflow_id,
     developmentContext: developmentContextFromRow(row),
+    targetBranch: row.target_branch ?? null,
     startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
@@ -942,6 +943,7 @@ function parseTaskCreate(body) {
     "assigneeTarget",
     "workflowId",
     "developmentContext",
+    "targetBranch",
     "startDate",
     "dueDate",
     "recurrence",
@@ -958,6 +960,9 @@ function parseTaskCreate(body) {
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     workflowId: parseWorkflowId(body.workflowId ?? null),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    targetBranch: body.targetBranch === undefined
+      ? undefined
+      : stringField(body.targetBranch, "targetBranch", { required: true, maxLength: 512 }),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
@@ -982,6 +987,7 @@ function parseTaskPatch(body) {
     "assigneeTarget",
     "workflowId",
     "developmentContext",
+    "targetBranch",
     "startDate",
     "dueDate",
     "recurrence",
@@ -1000,6 +1006,9 @@ function parseTaskPatch(body) {
   if (body.workflowId !== undefined) changes.workflowId = parseWorkflowId(body.workflowId);
   if (body.developmentContext !== undefined) {
     changes.developmentContext = parseDevelopmentContext(body.developmentContext);
+  }
+  if (body.targetBranch !== undefined) {
+    changes.targetBranch = stringField(body.targetBranch, "targetBranch", { required: true, maxLength: 512 });
   }
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
@@ -1430,7 +1439,7 @@ async function createTask(env, input, actor) {
         id, identifier, project_id, title, description, status, priority, labels,
         sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
         assignee_type, assignee_id, assignee_name, assignee_avatar_url,
-        workflow_id, development_context_type, development_branch,
+        workflow_id, development_context_type, development_branch, target_branch,
         start_date, due_date, recurrence_interval, recurrence_unit,
         archived_at, version, created_at, updated_at
       )
@@ -1445,7 +1454,7 @@ async function createTask(env, input, actor) {
           ), 1)
         ) AS TEXT),
         projects.id,
-        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         NULL, 1, ?, ?
       FROM projects
@@ -1473,6 +1482,8 @@ async function createTask(env, input, actor) {
       input.workflowId,
       input.developmentContext?.type ?? null,
       input.developmentContext?.branch ?? null,
+      input.targetBranch
+        ?? (input.developmentContext?.type === "branch" ? input.developmentContext.branch : null),
       input.startDate,
       input.dueDate,
       input.recurrence?.interval ?? null,
@@ -1582,6 +1593,7 @@ async function updateTask(env, id, input, actor) {
     priority: "priority",
     labels: "labels",
     workflowId: "workflow_id",
+    targetBranch: "target_branch",
     startDate: "start_date",
     dueDate: "due_date",
   };

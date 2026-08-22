@@ -453,10 +453,13 @@ function parseCodingWorkflowSettings(body) {
 
 function parseCodingClaim(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "threadId"]));
+  assertAllowedKeys(body, new Set(["version", "threadId", "developmentContext"]));
   return {
     version: parseVersion(body.version),
     threadId: parseThreadId(body.threadId),
+    developmentContext: body.developmentContext === undefined
+      ? undefined
+      : parseDevelopmentContext(body.developmentContext),
   };
 }
 
@@ -676,7 +679,7 @@ function parseTaskCreate(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId",
-    "assigneeTarget", "workflowId", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "workflowId", "developmentContext", "targetBranch", "startDate", "dueDate", "recurrence",
   ]));
   const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
   const task = {
@@ -691,6 +694,9 @@ function parseTaskCreate(body) {
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     ...(body.workflowId === undefined ? {} : { workflowId: parseWorkflowId(body.workflowId) }),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    targetBranch: body.targetBranch === undefined
+      ? undefined
+      : stringField(body.targetBranch, "targetBranch", { required: true, maxLength: 512 }),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
@@ -705,7 +711,7 @@ function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version", "projectId", "title", "description", "status", "priority", "labels", "threadId",
-    "assigneeTarget", "workflowId", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "workflowId", "developmentContext", "targetBranch", "startDate", "dueDate", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
@@ -719,6 +725,9 @@ function parseTaskPatch(body) {
   if (body.labels !== undefined) changes.labels = parseLabels(body.labels);
   if (body.workflowId !== undefined) changes.workflowId = parseWorkflowId(body.workflowId);
   if (body.developmentContext !== undefined) changes.developmentContext = parseDevelopmentContext(body.developmentContext);
+  if (body.targetBranch !== undefined) {
+    changes.targetBranch = stringField(body.targetBranch, "targetBranch", { required: true, maxLength: 512 });
+  }
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
   if (body.recurrence !== undefined) changes.recurrence = parseRecurrence(body.recurrence);
@@ -1637,7 +1646,9 @@ export function createTaskboardServer(options = {}) {
     processEnv: codexProcessEnvironment,
     workspacePath: PROJECT_ROOT,
   });
-  const codingWorkflow = new CodingWorkflowService(database);
+  const codingWorkflow = new CodingWorkflowService(database, {
+    worktreeRoot: options.codingWorktreeRoot,
+  });
   const aiEventResponses = new Set();
   const codexSessionSearches = new Map();
   const codexSessionStateCache = new Map();

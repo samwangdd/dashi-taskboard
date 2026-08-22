@@ -373,7 +373,7 @@ const CLOUD_COLUMNS = {
     "sort_order", "thread_id", "creator_type", "creator_id", "creator_name",
     "creator_avatar_url", "assignee_type", "assignee_id", "assignee_name",
     "assignee_avatar_url", "workflow_id", "development_context_type", "development_branch",
-    "due_date", "recurrence_interval", "recurrence_unit", "archived_at", "version",
+    "target_branch", "due_date", "recurrence_interval", "recurrence_unit", "archived_at", "version",
     "created_at", "updated_at",
   ],
   comments: [
@@ -395,6 +395,7 @@ function cloudTaskRow(task) {
         ? "branch"
         : null,
     development_branch: isWorktree ? task.worktree_branch : task.git_branch,
+    target_branch: task.target_branch ?? (isWorktree ? null : task.git_branch),
   };
 }
 

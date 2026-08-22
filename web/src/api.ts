@@ -9,6 +9,7 @@ import type {
   Attachment,
   Comment,
   CodingWorkflowSettings,
+  DevelopmentContext,
   DevelopmentScan,
   HostContext,
   IssueRelationType,
@@ -518,17 +519,6 @@ export async function moveTask(
     {
       method: "POST",
       body: JSON.stringify({ version: task.version, status, sortOrder, ...(threadId ? { threadId } : {}) }),
-    },
-  );
-  return data.task;
-}
-
-export async function bindCodingAndClaim(task: Task): Promise<Task> {
-  const data = await request<{ task: Task }>(
-    `/api/local/coding/tasks/${encodeURIComponent(task.id)}/claim`,
-    {
-      method: "POST",
-      body: JSON.stringify({ version: task.version }),
     },
   );
   return data.task;

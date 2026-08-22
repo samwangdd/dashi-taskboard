@@ -1318,6 +1318,102 @@ test("task creation inherits the project workflow only when workflowId is omitte
   assert.equal(unbound.body.task.workflowId, null);
 });
 
+test("a branch development context seeds a stable target branch", async () => {
+  const baseUrl = await startServer();
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Keep the delivery target stable",
+      developmentContext: {
+        type: "branch",
+        branch: "release/next",
+      },
+    },
+  });
+
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.task.targetBranch, "release/next");
+
+  const moved = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
+    method: "PATCH",
+    body: {
+      version: created.body.task.version,
+      developmentContext: {
+        type: "worktree",
+        path: "/tmp/C03E81167BD2-12",
+        branch: "codex/C03E81167BD2-12",
+      },
+    },
+  });
+
+  assert.equal(moved.response.status, 200);
+  assert.equal(moved.body.task.targetBranch, "release/next");
+
+  const retargeted = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
+    method: "PATCH",
+    body: {
+      version: moved.body.task.version,
+      targetBranch: "release/later",
+    },
+  });
+  assert.equal(retargeted.response.status, 200);
+  assert.equal(retargeted.body.task.targetBranch, "release/later");
+  assert.deepEqual(retargeted.body.task.developmentContext, moved.body.task.developmentContext);
+});
+
+test("coding claim materializes a dirty branch context into an issue worktree", async () => {
+  let repository;
+  let worktreeRoot;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    worktreeRoot = path.join(directory, "worktrees");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "release/next", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 2;\n");
+    return { codingWorktreeRoot: worktreeRoot };
+  });
+
+  const project = await request(baseUrl, "/api/projects", {
+    method: "POST",
+    body: { id: "dirty-repo", name: "Dirty repository", workspacePath: repository },
+  });
+  assert.equal(project.response.status, 201);
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      projectId: project.body.project.id,
+      title: "Claim from a dirty branch",
+      status: "todo",
+      workflowId: "coding",
+      developmentContext: { type: "branch", branch: "release/next" },
+    },
+  });
+
+  const claimed = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
+    method: "POST",
+    body: { version: created.body.task.version, threadId: "thread-dirty-claim" },
+  });
+
+  const expectedPath = path.join(worktreeRoot, "repository", created.body.task.identifier);
+  assert.equal(claimed.response.status, 200);
+  assert.deepEqual(claimed.body.task.developmentContext, {
+    type: "worktree",
+    path: expectedPath,
+    branch: `codex/${created.body.task.identifier}`,
+  });
+  assert.equal(claimed.body.task.targetBranch, "release/next");
+  assert.equal((await run("git", ["-C", expectedPath, "status", "--porcelain"])).stdout, "");
+  assert.equal(
+    (await run("git", ["-C", expectedPath, "config", "--get", `branch.codex/${created.body.task.identifier}.mxBase`])).stdout.trim(),
+    "release/next",
+  );
+});
+
 test("bind coding and claim atomically creates one frozen coding run", async () => {
   let repository;
   let revision;
@@ -1341,8 +1437,7 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
       status: "todo",
       workflowId: null,
       developmentContext: {
-        type: "worktree",
-        path: repository,
+        type: "branch",
         branch: "codex/claim-test",
       },
     },
@@ -1352,13 +1447,26 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
     `/api/local/coding/tasks/${created.body.task.id}/claim`,
     {
       method: "POST",
-      body: { version: created.body.task.version, threadId: "thread-claim" },
+      body: {
+        version: created.body.task.version,
+        threadId: "thread-claim",
+        developmentContext: {
+          type: "worktree",
+          path: repository,
+          branch: "codex/claim-test",
+        },
+      },
     },
   );
   assert.equal(claimed.response.status, 200);
   assert.equal(claimed.body.task.workflowId, "coding");
   assert.equal(claimed.body.task.status, "in_progress");
   assert.equal(claimed.body.task.threadId, "thread-claim");
+  assert.deepEqual(claimed.body.task.developmentContext, {
+    type: "worktree",
+    path: repository,
+    branch: "codex/claim-test",
+  });
   assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
   assert.equal(claimed.body.codingRun.startRevision, revision);
 
@@ -1380,6 +1488,136 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
   );
   assert.equal(resumed.response.status, 200);
   assert.equal(resumed.body.run.id, claimed.body.codingRun.id);
+});
+
+test("coding claim accepts a todo issue already assigned to the coding workflow", async () => {
+  let repository;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "codex/claim-prebound-test", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    return {};
+  });
+
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Prebound coding issue",
+      status: "todo",
+      workflowId: "coding",
+      targetBranch: "codex/claim-prebound-test",
+      developmentContext: {
+        type: "worktree",
+        path: repository,
+        branch: "codex/claim-prebound-test",
+      },
+    },
+  });
+  const claimed = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/claim`,
+    {
+      method: "POST",
+      body: {
+        version: created.body.task.version,
+        threadId: "thread-prebound-claim",
+      },
+    },
+  );
+
+  assert.equal(claimed.response.status, 200);
+  assert.equal(claimed.body.task.status, "in_progress");
+  assert.equal(claimed.body.task.workflowId, "coding");
+  assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
+});
+
+test("coding claim cannot take over an active coding run", async () => {
+  let repository;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "codex/active-run-test", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    return {};
+  });
+
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Do not take over active work",
+      status: "todo",
+      workflowId: "coding",
+      targetBranch: "codex/active-run-test",
+      developmentContext: {
+        type: "worktree",
+        path: repository,
+        branch: "codex/active-run-test",
+      },
+    },
+  });
+  const firstClaim = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
+    method: "POST",
+    body: { version: created.body.task.version, threadId: "thread-first-agent" },
+  });
+  assert.equal(firstClaim.response.status, 200);
+
+  const resetToTodo = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
+    method: "PATCH",
+    body: { version: firstClaim.body.task.version, status: "todo" },
+  });
+  assert.equal(resetToTodo.response.status, 200);
+  const takeover = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
+    method: "POST",
+    body: { version: resetToTodo.body.task.version, threadId: "thread-second-agent" },
+  });
+
+  assert.equal(takeover.response.status, 409);
+  assert.equal(takeover.body.error.code, "CODING_RUN_ACTIVE");
+});
+
+test("coding claim rejects a worktree-only issue without a target branch", async () => {
+  let repository;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "codex/no-target-test", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    return {};
+  });
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Missing delivery target",
+      status: "todo",
+      workflowId: "coding",
+      developmentContext: {
+        type: "worktree",
+        path: repository,
+        branch: "codex/no-target-test",
+      },
+    },
+  });
+
+  const claimed = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
+    method: "POST",
+    body: { version: created.body.task.version, threadId: "thread-no-target" },
+  });
+
+  assert.equal(claimed.response.status, 409);
+  assert.equal(claimed.body.error.code, "TARGET_BRANCH_REQUIRED");
 });
 
 test("issues support parent, sub-issue, blocking, and related issue relationships", async () => {

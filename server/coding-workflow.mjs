@@ -1,5 +1,6 @@
 import { exec as execCallback, execFile as execFileCallback } from "node:child_process";
-import { realpath } from "node:fs/promises";
+import { mkdir, realpath } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { ApiError } from "./database.mjs";
@@ -57,8 +58,31 @@ function normalizeRelativeFiles(files) {
 }
 
 export class CodingWorkflowService {
-  constructor(database) {
+  constructor(database, options = {}) {
     this.database = database;
+    this.worktreeRoot = options.worktreeRoot ?? path.join(os.homedir(), "worktree");
+  }
+
+  async materializeIssueWorktree(task, workspacePath, targetBranch) {
+    const { stdout: commonDirectoryOutput } = await runGit(
+      workspacePath,
+      ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+    );
+    const commonDirectory = commonDirectoryOutput.trim();
+    const repositoryName = path.basename(path.dirname(commonDirectory));
+    const worktreePath = path.join(this.worktreeRoot, repositoryName, task.identifier);
+    const taskBranch = `codex/${task.identifier}`;
+    await mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(workspacePath, [
+      "worktree",
+      "add",
+      worktreePath,
+      "-b",
+      taskBranch,
+      `refs/heads/${targetBranch}`,
+    ]);
+    await runGit(workspacePath, ["config", `branch.${taskBranch}.mxBase`, targetBranch]);
+    return { type: "worktree", path: worktreePath, branch: taskBranch };
   }
 
   async workspaceForTask(task) {
@@ -125,17 +149,67 @@ export class CodingWorkflowService {
     if (task.status !== "todo") {
       throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
     }
-    if (task.workflowId !== null) {
+    if (task.workflowId !== null && task.workflowId !== CODING_WORKFLOW_ID) {
       throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
     }
-    const claim = await this.assertClaimable({ ...task, workflowId: CODING_WORKFLOW_ID });
-    return this.database.bindCodingAndClaim(
-      task.id,
-      input.version,
-      input.threadId,
-      input.actor,
-      claim.startRevision,
-    );
+    const activeRun = this.database.getLatestCodingRunForTask(task.id);
+    if (activeRun && !["blocked", "completed"].includes(activeRun.phase)) {
+      throw new ApiError(409, "CODING_RUN_ACTIVE", "Task already has an active Coding run", {
+        runId: activeRun.id,
+        phase: activeRun.phase,
+      });
+    }
+    let developmentContext = input.developmentContext ?? task.developmentContext;
+    const targetBranch = task.targetBranch
+      ?? (developmentContext?.type === "branch" ? developmentContext.branch : null);
+    if (!targetBranch) {
+      throw new ApiError(409, "TARGET_BRANCH_REQUIRED", "Coding claim requires an explicit target branch");
+    }
+    let claimTask = { ...task, workflowId: CODING_WORKFLOW_ID, developmentContext };
+    let claim;
+    let materializedFromWorkspace = null;
+    try {
+      claim = await this.assertClaimable(claimTask);
+    } catch (error) {
+      if (error.code !== "DEVELOPMENT_CONTEXT_DIRTY" || developmentContext?.type !== "branch") {
+        throw error;
+      }
+      const workspacePath = await this.workspaceForTask(claimTask);
+      developmentContext = await this.materializeIssueWorktree(task, workspacePath, targetBranch);
+      materializedFromWorkspace = workspacePath;
+      claimTask = { ...claimTask, developmentContext };
+      claim = await this.assertClaimable(claimTask);
+    }
+    try {
+      return this.database.bindCodingAndClaim(
+        task.id,
+        input.version,
+        input.threadId,
+        input.actor,
+        claim.startRevision,
+        developmentContext,
+        targetBranch,
+      );
+    } catch (error) {
+      if (materializedFromWorkspace) {
+        await execFile("git", [
+          "-C",
+          materializedFromWorkspace,
+          "worktree",
+          "remove",
+          "--force",
+          developmentContext.path,
+        ]).catch(() => {});
+        await execFile("git", [
+          "-C",
+          materializedFromWorkspace,
+          "branch",
+          "-D",
+          developmentContext.branch,
+        ]).catch(() => {});
+      }
+      throw error;
+    }
   }
 
   async runScopedCheck(runId, input) {

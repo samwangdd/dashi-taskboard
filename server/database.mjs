@@ -196,6 +196,7 @@ function taskFromRow(row) {
     },
     workflowId: row.workflow_id,
     developmentContext,
+    targetBranch: row.target_branch ?? null,
     startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
@@ -446,6 +447,7 @@ export class TaskboardDatabase {
         git_branch TEXT,
         worktree_path TEXT,
         worktree_branch TEXT,
+        target_branch TEXT,
         start_date TEXT,
         due_date TEXT,
         recurrence_interval INTEGER,
@@ -656,6 +658,10 @@ export class TaskboardDatabase {
     }
     if (!taskColumns.some((column) => column.name === "worktree_branch")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN worktree_branch TEXT");
+    }
+    if (!taskColumns.some((column) => column.name === "target_branch")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN target_branch TEXT");
+      this.database.exec("UPDATE tasks SET target_branch = git_branch WHERE git_branch IS NOT NULL");
     }
     if (!taskColumns.some((column) => column.name === "due_date")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN due_date TEXT");
@@ -901,6 +907,7 @@ export class TaskboardDatabase {
           git_branch TEXT,
           worktree_path TEXT,
           worktree_branch TEXT,
+          target_branch TEXT,
           start_date TEXT,
           due_date TEXT,
           recurrence_interval INTEGER,
@@ -913,13 +920,13 @@ export class TaskboardDatabase {
 
         INSERT INTO tasks_status_migration (
           id, identifier, project_id, title, description, status, priority, labels,
-          sort_order, thread_id, git_branch, worktree_path, worktree_branch,
+          sort_order, thread_id, git_branch, worktree_path, worktree_branch, target_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         )
         SELECT
           id, identifier, project_id, title, description, status, priority, labels,
-          sort_order, thread_id, git_branch, worktree_path, worktree_branch,
+          sort_order, thread_id, git_branch, worktree_path, worktree_branch, target_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
         FROM tasks;
@@ -1063,7 +1070,7 @@ export class TaskboardDatabase {
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
-          workflow_id, git_branch, worktree_path, worktree_branch,
+          workflow_id, git_branch, worktree_path, worktree_branch, target_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           external_source, external_origin, external_id, external_key, external_url,
           archived_at, version, created_at, updated_at
@@ -2120,10 +2127,10 @@ export class TaskboardDatabase {
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, creator_type, creator_id, creator_name, creator_avatar_url,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
-          workflow_id, git_branch, worktree_path, worktree_branch,
+          workflow_id, git_branch, worktree_path, worktree_branch, target_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -2147,6 +2154,8 @@ export class TaskboardDatabase {
         input.developmentContext?.type === "branch" ? input.developmentContext.branch : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.path : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.branch : null,
+        input.targetBranch
+          ?? (input.developmentContext?.type === "branch" ? input.developmentContext.branch : null),
         input.startDate ?? null,
         input.dueDate ?? null,
         input.recurrence?.interval ?? null,
@@ -2209,6 +2218,7 @@ export class TaskboardDatabase {
       priority: "priority",
       labels: "labels",
       workflowId: "workflow_id",
+      targetBranch: "target_branch",
       startDate: "start_date",
       dueDate: "due_date",
     };
@@ -2341,7 +2351,7 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  bindCodingAndClaim(id, version, threadId, actor, startRevision) {
+  bindCodingAndClaim(id, version, threadId, actor, startRevision, developmentContext, targetBranch) {
     let previousStatus;
     let runId;
     this.database.exec("BEGIN IMMEDIATE");
@@ -2354,8 +2364,19 @@ export class TaskboardDatabase {
       if (current.status !== "todo") {
         throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
       }
-      if (current.workflowId !== null) {
+      if (current.workflowId !== null && current.workflowId !== CODING_WORKFLOW_ID) {
         throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
+      }
+      const activeRun = this.database.prepare(`
+        SELECT id, phase FROM coding_runs
+        WHERE task_id = ? AND phase NOT IN ('blocked', 'completed')
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      `).get(current.id);
+      if (activeRun) {
+        throw new ApiError(409, "CODING_RUN_ACTIVE", "Task already has an active Coding run", {
+          runId: activeRun.id,
+          phase: activeRun.phase,
+        });
       }
       const row = this.database.prepare(`
         SELECT MIN(sort_order) AS minimum
@@ -2367,14 +2388,32 @@ export class TaskboardDatabase {
       const result = this.database.prepare(`
         UPDATE tasks
         SET workflow_id = ?, status = 'in_progress', sort_order = ?,
-            thread_id = COALESCE(?, thread_id), version = version + 1, updated_at = ?
+            thread_id = COALESCE(?, thread_id), git_branch = ?, worktree_path = ?,
+            worktree_branch = ?, target_branch = COALESCE(target_branch, ?),
+            version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(CODING_WORKFLOW_ID, sortOrder, threadId ?? null, timestamp, current.id, version);
+      `).run(
+        CODING_WORKFLOW_ID,
+        sortOrder,
+        threadId ?? null,
+        developmentContext?.type === "branch" ? developmentContext.branch : null,
+        developmentContext?.type === "worktree" ? developmentContext.path : null,
+        developmentContext?.type === "worktree" ? developmentContext.branch : null,
+        targetBranch,
+        timestamp,
+        current.id,
+        version,
+      );
       if (result.changes !== 1) this.#throwMissingOrConflict(id, version);
       this.#recordTaskActivity(
         current.id,
         actor,
-        taskFieldChanges(current, { workflowId: CODING_WORKFLOW_ID, status: "in_progress" }),
+        taskFieldChanges(current, {
+          workflowId: CODING_WORKFLOW_ID,
+          status: "in_progress",
+          developmentContext,
+          targetBranch,
+        }),
         timestamp,
       );
       const codingRun = this.createOrResumeCodingRun(current.id, startRevision);

@@ -275,6 +275,24 @@ test("issue update sends an explicit optimistic concurrency version", async () =
   });
 });
 
+test("issue update explicitly retargets delivery without changing the development context", async () => {
+  let requestBody;
+  const result = await run(
+    ["issue", "update", "TASK-1", "--target-branch", "release/later", "--if-version", "7"],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ task: { id: "TASK-1", targetBranch: "release/later", version: 8 } });
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    targetBranch: "release/later",
+    threadId: "thread-current",
+    version: 7,
+  });
+});
+
 test("issue update binds one worktree context", async () => {
   let requestBody;
   const repositoryPath = path.resolve("/work/repo");
@@ -721,6 +739,7 @@ test("--help --json emits a structured help object with schemaVersion", async ()
     "recurrence-unit",
     "start-date",
     "status",
+    "target-branch",
     "thread-id",
     "title",
     "workflow",
