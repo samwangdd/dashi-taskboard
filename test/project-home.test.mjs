@@ -14,9 +14,9 @@ const labelsSource = await readFile(new URL("../web/src/labels.ts", import.meta.
 test("the project switcher merges live Codex projects with persisted Taskboard projects", () => {
   assert.match(appSource, /hostContext\?\.projects \?\? \[\]/);
   assert.match(appSource, /persistedById/);
-  assert.match(appSource, /name: project\.id === GLOBAL_PROJECT_ID\s*\? text\("全局", "Global"\)\s*: persistedById\.get\(project\.id\)\?\.name \?\? project\.name/);
+  assert.match(appSource, /name: project\.id === GLOBAL_PROJECT_ID\s*\? text\("临时任务", "Temporary tasks"\)\s*: persistedById\.get\(project\.id\)\?\.name \?\? project\.name/);
   assert.match(appSource, /for \(const project of projects\) \{[\s\S]*?inCodex: false,[\s\S]*?persisted: true/);
-  assert.match(appSource, /projectChoices\.map\(\(project\) => \(/);
+  assert.match(appSource, /projectMenuChoices\.map\(\(project\) => \(/);
   assert.match(appSource, /createProjectRequest/);
   assert.match(apiSource, /export async function createProject/);
 });
@@ -31,6 +31,12 @@ test("each device stores an independent workspace path for every project", () =>
   assert.match(appSource, /listDevelopmentContexts\([\s\S]*?selectedDeviceWorkspacePath,[\s\S]*?\)/);
   assert.match(apiSource, /query\.set\("workspacePath", workspacePath\)/);
   assert.match(apiSource, /\/api\/device-workspaces/);
+});
+
+test("imported Codex projects persist their exact device identity", () => {
+  assert.match(appSource, /const PROJECT_CODEX_IDENTITIES_KEY = "taskboard\.projectCodexIdentities\.v1"/);
+  assert.match(appSource, /codexProjectId: project\.id,[\s\S]*?codexProjectKind: project\.projectKind,[\s\S]*?codexHostId: project\.hostId,[\s\S]*?workspacePath: project\.workspacePath/);
+  assert.match(appSource, /setProjectCodexIdentities[\s\S]*?PROJECT_CODEX_IDENTITIES_KEY/);
 });
 
 test("project selection starts from the route or recent projects and updates the route", () => {
@@ -59,7 +65,8 @@ test("new issues stage attachments in the composer and upload them after creatio
   assert.match(editorSource, /<PendingAttachments[\s\S]*?uploadLabel=\{text\("保存后上传", "Upload after saving"\)\}/);
   assert.match(pendingAttachmentsSource, /className="composer-attachment-list"/);
   assert.match(appSource, /Promise\.allSettled/);
-  assert.match(appSource, /uploadAttachment\(saved\.id, file\)/);
+  assert.match(appSource, /uploadAttachment\(saved\.id, file, "attachment"\)/);
+  assert.match(appSource, /uploadAttachment\(saved\.id, image\.file, "inline"\)/);
   assert.match(appSource, /zh: `\$\{failedAttachments\} 个附件`[\s\S]*?以下内容写入失败/);
 });
 
@@ -75,11 +82,11 @@ test("the issue composer includes Linear-style labels and scheduling", () => {
   assert.match(editorSource, /developmentScan\.contexts/);
 });
 
-test("the current project is shown only in navigation, not in issue creation or detail properties", () => {
-  assert.doesNotMatch(editorSource, /property-project|dialog-project-icon|project\?\.name/);
+test("issue creation selects a project only from all projects and keeps the current project otherwise", () => {
+  assert.match(editorSource, /\{!task && projectOptions && \([\s\S]*?ariaLabel=\{text\("项目", "Project"\)\}/);
   assert.doesNotMatch(detailSource, /detail-property-label">项目|project-property-icon|project\.name/);
-  assert.doesNotMatch(styles, /\.property-project|\.dialog-project-icon|\.project-property-icon/);
-  assert.match(appSource, /createTaskRequest\(selectedProjectId, draft\)/);
+  assert.match(appSource, /projectOptions=\{!editor\.task && isAllProjects \? createTargetProjects : undefined\}/);
+  assert.match(appSource, /const targetProjectId = editorProjectId \?\? selectedProjectId;[\s\S]*?createTaskRequest\(targetProjectId, draft\)/);
   assert.match(appSource, /className="header-project-switcher"/);
 });
 
@@ -92,7 +99,7 @@ test("the project header exposes project, automation, and create controls", () =
 });
 
 test("the project header keeps detail navigation separate from the project switcher", () => {
-  assert.match(appSource, /const headerProjectName = selectedProject\?\.id === GLOBAL_PROJECT_ID\s*\? text\("全局", "Global"\)\s*: selectedProject\?\.name \?\? text\("任务面板", "Taskboard"\)/);
+  assert.match(appSource, /const headerProjectName = isAllProjects\s*\? text\("所有项目", "All projects"\)\s*: selectedProject\?\.id === GLOBAL_PROJECT_ID\s*\? text\("临时任务", "Temporary tasks"\)\s*: selectedProject\?\.name \?\? text\("任务面板", "Taskboard"\)/);
   assert.match(appSource, /detailTask && \([\s\S]*?aria-label=\{text\("返回议题看板", "Back to issue board"\)\}[\s\S]*?<\/button>/);
   assert.match(appSource, /className="header-project-switcher"[\s\S]*?<span className="project-name">\{headerProjectName\}<\/span>/);
   assert.doesNotMatch(appSource, /className="issue-root-button"/);

@@ -4,11 +4,7 @@ import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
 import { taskStatusLabel, useTaskboardI18n } from "../i18n";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { TaskCard } from "./TaskCard";
-import {
-  TaskboardIcon,
-  taskboardIconSource,
-  type TaskboardIconName,
-} from "./TaskboardIcon";
+import { PlusIcon, StatusIcon } from "./SemanticIcons";
 
 export const STATUS_DETAILS: Record<
   TaskStatus,
@@ -22,45 +18,6 @@ export const STATUS_DETAILS: Record<
   done: { label: "完成", tone: "done" },
   canceled: { label: "取消", tone: "canceled" },
 };
-
-const STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
-  backlog: "statusTodo",
-  todo: "statusTodo",
-  in_progress: "statusProgress",
-  in_review: "statusReview",
-  blocked: "statusBlocked",
-  done: "statusReview",
-  canceled: "statusBlocked",
-};
-
-const COLUMN_STATUS_ICONS: Record<TaskStatus, TaskboardIconName> = {
-  backlog: "statusTodo",
-  todo: "columnStatusTodo",
-  in_progress: "columnStatusProgress",
-  in_review: "columnStatusReview",
-  blocked: "columnStatusBlocked",
-  done: "statusReview",
-  canceled: "statusBlocked",
-};
-
-const COLUMN_ADD_ICONS: Partial<Record<TaskStatus, TaskboardIconName>> = {
-  todo: "columnAddTodo",
-  in_progress: "columnAddProgress",
-  in_review: "columnAddReview",
-  blocked: "columnAddBlocked",
-};
-
-export function statusIconSource(status: TaskStatus) {
-  return taskboardIconSource(STATUS_ICONS[status]);
-}
-
-export function StatusIcon({ status }: { status: TaskStatus }) {
-  return <TaskboardIcon name={STATUS_ICONS[status]} />;
-}
-
-function ColumnStatusIcon({ status }: { status: TaskStatus }) {
-  return <TaskboardIcon name={COLUMN_STATUS_ICONS[status]} />;
-}
 
 interface BoardColumnProps {
   scrollRef: (element: HTMLDivElement | null) => void;
@@ -76,9 +33,12 @@ interface BoardColumnProps {
   settlingTaskId: string | null;
   contextMenuTaskId: string | null;
   availableLabels: string[];
+  projectNames?: Record<string, string>;
   currentUser: ActorIdentity;
+  showCover: boolean;
+  showBody: boolean;
   createEnabled?: boolean;
-  onCreateLabel: (label: string) => Promise<void>;
+  onCreateLabel: (label: string, projectId?: string) => Promise<void>;
   onCreate: (status: TaskStatus) => void;
   onEdit: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
@@ -105,7 +65,10 @@ export function BoardColumn({
   settlingTaskId,
   contextMenuTaskId,
   availableLabels,
+  projectNames,
   currentUser,
+  showCover,
+  showBody,
   createEnabled = true,
   onCreateLabel,
   onCreate,
@@ -185,7 +148,7 @@ export function BoardColumn({
       <header className="column-header">
         <div className="column-heading">
           <span className={`column-status-icon status-icon-${details.tone}`}>
-            <ColumnStatusIcon status={status} />
+            <StatusIcon status={status} color="var(--column-status-color)" size={14} />
           </span>
           <h2 id={`column-${status}`}>
             {label}{tasks.length > 0 && (
@@ -202,7 +165,7 @@ export function BoardColumn({
               aria-label={text(`在${label}中新建议题`, `Create issue in ${label}`)}
               title={text(`添加到${label}`, `Add to ${label}`)}
             >
-              <TaskboardIcon name={COLUMN_ADD_ICONS[status] ?? "columnAdd"} />
+              <PlusIcon color="var(--column-status-color)" size={12} />
             </button>
           </div>
         )}
@@ -223,8 +186,11 @@ export function BoardColumn({
               isSettling={settlingTaskId === task.id}
               isContextMenuOpen={contextMenuTaskId === task.id}
               availableLabels={availableLabels}
+              projectName={projectNames?.[task.projectId]}
               currentUser={currentUser}
-              onCreateLabel={onCreateLabel}
+              showCover={showCover}
+              showBody={showBody}
+              onCreateLabel={(label) => onCreateLabel(label, task.projectId)}
               onEdit={onEdit}
               onUpdate={onUpdate}
               onComplete={onComplete}

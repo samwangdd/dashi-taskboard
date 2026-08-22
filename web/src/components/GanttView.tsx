@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Gantt, type GanttStatic, type Task as GanttTask } from "dhtmlx-gantt";
-import "dhtmlx-gantt/codebase/dhtmlxgantt.css";
+import "../vendor/dhtmlxgantt.css";
 import type { Task, TaskDraft } from "../types";
 import type { TaskCardPresentation } from "../taskConversations";
 import { useTaskboardI18n } from "../i18n";
 import { LinearIcon } from "./LinearIcon";
+import { DueDateIcon } from "./SemanticIcons";
 import { taskboardIconSource } from "./TaskboardIcon";
 
 type GanttZoom = "day" | "week" | "month";
@@ -185,7 +186,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
         ? `${ganttDate(start, i18nRef.current.locale)} — ${ganttDate(displayEnd, i18nRef.current.locale)}`
         : `${ganttDate(start, i18nRef.current.locale, true)} — ${ganttDate(displayEnd, i18nRef.current.locale, true)}`;
       const avatar = task.taskboardAssigneeType === "agent"
-        ? `<img src="/codex-app-icon.png" alt="">`
+        ? `<img src="codex-agent-logo.png" alt="">`
         : task.taskboardAssigneeAvatarUrl
         ? `<img src="${escapeHtml(task.taskboardAssigneeAvatarUrl)}" alt="">`
         : `<span>${escapeHtml(task.taskboardAssigneeInitial)}</span>`;
@@ -517,7 +518,7 @@ export function GanttView({ tasks, presentations, hasActiveFilters, zoom, hideCo
         </button>
         {!visibleTasks.length && (
           <div className="gantt-empty-overlay">
-            <LinearIcon name="calendar" />
+            <DueDateIcon color="currentColor" />
             <span>{hasActiveFilters || hideCompleted
               ? text("当前条件下没有议题", "No issues match the current conditions")
               : text("创建议题后，可在这里安排时间线", "Create an issue to schedule it on the timeline")}</span>

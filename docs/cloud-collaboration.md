@@ -20,7 +20,7 @@ This is intentionally a shared-password trust model. The Basic username is only 
 
 ## What stays local
 
-The cloud stores project, issue, comment, relation, workflow, and attachment data. It does not store a device's absolute project or worktree paths.
+The cloud stores project, issue, comment, relation, and attachment data. It does not store a device's absolute project or worktree paths.
 
 Each collaborator runs the **local companion**: a **device-local loopback service** (not a chat persona) for Codex, Git/worktree scanning, installed Skill/MCP discovery, and project path mapping. The companion keeps the cloud URL, actor name, shared password, and device-specific project mappings in `.data/cloud-companion.json` with mode `0600`. Ordinary Taskboard HTTP routes (tasks, comments, attachments) are the shared API; they are not a separate “companion API”.
 
@@ -102,7 +102,7 @@ npm run build:web
 Start the local companion:
 
 ```bash
-TASKBOARD_HOST=127.0.0.1 npm start
+CODEX_TASKBOARD_HOST=127.0.0.1 npm start
 ```
 
 In a second terminal, configure cloud mode. Use the deployed HTTPS Worker origin, choose the actor name that should appear on their actions, and enter the shared password only at the private `Shared key:` prompt:
@@ -130,12 +130,12 @@ The owner runs the same mapping command with the owner's own path. Mappings are 
 Launch the injected Codex window:
 
 ```bash
-TASKBOARD_HOST=127.0.0.1 npm run codex
+CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 ```
 
 `npm run codex` reuses or starts the loopback companion. Keep it running while using the embedded board. The companion supplies local Codex/Git/Skill/MCP capabilities and sends the shared password to the Worker only in the HTTPS Basic `Authorization` header. It does not write that password to D1 or R2, return it to the browser UI, or print it in logs. Device paths also stay off Cloudflare.
 
-Do not point `TASKBOARD_URL` directly at the cloud origin for this workflow. `taskctl` talks to the loopback companion, which applies Basic Authentication and the device's local project mapping. If the companion uses a non-default loopback port, set `TASKBOARD_COMPANION_URL` to that loopback origin.
+Do not point `CODEX_TASKBOARD_URL` directly at the cloud origin for this workflow. `taskctl` talks to the loopback companion, which applies Basic Authentication and the device's local project mapping. If the companion uses a non-default loopback port, set `CODEX_TASKBOARD_COMPANION_URL` to that loopback origin.
 
 ## Browser-only access
 

@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { attachmentContentUrl, resolvePersistedAttachmentUrl } from "../api";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+import { resolvePersistedAttachmentUrl } from "../api";
 import {
   TASK_PRIORITIES,
   type ActorIdentity,
@@ -10,17 +13,17 @@ import {
 } from "../types";
 import { labelPresentation } from "../labels";
 import { taskPriorityLabel, useTaskboardI18n } from "../i18n";
-import { AGENT_ACTOR, actorKey, assigneeTargetForActor } from "../actors";
+import { CODEX_AGENT_ACTOR, actorKey, assigneeTargetForActor } from "../actors";
 import type {
   TaskCardPresentation,
   TaskConversationItem,
 } from "../taskConversations";
 import { ActorAvatar } from "./ActorAvatar";
-import { LinearPriorityIcon } from "./LinearIcon";
+import { LinearIcon } from "./LinearIcon";
+import { DueDateIcon, PriorityIcon, ProjectIcon } from "./SemanticIcons";
 import { LabelPicker } from "./LabelPicker";
 import { TaskPropertyPicker } from "./TaskPropertyPicker";
 import { TaskConversationMenu } from "./TaskConversationMenu";
-import { TaskboardIcon } from "./TaskboardIcon";
 import completeIcon from "../assets/figma-taskboard/card-complete.svg";
 import processingAnimation from "../assets/figma-taskboard/loading-16.svg";
 
@@ -35,7 +38,10 @@ interface TaskCardProps {
   isSettling: boolean;
   isContextMenuOpen: boolean;
   availableLabels: string[];
+  projectName?: string;
   currentUser: ActorIdentity;
+  showCover: boolean;
+  showBody: boolean;
   onCreateLabel: (label: string) => Promise<void>;
   onEdit: (task: Task) => void;
   onUpdate: (task: Task, changes: Partial<TaskDraft>) => Promise<Task>;
@@ -44,6 +50,37 @@ interface TaskCardProps {
   onDragStart: (task: Task, height: number) => void;
   onDragEnd: () => void;
   onOpenConversation: (conversation: TaskConversationItem) => void;
+}
+
+interface TaskCardMarkdownNode {
+  type: string;
+  value?: string;
+  children?: TaskCardMarkdownNode[];
+}
+
+const taskCardMarkdownParser = unified().use(remarkParse).use(remarkGfm);
+
+function taskBodyText(value: string) {
+  function visibleText(node: TaskCardMarkdownNode): string {
+    if (node.type === "image" || node.type === "imageReference" || node.type === "definition") {
+      return "";
+    }
+    if (node.type === "break") return " ";
+    if (node.value !== undefined) return node.value;
+    const separator = node.type === "root"
+      || node.type === "blockquote"
+      || node.type === "list"
+      || node.type === "listItem"
+      || node.type === "table"
+      || node.type === "tableRow"
+      ? " "
+      : "";
+    return node.children?.map(visibleText).join(separator) ?? "";
+  }
+
+  return visibleText(taskCardMarkdownParser.parse(value) as TaskCardMarkdownNode)
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function calendarDate(value: string, locale: string) {
@@ -72,8 +109,7 @@ function firstTaskImage(task: Task) {
     /!\[[^\]]*\]\((?:<([^>]+)>|([^\s)]+))(?:\s+["'][^)]*["'])?\)/,
   );
   const source = markdownImage?.[1]
-    ?? markdownImage?.[2]
-    ?? (task.previewImage ? attachmentContentUrl(task.previewImage) : null);
+    ?? markdownImage?.[2];
   return source ? resolvePersistedAttachmentUrl(source) : null;
 }
 
@@ -255,7 +291,7 @@ function PriorityControl({
       options={TASK_PRIORITIES.map((priority) => ({
         value: priority,
         label: taskPriorityLabel(language, priority),
-        icon: <LinearPriorityIcon priority={priority} />,
+        icon: <PriorityIcon priority={priority} size={14} />,
         className: `priority-${priority}`,
       }))}
       open={open}
@@ -287,7 +323,7 @@ function DueDateControl({
   if (!task.dueDate) return null;
   return (
     <label className="due-date-chip card-property-control" title={text(`截止日期 ${task.dueDate}`, `Due date ${task.dueDate}`)}>
-      <TaskboardIcon name="calendar" /> {calendarDate(task.dueDate, locale)}
+      <DueDateIcon color="currentColor" size={12} /> {calendarDate(task.dueDate, locale)}
       <input
         type="date"
         aria-label={text(`${displayIdentifier} 截止日期`, `${displayIdentifier} due date`)}
@@ -304,40 +340,46 @@ function AssigneeControl({
   participants,
   currentUser,
   disabled,
+  open,
+  onOpenChange,
   onChange,
 }: {
   task: Task;
   participants: ActorIdentity[];
   currentUser: ActorIdentity;
   disabled: boolean;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
   onChange: (target: AssigneeTarget) => void;
 }) {
   const { text } = useTaskboardI18n();
   const displayIdentifier = task.externalKey ?? task.identifier;
-  const options = [task.assignee, currentUser, AGENT_ACTOR]
+  const options = [task.assignee, currentUser, CODEX_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
   return (
-    <label className="task-participants-control card-property-control" title={text(`负责人：${task.assignee.name}`, `Assignee: ${task.assignee.name}`)}>
-      <ParticipantAvatars participants={participants} />
-      <select
-        aria-label={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
-        value={actorKey(task.assignee)}
-        disabled={disabled}
-        onChange={(event) => {
-          const selected = options.find((actor) => actorKey(actor) === event.target.value);
-          const target = selected ? assigneeTargetForActor(selected, currentUser) : undefined;
-          if (target) onChange(target);
-        }}
-      >
-        {options.map((actor) => (
-          <option value={actorKey(actor)} key={actorKey(actor)}>
-            {actor.id === currentUser.id ? text(`${actor.name}（我）`, `${actor.name} (me)`) : actor.name}
-          </option>
-        ))}
-      </select>
-    </label>
+    <TaskPropertyPicker
+      value={actorKey(task.assignee)}
+      options={options.map((actor) => ({
+        value: actorKey(actor),
+        label: actor.id === currentUser.id ? text(`${actor.name}（我）`, `${actor.name} (me)`) : actor.name,
+        icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
+      }))}
+      open={open}
+      disabled={disabled}
+      className="task-participants-control card-property-control"
+      triggerClassName="task-assignee-trigger"
+      triggerContent={<ParticipantAvatars participants={participants} />}
+      ariaLabel={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
+      title={text(`负责人：${task.assignee.name}`, `Assignee: ${task.assignee.name}`)}
+      onOpenChange={onOpenChange}
+      onChange={(value) => {
+        const selected = options.find((actor) => actorKey(actor) === value);
+        const target = selected ? assigneeTargetForActor(selected, currentUser) : undefined;
+        if (target) onChange(target);
+      }}
+    />
   );
 }
 
@@ -352,7 +394,10 @@ export function TaskCard({
   isSettling,
   isContextMenuOpen,
   availableLabels,
+  projectName,
   currentUser,
+  showCover,
+  showBody,
   onCreateLabel,
   onEdit,
   onUpdate,
@@ -364,7 +409,7 @@ export function TaskCard({
 }: TaskCardProps) {
   const { locale, text } = useTaskboardI18n();
   const displayIdentifier = task.externalKey ?? task.identifier;
-  const [propertyMenu, setPropertyMenu] = useState<"priority" | "labels" | null>(null);
+  const [propertyMenu, setPropertyMenu] = useState<"priority" | "labels" | "assignee" | null>(null);
   const [savingProperty, setSavingProperty] = useState<"priority" | "labels" | "dueDate" | "assignee" | null>(null);
   const creator: ActorIdentity = {
     type: task.creatorType,
@@ -381,10 +426,14 @@ export function TaskCard({
   const showsConversation = supportsConversation && presentation.conversations.length > 0;
   const showsInlineParticipants = variant === "main"
     && task.participants.length > 0;
-  const image = firstTaskImage(task);
+  const image = showCover ? firstTaskImage(task) : null;
+  const body = useMemo(
+    () => showBody ? taskBodyText(task.description) : "",
+    [showBody, task.description],
+  );
   const hasProperties = task.priority !== "none" || task.labels.length > 0 || task.dueDate;
-  const showsProperties = !processingCard
-    && (hasProperties || showsInlineParticipants || showsConversation);
+  const showsProperties = Boolean(projectName)
+    || (!processingCard && (hasProperties || showsInlineParticipants || showsConversation));
   const propertyDisabled = savingProperty !== null;
 
   function updateProperty(changes: Partial<TaskDraft>, property: NonNullable<typeof savingProperty>) {
@@ -449,6 +498,8 @@ export function TaskCard({
               participants={task.participants.length ? task.participants : [creator]}
               currentUser={currentUser}
               disabled={propertyDisabled || task.source === "jira"}
+              open={propertyMenu === "assignee"}
+              onOpenChange={(open) => setPropertyMenu(open ? "assignee" : null)}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
             />
             <span>{createdDate(task.createdAt, locale, text)}</span>
@@ -458,13 +509,21 @@ export function TaskCard({
 
       <h3 id={`task-${task.id}-title`}>{task.title}</h3>
 
+      {body && <p className="task-card-description">{body}</p>}
+
       {image && (
         <TaskCardMedia key={image} src={image} />
       )}
 
       {showsProperties && (
         <div className="card-properties" aria-label={text("议题属性", "Issue properties")}>
-          {task.priority !== "none" && (
+          {projectName && (
+            <span className="project-chip" title={projectName}>
+              <ProjectIcon color="currentColor" />
+              <span>{projectName}</span>
+            </span>
+          )}
+          {!processingCard && task.priority !== "none" && (
             <PriorityControl
               task={task}
               disabled={propertyDisabled}
@@ -473,7 +532,7 @@ export function TaskCard({
               onChange={(priority) => updateProperty({ priority }, "priority")}
             />
           )}
-          {task.labels.length > 0 && (
+          {!processingCard && task.labels.length > 0 && (
             <LabelPicker
               availableLabels={availableLabels}
               selectedLabels={task.labels}
@@ -487,25 +546,29 @@ export function TaskCard({
               onCreateLabel={onCreateLabel}
             />
           )}
-          <DueDateControl
-            task={task}
-            disabled={propertyDisabled}
-            onChange={(dueDate) => updateProperty({
-              dueDate,
-              ...(dueDate ? {} : { recurrence: null }),
-            }, "dueDate")}
-          />
-          {showsInlineParticipants && (
+          {!processingCard && (
+            <DueDateControl
+              task={task}
+              disabled={propertyDisabled}
+              onChange={(dueDate) => updateProperty({
+                dueDate,
+                ...(dueDate ? {} : { recurrence: null }),
+              }, "dueDate")}
+            />
+          )}
+          {!processingCard && showsInlineParticipants && (
             <AssigneeControl
               task={task}
               participants={task.participants}
               currentUser={currentUser}
               disabled={propertyDisabled || task.source === "jira"}
+              open={propertyMenu === "assignee"}
+              onOpenChange={(open) => setPropertyMenu(open ? "assignee" : null)}
               onChange={(assigneeTarget) => updateProperty({ assigneeTarget }, "assignee")}
             />
           )}
-          {showsConversation && <span className="card-properties-spacer" aria-hidden="true" />}
-          {showsConversation && (
+          {!processingCard && showsConversation && <span className="card-properties-spacer" aria-hidden="true" />}
+          {!processingCard && showsConversation && (
             <TaskConversationMenu
               conversations={presentation.conversations}
               onOpenConversation={onOpenConversation}

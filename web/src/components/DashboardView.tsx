@@ -13,7 +13,7 @@ import type {
 } from "../taskConversations";
 import type { ActorIdentity, ProjectSummary, Task } from "../types";
 import { ActorAvatar } from "./ActorAvatar";
-import { LinearPriorityIcon } from "./LinearIcon";
+import { PriorityIcon } from "./SemanticIcons";
 import { TaskConversationMenu } from "./TaskConversationMenu";
 
 interface DashboardViewProps {
@@ -497,13 +497,13 @@ export function DashboardView({
                 aria-label={summaryReady ? summary : text("Codex 正在整理项目总结", "Codex is preparing the project summary")}
               >{displayedSummary}</p>
             </div>
-            <img className="dashboard-codex-mark" src="/codex-app-icon.png" alt="" aria-hidden="true" />
+            <img className="dashboard-codex-mark" src="codex-agent-logo.png" alt="" aria-hidden="true" />
           </section>
         </div>
 
         <div className="dashboard-metrics">
           {metrics.map((metric) => {
-            const percent = tasks.length ? Math.round((metric.value / tasks.length) * 100) : 0;
+            const percent = activeTasks.length ? Math.round((metric.value / activeTasks.length) * 100) : 0;
             return (
               <article className={`dashboard-metric tone-${metric.tone}`} key={metric.label}>
                 <span className="dashboard-metric-label">{metric.label}</span>
@@ -530,7 +530,7 @@ export function DashboardView({
               {priorityCounts.map((item) => (
                 <div className={`dashboard-priority-row priority-${item.priority}`} key={item.priority}>
                   <span className="dashboard-priority-name">
-                    <LinearPriorityIcon priority={item.priority} />
+                    <PriorityIcon priority={item.priority} size={13} />
                     {item.label}
                   </span>
                   <span className="dashboard-priority-track">

@@ -155,7 +155,7 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
           id: "REMOTE-1",
           creatorType: "agent",
           creatorId: "codex-agent",
-          creatorName: "Claude Agent",
+          creatorName: "Codex Agent",
         },
       }, 201);
     },
@@ -196,9 +196,72 @@ test("cloud proxy replaces client identity with Basic Auth and makes exactly one
       id: "REMOTE-1",
       creatorType: "agent",
       creatorId: "codex-agent",
-      creatorName: "Claude Agent",
+      creatorName: "Codex Agent",
     },
   });
+});
+
+test("cloud proxy forwards local thread identity without replacing explicit binding changes", async () => {
+  const { createCloudProxy } = await importCloudProxy();
+  const upstreamBodies = [];
+  const localBinding = {
+    threadId: "controller-thread",
+    codexProjectId: "project-a",
+    codexProjectKind: "remote",
+    codexHostId: "host-a",
+    workspacePath: "/srv/shared-repository",
+  };
+  const proxy = createCloudProxy({
+    configStore: memoryConfigStore(),
+    resolveThreadBinding: (threadId) => (
+      threadId === localBinding.threadId ? localBinding : null
+    ),
+    fetch: async (_url, init) => {
+      upstreamBodies.push(JSON.parse(init.body));
+      return jsonResponse({ task: { id: "REMOTE-1" } });
+    },
+  });
+
+  await proxy.forward(new Request(
+    "http://127.0.0.1:47823/api/tasks/REMOTE-1/move",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "blocked",
+        threadId: localBinding.threadId,
+        version: 3,
+      }),
+    },
+  ));
+  await proxy.forward(new Request(
+    "http://127.0.0.1:47823/api/tasks/REMOTE-1/move",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        status: "todo",
+        threadId: localBinding.threadId,
+        threadBinding: null,
+        version: 4,
+      }),
+    },
+  ));
+
+  assert.deepEqual(upstreamBodies, [
+    {
+      status: "blocked",
+      threadId: localBinding.threadId,
+      threadBinding: localBinding,
+      version: 3,
+    },
+    {
+      status: "todo",
+      threadId: localBinding.threadId,
+      threadBinding: null,
+      version: 4,
+    },
+  ]);
 });
 
 test("cloud companion blocks project moves for issue-linked local AI chats", async () => {
@@ -313,7 +376,6 @@ test("cloud routing keeps machine-specific capability endpoints in the local com
     "/health",
     "/api/meta",
     "/api/device-workspaces",
-    "/api/workflow-capabilities",
     "/api/projects/portfolio/development-contexts",
     "/api/local/cloud-session",
     "/api/local/project-mappings/portfolio",
@@ -323,7 +385,6 @@ test("cloud routing keeps machine-specific capability endpoints in the local com
 
   for (const pathname of [
     "/api/projects",
-    "/api/projects/portfolio/workflow-workspace",
     "/api/tasks",
     "/api/tasks/PORTFOLIO-1",
     "/api/comments/comment-1",
@@ -452,66 +513,6 @@ test("task mutations do not send absolute worktree paths to cloud", async () => 
   });
 });
 
-test("workflow mutations remove structured git worktree paths without altering other path fields or text", async () => {
-  const { createCloudProxy } = await importCloudProxy();
-  let upstreamBody;
-  const proxy = createCloudProxy({
-    configStore: memoryConfigStore(),
-    fetch: async (_url, init) => {
-      upstreamBody = JSON.parse(init.body);
-      return jsonResponse({ workflow: { projectId: "portfolio", version: 5 } });
-    },
-  });
-
-  await proxy.forward(new Request(
-    "http://127.0.0.1:47823/api/projects/portfolio/workflow-workspace",
-    {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        version: 4,
-        workspace: {
-          version: 1,
-          tabs: [{ id: "delivery", name: "Delivery" }],
-          activeWorkflowId: "delivery",
-          snapshots: {
-            delivery: {
-              nodes: [{
-                id: "git",
-                data: {
-                  kind: "git",
-                  branch: "feature/cloud",
-                  gitWorktreePath: "/Users/alice/.codex/worktrees/cloud",
-                  description: "Keep this text: /Users/alice/.codex/worktrees/cloud",
-                  config: { path: "/third-party/runtime/path" },
-                  planItems: [{
-                    title: "Nested Git step",
-                    gitWorktreePath: "/Users/alice/.codex/worktrees/nested",
-                    path: "/third-party/nested/path",
-                  }],
-                },
-              }],
-              flow: { version: 2, root: { items: [] } },
-              selectedNodeId: "git",
-            },
-          },
-        },
-      }),
-    },
-  ));
-
-  const data = upstreamBody.workspace.snapshots.delivery.nodes[0].data;
-  assert.equal(Object.hasOwn(data, "gitWorktreePath"), false);
-  assert.equal(Object.hasOwn(data.planItems[0], "gitWorktreePath"), false);
-  assert.equal(data.branch, "feature/cloud");
-  assert.equal(
-    data.description,
-    "Keep this text: /Users/alice/.codex/worktrees/cloud",
-  );
-  assert.equal(data.config.path, "/third-party/runtime/path");
-  assert.equal(data.planItems[0].path, "/third-party/nested/path");
-});
-
 test("two companions map the same cloud project to different local paths", async () => {
   const { createCloudConfigStore } = await importCloudConfig();
   const alice = createCloudConfigStore({
@@ -619,7 +620,6 @@ test("cloud mode exposes machine capabilities only to loopback while local mode 
     for (const pathname of [
       "/api/meta",
       "/api/device-workspaces",
-      "/api/workflow-capabilities",
       "/api/projects/portfolio/development-contexts",
     ]) {
       const response = await fetch(`${lanBaseUrl}${pathname}`);
@@ -724,7 +724,7 @@ test("taskctl cloud status, logout, and project map use local companion endpoint
   };
 
   const companionEnv = {
-    TASKBOARD_COMPANION_URL: "http://127.0.0.1:49000",
+    CODEX_TASKBOARD_COMPANION_URL: "http://127.0.0.1:49000",
   };
   assert.equal((await runCli(
     ["cloud", "status"],
@@ -788,7 +788,7 @@ test("taskctl companion-control commands use the tokenized launcher runtime endp
 test("taskctl accepts only loopback companion origins and supports the legacy loopback URL", async () => {
   let requestedUrl;
   const legacy = await runCli(["cloud", "status"], {
-    env: { TASKBOARD_URL: "http://localhost:49100/" },
+    env: { CODEX_TASKBOARD_URL: "http://localhost:49100/" },
     fetch: async (url) => {
       requestedUrl = url.toString();
       return jsonResponse({ mode: "local", authenticated: false });
@@ -799,7 +799,7 @@ test("taskctl accepts only loopback companion origins and supports the legacy lo
 
   let fetchCalled = false;
   const rejected = await runCli(["cloud", "status"], {
-    env: { TASKBOARD_COMPANION_URL: "https://tasks.example.test" },
+    env: { CODEX_TASKBOARD_COMPANION_URL: "https://tasks.example.test" },
     fetch: async () => {
       fetchCalled = true;
       return jsonResponse({});
@@ -814,8 +814,8 @@ test("taskctl uses an explicit companion URL for ordinary commands before the le
   let requestedUrl;
   const result = await runCli(["project", "list"], {
     env: {
-      TASKBOARD_COMPANION_URL: "http://127.0.0.1:49200",
-      TASKBOARD_URL: "https://legacy.example.test",
+      CODEX_TASKBOARD_COMPANION_URL: "http://127.0.0.1:49200",
+      CODEX_TASKBOARD_URL: "https://legacy.example.test",
     },
     fetch: async (url) => {
       requestedUrl = url.toString();

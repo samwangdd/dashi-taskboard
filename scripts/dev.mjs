@@ -4,8 +4,6 @@ import { fileURLToPath } from "node:url";
 
 import { loadLocalEnv } from "../shared/local-env.mjs";
 
-// Load before spawning so both children inherit the settings, including the
-// ports web/vite.config.ts reads.
 loadLocalEnv(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
 
 const children = [

@@ -20,9 +20,13 @@ taskctl context current [--cwd PATH] [--json]
 taskctl project list [--json]
 taskctl project create --name NAME [--id ID] [--workspace-path PATH] [--json]
 taskctl project map PROJECT_ID --workspace-path PATH [--json]
+taskctl project readme get [PROJECT_ID] [--json]
+taskctl project readme set [PROJECT_ID] (--content TEXT | --file PATH) [--if-version N] [--json]
 ```
 
 Use `--workspace-path` to associate a project with a local repository. `context current` chooses the most specific project whose workspace contains the current directory, then falls back to the `local` project.
+
+Use `project readme get` and `project readme set` to read and update the project's single root README document. Detailed multi-page documentation belongs in the project's local `docs/` folder.
 
 Set `CODEX_TASKBOARD_URL` to override the default local API origin, `http://127.0.0.1:47823`.
 
@@ -59,7 +63,6 @@ taskctl issue create \
   [--status STATUS] \
   [--priority PRIORITY] \
   [--labels a,b] \
-  [--workflow WORKFLOW_ID] \
   [--thread-id ID] \
   [--git-branch BRANCH] \
   [--worktree-path PATH] \
@@ -86,7 +89,6 @@ taskctl issue update ID \
   [--status STATUS] \
   [--priority PRIORITY] \
   [--labels a,b] \
-  [--workflow WORKFLOW_ID] \
   [--thread-id ID] \
   [--git-branch BRANCH] \
   [--worktree-path PATH] \
@@ -163,8 +165,8 @@ Issue descriptions and comments may contain inline images at exact positions in 
 Upload a local file to a task or a comment. Provide exactly one of `--task` or `--comment`:
 
 ```bash
-taskctl attachment upload --task TASK_ID --file PATH [--content-type TYPE] [--json]
-taskctl attachment upload --comment COMMENT_ID --file PATH [--content-type TYPE] [--json]
+taskctl attachment upload --task TASK_ID --file PATH [--content-type TYPE] [--kind inline|attachment] [--json]
+taskctl attachment upload --comment COMMENT_ID --file PATH [--content-type TYPE] [--kind inline|attachment] [--json]
 ```
 
 The command sends the file bytes to:
@@ -172,7 +174,7 @@ The command sends the file bytes to:
 - `POST /api/tasks/:id/attachments`, or
 - `POST /api/comments/:id/attachments`
 
-with the same headers as the web UI (`Content-Type`, `X-Taskboard-Filename`). If `--content-type` is omitted, the CLI guesses from the file extension and falls back to `application/octet-stream`.
+with the same headers as the web UI (`Content-Type`, `X-Taskboard-Filename`, `X-Taskboard-Attachment-Kind`). If `--content-type` is omitted, the CLI guesses from the file extension and falls back to `application/octet-stream`. If `--kind` is omitted, images use `inline` and other files use `attachment`. Use `--kind attachment` for an image that must appear in the attachment list. An inline upload returns the attachment id; use that id in the task description or comment Markdown at the required position.
 
 Download an attachment to an explicit local path:
 
@@ -181,42 +183,3 @@ taskctl attachment download ATTACHMENT_ID --output PATH [--json]
 ```
 
 The command writes the response body as binary data and returns the absolute output path, content type, and size in its JSON result. Choose the output filename yourself; `taskctl` does not infer or append an extension.
-
-## Coding workflow runs
-
-Coding execution is local: coding commands always use the loopback companion and require the issue and project to exist in the companion's local Taskboard database.
-
-```bash
-taskctl coding start ISSUE_ID [--json]
-taskctl coding get RUN_ID_OR_ISSUE_ID [--json]
-taskctl coding artifacts RUN_ID_OR_ISSUE_ID [--json]
-
-taskctl coding contract RUN_ID \
-  --contract-file FILE \
-  --if-version N \
-  [--json]
-
-taskctl coding handoff RUN_ID \
-  --from-role orchestrator|implementer|verifier|ui-verifier \
-  --to-role orchestrator|implementer|verifier|ui-verifier \
-  (--body TEXT | --body-file FILE) \
-  [--json]
-
-taskctl coding check RUN_ID \
-  --kind unit|integration|typecheck \
-  --files path/to/a,path/to/b \
-  --command 'command with exactly one {files} marker' \
-  [--json]
-
-taskctl coding verdict RUN_ID \
-  --result pass|fail|inconclusive \
-  [--ui] \
-  (--body TEXT | --body-file FILE) \
-  [--json]
-
-taskctl coding commit RUN_ID --message 'one-line commit message' [--json]
-```
-
-`coding start` is normally implicit when a Coding issue moves to `in_progress`; use it to resume or inspect an already claimed issue. `coding contract` uses the run's current `version`. `coding check` executes the command in the bound development context, substitutes only the listed files at `{files}`, and stores stdout, stderr, exit code, revision, and the changed-file set. Do not replace a missing file-scoped command with a full-repository command.
-
-A failed verdict returns `nextImplementerModel` until the configured round limit is exhausted. At that point the engine moves the issue to `blocked`. A passing verdict enables `coding commit`, which is idempotent after a successful commit and moves the issue to `in_review` without push or PR side effects.

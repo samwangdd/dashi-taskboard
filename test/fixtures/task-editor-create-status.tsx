@@ -40,8 +40,6 @@ createRoot(document.getElementById("root")!).render(
     initialStatus="in_progress"
     initialDraft={oldTodoDraft}
     labels={["回归证据"]}
-    workflows={[]}
-    defaultWorkflowId={null}
     currentUser={currentUser}
     developmentScan={{ workspacePath: null, contexts: [] }}
     developmentScanLoading={false}

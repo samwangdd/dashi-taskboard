@@ -29,7 +29,7 @@ test("issue activity renders distinct avatars, IDs, and styles for users and age
   assert.match(avatarSource, /actor-avatar-\$\{actor\.type\}/);
   assert.match(avatarSource, /actor\.type === "agent"/);
   assert.match(avatarSource, /className="actor-avatar-image actor-avatar-agent-image"/);
-  assert.match(avatarSource, /src="\/agent-logo\.svg"/);
+  assert.match(avatarSource, /src="codex-agent-logo\.png"/);
   assert.match(avatarSource, /actor\.avatarUrl/);
   assert.match(detailSource, /currentTask\.creatorType/);
   assert.match(detailSource, /currentTask\.creatorId/);
@@ -52,11 +52,10 @@ test("issue activity renders distinct avatars, IDs, and styles for users and age
   assert.match(styles, /\.actor-id/);
 });
 
-test("agent avatar asset is an inline-safe SVG logo", async () => {
-  const logo = await readFile(new URL("../web/public/agent-logo.svg", import.meta.url), "utf8");
-  assert.match(logo, /^<svg\b/);
-  assert.match(logo, /viewBox="0 0 24 24"/);
-  assert.match(logo, /#D97757/);
+test("agent avatar asset is a transparent PNG logo", async () => {
+  const logo = await readFile(new URL("../web/public/codex-agent-logo.png", import.meta.url));
+  assert.deepEqual([...logo.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
+  assert.equal(logo[25], 6);
 });
 
 test("comment metadata separators never become avatar content", () => {

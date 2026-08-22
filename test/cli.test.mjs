@@ -9,21 +9,7 @@ function capture() {
   return {
     stream: { write(chunk) { value += chunk; } },
     json() { return JSON.parse(value); },
-    text() { return value; },
   };
-}
-
-async function runRaw(argv, overrides = {}) {
-  const stdout = capture();
-  const stderr = capture();
-  const exitCode = await main(argv, {
-    fetch: async () => assert.fail("help must not call the service"),
-    stdout: stdout.stream,
-    stderr: stderr.stream,
-    env: {},
-    ...overrides,
-  });
-  return { exitCode, stdout: stdout.text(), stderr: stderr.text() };
 }
 
 function response(payload, status = 200) {
@@ -40,7 +26,7 @@ async function run(argv, fetchImplementation, overrides = {}) {
     fetch: fetchImplementation,
     stdout: stdout.stream,
     stderr: stderr.stream,
-    env: { TASKBOARD_SESSION_ID: "thread-current" },
+    env: { CODEX_THREAD_ID: "thread-current" },
     ...overrides,
   });
   return {
@@ -76,7 +62,7 @@ test("project list uses the default local service and adds schemaVersion", async
   assert.equal(calls[0].init.headers["x-taskboard-client"], "taskctl");
 });
 
-test("TASKBOARD_URL overrides the service origin", async () => {
+test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
   let requestedUrl;
   const result = await run(
     ["project", "list", "--json"],
@@ -84,7 +70,7 @@ test("TASKBOARD_URL overrides the service origin", async () => {
       requestedUrl = url;
       return response({ projects: [] });
     },
-    { env: { TASKBOARD_URL: "https://tasks.example.test/" } },
+    { env: { CODEX_TASKBOARD_URL: "https://tasks.example.test/" } },
   );
 
   assert.equal(result.exitCode, 0);
@@ -234,27 +220,6 @@ test("issue create reads a description file and parses labels", async () => {
   });
 });
 
-test("coding claim calls the atomic Bind Coding & Claim endpoint", async () => {
-  let requestedUrl;
-  let requestBody;
-  const result = await run(
-    ["coding", "claim", "TASK-1", "--if-version", "7"],
-    async (url, init) => {
-      requestedUrl = url.toString();
-      requestBody = JSON.parse(init.body);
-      return response({
-        task: { id: "TASK-1", status: "in_progress", workflowId: "coding", version: 8 },
-        codingRun: { id: "RUN-1", taskId: "TASK-1" },
-      });
-    },
-  );
-
-  assert.equal(result.exitCode, 0);
-  assert.equal(requestedUrl, "http://127.0.0.1:47823/api/local/coding/tasks/TASK-1/claim");
-  assert.deepEqual(requestBody, { version: 7, threadId: "thread-current" });
-  assert.equal(result.stdout.codingRun.id, "RUN-1");
-});
-
 test("issue update sends an explicit optimistic concurrency version", async () => {
   const calls = [];
   const result = await run(
@@ -270,24 +235,6 @@ test("issue update sends an explicit optimistic concurrency version", async () =
   assert.equal(calls[0].url.pathname, "/api/tasks/TASK%2F1");
   assert.deepEqual(JSON.parse(calls[0].init.body), {
     title: "New title",
-    threadId: "thread-current",
-    version: 7,
-  });
-});
-
-test("issue update explicitly retargets delivery without changing the development context", async () => {
-  let requestBody;
-  const result = await run(
-    ["issue", "update", "TASK-1", "--target-branch", "release/later", "--if-version", "7"],
-    async (_url, init) => {
-      requestBody = JSON.parse(init.body);
-      return response({ task: { id: "TASK-1", targetBranch: "release/later", version: 8 } });
-    },
-  );
-
-  assert.equal(result.exitCode, 0);
-  assert.deepEqual(requestBody, {
-    targetBranch: "release/later",
     threadId: "thread-current",
     version: 7,
   });
@@ -355,7 +302,54 @@ test("issue move fetches the current version when --if-version is omitted", asyn
   });
 });
 
-test("an explicit --thread-id overrides TASKBOARD_SESSION_ID on issue writes", async () => {
+test("issue move separates controller attribution from the task thread binding", async () => {
+  let requestBody;
+  const windowsWorkspacePath = String.raw`C:\Users\admin\Documents\dashi-taskboard`;
+  const result = await run([
+    "issue", "move", "TASK-1", "--status", "blocked", "--if-version", "3",
+    "--binding-thread-id", "remote-thread",
+    "--binding-codex-project-id", "remote-project",
+    "--binding-codex-project-kind", "remote",
+    "--binding-codex-host-id", "remote-host",
+    "--binding-workspace-path", windowsWorkspacePath,
+  ], async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return response({ task: { id: "TASK-1", version: 4 } });
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    status: "blocked",
+    threadId: "thread-current",
+    threadBinding: {
+      threadId: "remote-thread",
+      codexProjectId: "remote-project",
+      codexProjectKind: "remote",
+      codexHostId: "remote-host",
+      workspacePath: windowsWorkspacePath,
+    },
+    version: 3,
+  });
+});
+
+test("issue move can clear an unconfirmed task binding", async () => {
+  let requestBody;
+  const result = await run([
+    "issue", "move", "TASK-1", "--status", "todo", "--if-version", "3",
+    "--clear-binding-thread",
+  ], async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return response({ task: { id: "TASK-1", version: 4 } });
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    status: "todo",
+    threadId: "thread-current",
+    threadBinding: null,
+    version: 3,
+  });
+});
+
+test("an explicit --thread-id overrides CODEX_THREAD_ID on issue writes", async () => {
   let requestBody;
   const result = await run(
     ["issue", "update", "TASK-1", "--title", "Attributed", "--thread-id", "thread-9", "--if-version", "2"],
@@ -537,14 +531,14 @@ test("context current falls back to the local project", async () => {
   assert.equal(result.stdout.project.id, "local");
 });
 
-test("issue and comment writes require conversation attribution", async () => {
+test("issue and comment writes require Codex conversation attribution", async () => {
   const issueResult = await run(
     ["issue", "update", "TASK-1", "--title", "No attribution", "--if-version", "1"],
     async () => assert.fail("fetch should not be called"),
     { env: {} },
   );
   assert.equal(issueResult.exitCode, 2);
-  assert.match(issueResult.stderr.error.message, /--thread-id or TASKBOARD_SESSION_ID/);
+  assert.match(issueResult.stderr.error.message, /--thread-id or CODEX_THREAD_ID/);
 
   const commentResult = await run(
     ["comment", "add", "TASK-1", "--body", "No attribution"],
@@ -552,7 +546,7 @@ test("issue and comment writes require conversation attribution", async () => {
     { env: {} },
   );
   assert.equal(commentResult.exitCode, 2);
-  assert.match(commentResult.stderr.error.message, /--thread-id or TASKBOARD_SESSION_ID/);
+  assert.match(commentResult.stderr.error.message, /--thread-id or CODEX_THREAD_ID/);
 });
 
 test("manual linked-thread options and commands are no longer accepted", async () => {
@@ -582,230 +576,6 @@ test("API conflicts produce stable JSON on stderr and exit code 5", async () => 
     schemaVersion: 2,
     error: { code: "VERSION_CONFLICT", message: "Task changed" },
   });
-});
-
-test("--help prints text help for every command group on stdout and exits 0", async () => {
-  const result = await runRaw(["--help"]);
-
-  assert.equal(result.exitCode, 0);
-  assert.equal(result.stderr, "");
-  for (const command of [
-    "project list",
-    "project create",
-    "project map",
-    "cloud login",
-    "cloud status",
-    "cloud logout",
-    "issue list",
-    "issue get",
-    "issue create",
-    "issue update",
-    "issue move",
-    "issue archive",
-    "issue restore",
-    "issue relation",
-    "comment list",
-    "comment add",
-    "comment update",
-    "comment delete",
-    "attachment download",
-    "context current",
-  ]) {
-    assert.match(result.stdout, new RegExp(command), `help omits ${command}`);
-  }
-});
-
-test("-h is an alias for --help", async () => {
-  const short = await runRaw(["-h"]);
-  const long = await runRaw(["--help"]);
-
-  assert.equal(short.exitCode, 0);
-  assert.equal(short.stdout, long.stdout);
-});
-
-test("the help subcommand prints the same help as --help", async () => {
-  const subcommand = await runRaw(["help"]);
-  const flag = await runRaw(["--help"]);
-
-  assert.equal(subcommand.exitCode, 0);
-  assert.equal(subcommand.stdout, flag.stdout);
-});
-
-test("a bare invocation prints top-level help instead of erroring", async () => {
-  const bare = await runRaw([]);
-  const flag = await runRaw(["--help"]);
-
-  assert.equal(bare.exitCode, 0);
-  assert.equal(bare.stderr, "");
-  assert.equal(bare.stdout, flag.stdout);
-});
-
-test("help <resource> <action> prints that command's own option list", async () => {
-  const result = await runRaw(["help", "issue", "create"]);
-
-  assert.equal(result.exitCode, 0);
-  assert.match(result.stdout, /taskctl issue create/);
-  for (const signature of [
-    "--project PROJECT_ID",
-    "--title TITLE",
-    "--description TEXT",
-    "--description-file FILE",
-    "--status STATUS",
-    "--priority PRIORITY",
-    "--labels a,b",
-    "--thread-id ID",
-    "--git-branch BRANCH",
-    "--worktree-path PATH",
-    "--worktree-branch BRANCH",
-    "--due-date YYYY-MM-DD",
-    "--recurrence-interval N",
-    "--recurrence-unit day|week|month|year",
-    "--json",
-  ]) {
-    assert.ok(result.stdout.includes(signature), `issue create help omits ${signature}`);
-  }
-  assert.ok(
-    !result.stdout.includes("attachment download"),
-    "command help must not fall back to the full command list",
-  );
-});
-
-test("help for an unknown command reports a usage error on stderr", async () => {
-  const result = await runRaw(["help", "issue", "teleport"]);
-
-  assert.equal(result.exitCode, 2);
-  assert.equal(result.stdout, "");
-  assert.equal(JSON.parse(result.stderr).error.code, "USAGE_ERROR");
-  assert.match(JSON.parse(result.stderr).error.message, /issue teleport/);
-});
-
-test("--help --json emits a structured help object with schemaVersion", async () => {
-  const result = await runRaw(["--help", "--json"]);
-
-  assert.equal(result.exitCode, 0);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.schemaVersion, 2);
-  assert.deepEqual(
-    payload.help.commands.map((entry) => entry.command),
-    [
-      "project list",
-      "project create",
-      "project map",
-      "cloud login",
-      "cloud status",
-      "cloud logout",
-      "issue list",
-      "issue get",
-      "issue create",
-      "issue update",
-      "issue move",
-      "issue archive",
-      "issue restore",
-      "issue relation",
-      "comment list",
-      "comment add",
-      "comment update",
-      "comment delete",
-      "attachment download",
-      "attachment upload",
-      "context current",
-      "coding claim",
-      "coding start",
-      "coding get",
-      "coding artifacts",
-      "coding contract",
-      "coding handoff",
-      "coding check",
-      "coding verdict",
-      "coding commit",
-    ],
-  );
-
-  const create = payload.help.commands.find((entry) => entry.command === "issue create");
-  assert.deepEqual(create.options.filter((option) => option.required).map((o) => o.name), [
-    "project",
-    "title",
-  ]);
-  assert.deepEqual(create.options.map((option) => option.name).sort(), [
-    "description",
-    "description-file",
-    "due-date",
-    "git-branch",
-    "json",
-    "labels",
-    "priority",
-    "project",
-    "recurrence-interval",
-    "recurrence-unit",
-    "start-date",
-    "status",
-    "target-branch",
-    "thread-id",
-    "title",
-    "workflow",
-    "worktree-branch",
-    "worktree-path",
-  ]);
-});
-
-test("every option advertised by help is actually accepted by that command", async () => {
-  const { help } = JSON.parse((await runRaw(["--help", "--json"])).stdout);
-
-  for (const entry of help.commands) {
-    const [resource, action] = entry.command.split(" ");
-    for (const option of entry.options) {
-      const argv = [resource, action, `--${option.name}`];
-      if (option.value !== null) argv.push("placeholder");
-      const result = await run(argv, async () => response({}));
-      if (result.exitCode !== 0) {
-        // "Unknown option" means help advertises an option the command rejects.
-        // "requires a value" means help mis-classified a value option as a flag.
-        assert.ok(
-          !/Unknown option|requires a value/.test(result.stderr.error.message),
-          `${entry.command} rejects the advertised --${option.name}: `
-            + result.stderr.error.message,
-        );
-      }
-    }
-  }
-});
-
-test("--help after a command scopes help to that command", async () => {
-  const flag = await runRaw(["issue", "create", "--help"]);
-  const subcommand = await runRaw(["help", "issue", "create"]);
-
-  assert.equal(flag.exitCode, 0);
-  assert.equal(flag.stdout, subcommand.stdout);
-});
-
-test("help <command> --json narrows the structured payload to that command", async () => {
-  const result = await runRaw(["help", "comment", "update", "--json"]);
-
-  assert.equal(result.exitCode, 0);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.schemaVersion, 2);
-  assert.equal(payload.help.commands.length, 1);
-  assert.equal(payload.help.commands[0].command, "comment update");
-  assert.equal(payload.help.commands[0].operands, "COMMENT_ID");
-  assert.deepEqual(
-    payload.help.commands[0].options.filter((option) => option.required).map((o) => o.name),
-    ["body", "if-version"],
-  );
-});
-
-test("boolean flags parse without a value while value options still require one", () => {
-  assert.deepEqual(parseArgs(["--help"]).options, { help: true });
-  assert.deepEqual(parseArgs(["-h"]).options, { help: true });
-  assert.deepEqual(parseArgs(["issue", "list", "--json"]).options, { json: true });
-  assert.deepEqual(parseArgs(["issue", "list", "--json", "--status", "todo"]).options, {
-    json: true,
-    status: "todo",
-  });
-
-  for (const argv of [["--help=true"], ["issue", "list", "--json=true"]]) {
-    assert.throws(() => parseArgs(argv), /does not accept a value/);
-  }
-  assert.throws(() => parseArgs(["issue", "list", "--status"]), /requires a value/);
 });
 
 test("usage errors are stable and never call the service", async () => {

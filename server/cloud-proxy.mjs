@@ -7,7 +7,6 @@ const LOCAL_COMPANION_ROUTES = new Set([
   "/health",
   "/api/meta",
   "/api/device-workspaces",
-  "/api/workflow-capabilities",
   "/api/local/cloud-session",
 ]);
 
@@ -31,22 +30,10 @@ function basicAuthorization(actorName, sharedKey) {
   return `Basic ${Buffer.from(`${actorName}:${sharedKey}`, "utf8").toString("base64")}`;
 }
 
-function removeGitWorktreePaths(value) {
-  if (Array.isArray(value)) {
-    for (const item of value) removeGitWorktreePaths(item);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
-  for (const [key, item] of Object.entries(value)) {
-    if (key === "gitWorktreePath") {
-      delete value[key];
-    } else {
-      removeGitWorktreePaths(item);
-    }
-  }
-}
-
-async function prepareRequest(request, { assertTaskProjectMoveAllowed } = {}) {
+async function prepareRequest(request, {
+  assertTaskProjectMoveAllowed,
+  resolveThreadBinding,
+} = {}) {
   const url = new URL(request.url);
   let projectWorkspace = null;
   let body = request.body;
@@ -59,10 +46,10 @@ async function prepareRequest(request, { assertTaskProjectMoveAllowed } = {}) {
     (request.method === "POST" && url.pathname === "/api/tasks")
     || Boolean(taskPatchMatch)
   );
-  const isWorkflowMutation = request.method === "PUT"
-    && /^\/api\/projects\/[^/]+\/workflow-workspace$/.test(url.pathname);
+  const isConversationMutation = request.method !== "GET"
+    && (/^\/api\/tasks(?:\/|$)/.test(url.pathname) || /^\/api\/comments\//.test(url.pathname));
 
-  if (isJson && (isProjectCreate || isTaskMutation || isWorkflowMutation)) {
+  if (isJson && (isProjectCreate || isTaskMutation || isConversationMutation)) {
     let payload;
     try {
       payload = await request.clone().json();
@@ -109,7 +96,15 @@ async function prepareRequest(request, { assertTaskProjectMoveAllowed } = {}) {
           : { branch: payload.developmentContext.branch }),
       };
     }
-    if (isWorkflowMutation) removeGitWorktreePaths(payload.workspace);
+    if (
+      isConversationMutation
+      && typeof payload.threadId === "string"
+      && !Object.hasOwn(payload, "threadBinding")
+      && typeof resolveThreadBinding === "function"
+    ) {
+      const threadBinding = resolveThreadBinding(payload.threadId);
+      if (threadBinding) payload.threadBinding = threadBinding;
+    }
     body = JSON.stringify(payload);
   }
 
@@ -202,6 +197,7 @@ export function createCloudProxy({
   fetch: fetchImplementation = globalThis.fetch,
   resolveDevelopmentContext,
   assertTaskProjectMoveAllowed,
+  resolveThreadBinding,
 }) {
   const readConfig = getConfig ?? (() => configStore.read());
   const setProjectWorkspace = configStore?.setProjectWorkspace?.bind(configStore);
@@ -244,6 +240,7 @@ export function createCloudProxy({
 
       const prepared = await prepareRequest(request, {
         assertTaskProjectMoveAllowed,
+        resolveThreadBinding,
       });
       if (prepared.projectWorkspace && !setProjectWorkspace) {
         throw new CloudProxyError(

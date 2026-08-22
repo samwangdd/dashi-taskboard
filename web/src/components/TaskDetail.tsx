@@ -1,8 +1,10 @@
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent } from "react";
-import ReactMarkdown from "react-markdown";
-import { defaultUrlTransform } from "react-markdown";
-import remarkBreaks from "remark-breaks";
-import remarkGfm from "remark-gfm";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type MouseEvent,
+} from "react";
 import { taskboardStorage } from "../storage";
 import {
   ApiError,
@@ -10,12 +12,11 @@ import {
   createComment,
   deleteAttachment,
   deleteComment,
+  getTask,
   listAttachments,
   listComments,
   listTaskActivities,
-  markdownIncludesAttachment,
   resolveTaskboardUrl,
-  resolvePersistedAttachmentUrl,
   uploadAttachment,
   uploadCommentAttachment,
   updateComment,
@@ -31,8 +32,10 @@ import type {
   ActorIdentity,
   Attachment,
   Comment,
+  CodexThreadBinding,
   DevelopmentContext,
   DevelopmentScan,
+  IssueRelationOrigin,
   IssueRelationType,
   Recurrence,
   Task,
@@ -41,18 +44,32 @@ import type {
   TaskPriority,
   TaskRelationSummary,
   TaskStatus,
-  WorkflowOption,
 } from "../types";
 import {
-  AGENT_ACTOR,
+  CODEX_AGENT_ACTOR,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
 import { ActorAvatar } from "./ActorAvatar";
-import { STATUS_DETAILS, StatusIcon } from "./BoardColumn";
+import { STATUS_DETAILS } from "./BoardColumn";
 import { LabelPicker } from "./LabelPicker";
-import { LinearIcon, LinearPriorityIcon } from "./LinearIcon";
-import { TaskboardIcon } from "./TaskboardIcon";
+import { LinearIcon } from "./LinearIcon";
+import {
+  AttachmentIcon,
+  BlockingRelationIcon,
+  BranchIcon,
+  ConversationIcon,
+  DeleteIcon,
+  DueDateIcon,
+  EditIcon,
+  LabelIcon,
+  MoreIcon,
+  PriorityIcon,
+  ProjectIcon,
+  RecurrenceIcon,
+  RelationIcon,
+  StatusIcon,
+} from "./SemanticIcons";
 import {
   fileKey,
   MAX_ATTACHMENT_SIZE,
@@ -75,19 +92,20 @@ import {
   type RelationMutationResult,
 } from "./IssueRelations";
 import { TaskPropertyPicker } from "./TaskPropertyPicker";
-import { buildIssueUrl, readIssueIdentifier } from "../issueRoute";
+import { buildIssueUrl } from "../issueRoute";
 import { postEmbeddedHostMessage } from "../embeddedHost.mjs";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
 import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
+import { DescriptionDocument } from "./DescriptionDocument";
 
 type TaskDetailError = string | readonly [string, string];
 
 interface TaskDetailProps {
   task: Task;
   tasks: Task[];
+  referenceTasks: Task[];
   currentUser: ActorIdentity;
   availableLabels: string[];
-  workflows: WorkflowOption[];
   developmentScan: DevelopmentScan;
   developmentScanLoading: boolean;
   commentsRevision: number;
@@ -100,13 +118,16 @@ interface TaskDetailProps {
     task: Task,
     type: IssueRelationType,
     relatedTaskId: string,
+    origin?: IssueRelationOrigin,
   ) => Promise<RelationMutationResult>;
   onRemoveRelation: (
     task: Task,
     type: IssueRelationType,
     relatedTaskId: string,
+    origin?: IssueRelationOrigin,
   ) => Promise<RelationMutationResult>;
-  onOpenThread: (threadId: string) => void;
+  onOpenThread: (binding: CodexThreadBinding) => void;
+  onOpenLegacyLocalThread: (threadId: string) => void;
   onOpenInThread: (task: Task) => void;
   onCopy: (text: string, announcement: string) => void;
   onCopyPrompt: (task: Task) => void;
@@ -210,7 +231,6 @@ const ACTIVITY_FIELD_LABELS: Record<string, readonly [string, string]> = {
   priority: ["优先级", "priority"],
   labels: ["标签", "labels"],
   assignee: ["负责人", "assignee"],
-  workflowId: ["工作流", "workflow"],
   developmentContext: ["开发上下文", "development context"],
   startDate: ["开始日期", "start date"],
   dueDate: ["截止日期", "due date"],
@@ -296,87 +316,27 @@ function ActivityChangeIcon({ field, before, after }: {
 }) {
   const value = after ?? before;
   if (field === "status" && typeof value === "string" && value in STATUS_DETAILS) {
-    return <StatusIcon status={value as TaskStatus} />;
+    return <StatusIcon status={value as TaskStatus} color="currentColor" size={14} />;
   }
   if (field === "priority" && typeof value === "string" && TASK_PRIORITIES.includes(value as TaskPriority)) {
-    return <LinearPriorityIcon priority={value as TaskPriority} />;
+    return <PriorityIcon priority={value as TaskPriority} color="currentColor" size={14} />;
   }
   if (field === "relation" && typeof value === "object") {
     const relation = value as { type?: IssueRelationType };
-    if (relation.type === "blocked_by") return <TaskboardIcon name="relationBlockedBy" />;
-    if (relation.type === "blocks") return <TaskboardIcon name="relationBlocks" />;
-    return <LinearIcon name="link" />;
+    if (relation.type === "blocked_by" || relation.type === "blocks") {
+      return <BlockingRelationIcon type={relation.type} color="currentColor" size={14} />;
+    }
+    return <RelationIcon color="currentColor" size={14} />;
   }
-  if (field === "projectId" || field === "workflowId") return <LinearIcon name="project" />;
-  if (field === "labels") return <LinearIcon name="label" />;
+  if (field === "projectId") return <ProjectIcon color="currentColor" size={14} />;
+  if (field === "labels") return <LabelIcon color="currentColor" size={14} />;
   if (field === "assignee") return <LinearIcon name="myIssues" />;
-  if (field === "developmentContext") return <LinearIcon name="branch" />;
-  if (field === "startDate" || field === "dueDate") return <LinearIcon name="calendar" />;
-  if (field === "recurrence") return <LinearIcon name="recurrence" />;
-  if (field === "archivedAt") return <LinearIcon name="trash" />;
-  return <LinearIcon name="write" />;
-}
-
-function referencedTask(href: string, tasks: Task[]): Task | null {
-  try {
-    const base = new URL(document.baseURI);
-    base.search = "";
-    base.hash = "";
-    const url = new URL(href, base);
-    if (url.origin !== base.origin || url.pathname !== base.pathname) return null;
-    const identifier = readIssueIdentifier(url.search);
-    const projectId = url.searchParams.get("project");
-    if (!identifier || !projectId) return null;
-    return tasks.find((task) => task.projectId === projectId && task.identifier === identifier) ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function DescriptionDocument({
-  value,
-  tasks,
-  onOpenTask,
-}: {
-  value: string;
-  tasks: Task[];
-  onOpenTask: (task: TaskRelationSummary) => void;
-}) {
-  return (
-    <div className="issue-description-document">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
-        urlTransform={(url) => defaultUrlTransform(resolvePersistedAttachmentUrl(url))}
-        components={{
-          a: ({ node: _node, href, ...props }) => {
-            const task = href ? referencedTask(href, tasks) : null;
-            return (
-              <a
-                {...props}
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-                onClick={(event) => {
-                  if (
-                    !task
-                    || event.button !== 0
-                    || event.metaKey
-                    || event.ctrlKey
-                    || event.shiftKey
-                    || event.altKey
-                  ) return;
-                  event.preventDefault();
-                  onOpenTask(task);
-                }}
-              />
-            );
-          },
-        }}
-      >
-        {value}
-      </ReactMarkdown>
-    </div>
-  );
+  if (field === "developmentContext") return <BranchIcon color="currentColor" size={14} />;
+  if (field === "startDate") return <DueDateIcon color="currentColor" size={14} />;
+  if (field === "dueDate") return <DueDateIcon color="currentColor" size={14} />;
+  if (field === "recurrence") return <RecurrenceIcon color="currentColor" size={14} />;
+  if (field === "archivedAt") return <DeleteIcon color="currentColor" size={14} />;
+  return <EditIcon color="currentColor" size={14} />;
 }
 
 function ConversationLink({
@@ -384,7 +344,7 @@ function ConversationLink({
   onOpen,
 }: {
   threadId: string;
-  onOpen: (threadId: string) => void;
+  onOpen: () => void;
 }) {
   const { text } = useTaskboardI18n();
   return (
@@ -392,9 +352,9 @@ function ConversationLink({
       className="issue-conversation-link"
       type="button"
       title={text(`查看对话 ${threadId}`, `View conversation ${threadId}`)}
-      onClick={() => onOpen(threadId)}
+      onClick={onOpen}
     >
-      <TaskboardIcon name="conversation" />
+      <ConversationIcon color="currentColor" size={16} />
       <strong>{text("查看对话", "View conversation")}</strong>
       <span className="conversation-divider" aria-hidden="true" />
       <span className="conversation-thread-id">{threadId}</span>
@@ -405,9 +365,9 @@ function ConversationLink({
 export function TaskDetail({
   task,
   tasks,
+  referenceTasks,
   currentUser,
   availableLabels,
-  workflows,
   developmentScan,
   developmentScanLoading,
   commentsRevision,
@@ -419,6 +379,7 @@ export function TaskDetail({
   onAddRelation,
   onRemoveRelation,
   onOpenThread,
+  onOpenLegacyLocalThread,
   onOpenInThread,
   onCopy,
   onCopyPrompt,
@@ -430,13 +391,14 @@ export function TaskDetail({
   const [title, setTitle] = useState(task.title);
   const [description, setDescription] = useState(task.description);
   const [descriptionSegments, setDescriptionSegments] = useState<InlineMediaSegment[]>(
-    () => createInlineMediaSegments(task.description),
+    () => createInlineMediaSegments(task.description, referenceTasks),
   );
   const [editingDescription, setEditingDescription] = useState(false);
-  const [propertyMenu, setPropertyMenu] = useState<"status" | "priority" | "assignee" | "labels" | "workflow" | null>(null);
+  const [propertyMenu, setPropertyMenu] = useState<
+    "status" | "priority" | "assignee" | "labels" | "development" | "recurrence" | null
+  >(null);
   const [savingProperty, setSavingProperty] = useState<string | null>(null);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
-  const [attachmentsLoading, setAttachmentsLoading] = useState(true);
   const [attachmentsError, setAttachmentsError] = useState<TaskDetailError | null>(null);
   const [uploadingAttachments, setUploadingAttachments] = useState(false);
   const [pendingAttachmentDelete, setPendingAttachmentDelete] = useState<Attachment | null>(null);
@@ -448,6 +410,7 @@ export function TaskDetail({
   const [commentSegments, setCommentSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(
       taskboardStorage.getItem(`taskboard.comment-draft.${task.id}`) ?? "",
+      referenceTasks,
     ),
   );
   const [pendingCommentFiles, setPendingCommentFiles] = useState<File[]>([]);
@@ -467,7 +430,7 @@ export function TaskDetail({
   const editingComposerRef = useRef<InlineMediaComposerHandle>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
-  const editCommentImageInputRef = useRef<HTMLInputElement>(null);
+  const editCommentAttachmentInputRef = useRef<HTMLInputElement>(null);
   const editingUploadedAttachmentsRef = useRef<Map<string, Attachment>>(new Map());
   const draft = serializeInlineMedia(commentSegments);
   const commentInlineImages = inlineMediaImages(commentSegments);
@@ -481,7 +444,7 @@ export function TaskDetail({
     if (document.activeElement !== titleRef.current) setTitle(task.title);
     if (taskChanged || !editingDescription) {
       setDescription(task.description);
-      setDescriptionSegments(createInlineMediaSegments(task.description));
+      setDescriptionSegments(createInlineMediaSegments(task.description, referenceTasks));
     }
     if (taskChanged) {
       setEditingDescription(false);
@@ -509,7 +472,6 @@ export function TaskDetail({
 
   useEffect(() => {
     const controller = new AbortController();
-    setCommentsLoading(true);
     setCommentsError(null);
     void Promise.all([
       listComments(task.id, controller.signal),
@@ -531,17 +493,14 @@ export function TaskDetail({
 
   useEffect(() => {
     const controller = new AbortController();
-    setAttachmentsLoading(true);
     setAttachmentsError(null);
     void listAttachments(task.id, controller.signal).then(
       (nextAttachments) => {
         setAttachments(nextAttachments.filter((attachment) => !attachment.commentId));
-        setAttachmentsLoading(false);
       },
       (error) => {
         if ((error as Error).name === "AbortError") return;
         setAttachmentsError(messageFor(error));
-        setAttachmentsLoading(false);
       },
     );
     return () => controller.abort();
@@ -633,6 +592,79 @@ export function TaskDetail({
     }
   }
 
+  async function addMentionRelations(
+    anchor: Task,
+    segments: InlineMediaSegment[],
+  ): Promise<Task> {
+    let current = anchor;
+    const relatedIds = new Set(current.relations.related.map((relation) => relation.id));
+    for (const segment of segments) {
+      if (segment.type !== "issue-reference" || !segment.taskId) continue;
+      const relatedTaskId = segment.taskId;
+      if (
+        relatedTaskId === current.id
+        || segment.projectId !== current.projectId
+        || relatedIds.has(relatedTaskId)
+      ) continue;
+      const result = await applyRelationMutation(
+        () => onAddRelation(current, "related", relatedTaskId, "mention"),
+      );
+      current = result.task;
+      relatedIds.add(relatedTaskId);
+    }
+    return current;
+  }
+
+  function mentionTaskIds(segments: InlineMediaSegment[]): Set<string> {
+    return new Set(segments.flatMap((segment) => (
+      segment.type === "issue-reference" && segment.taskId ? [segment.taskId] : []
+    )));
+  }
+
+  function removedMentionTaskIds(
+    previous: InlineMediaSegment[],
+    next: InlineMediaSegment[],
+  ): Set<string> {
+    const nextIds = mentionTaskIds(next);
+    return new Set([...mentionTaskIds(previous)].filter((taskId) => !nextIds.has(taskId)));
+  }
+
+  async function removeUnreferencedMentionRelations(
+    anchor: Task,
+    candidates: Set<string>,
+  ): Promise<Task> {
+    if (candidates.size === 0) return anchor;
+    const savedComments = await listComments(anchor.id);
+    const referencedIds = mentionTaskIds(createInlineMediaSegments(anchor.description, referenceTasks));
+    for (const comment of savedComments) {
+      for (const taskId of mentionTaskIds(createInlineMediaSegments(comment.body, referenceTasks))) {
+        referencedIds.add(taskId);
+      }
+    }
+
+    let current = anchor;
+    for (const relatedTaskId of candidates) {
+      if (
+        referencedIds.has(relatedTaskId)
+        || !current.relations.related.some((relation) => relation.id === relatedTaskId)
+      ) continue;
+      const relatedTask = await getTask(relatedTaskId);
+      if (
+        mentionTaskIds(createInlineMediaSegments(relatedTask.description, referenceTasks))
+          .has(anchor.id)
+      ) continue;
+      const relatedComments = await listComments(relatedTaskId);
+      if (relatedComments.some((comment) => (
+        mentionTaskIds(createInlineMediaSegments(comment.body, referenceTasks)).has(anchor.id)
+      ))) continue;
+      const result = await applyRelationMutation(
+        () => onRemoveRelation(current, "related", relatedTaskId, "mention"),
+      );
+      current = result.task;
+    }
+    return current;
+  }
+
   function handleTitleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault();
@@ -666,12 +698,16 @@ export function TaskDetail({
       setEditingDescription(false);
       return;
     }
+    const removedMentionIds = removedMentionTaskIds(
+      createInlineMediaSegments(currentTask.description, referenceTasks),
+      descriptionSegments,
+    );
 
     setSavingProperty("description");
     onError(null);
     try {
       const uploaded = await Promise.all(
-        inlineImages.map((image) => uploadAttachment(currentTask.id, image.file)),
+        inlineImages.map((image) => uploadAttachment(currentTask.id, image.file, "inline")),
       );
       const resolvedDescription = resolveInlineMediaMarkdown(
         draftDescription,
@@ -683,9 +719,14 @@ export function TaskDetail({
         return null;
       });
       if (!saved) return;
-      setCurrentTask(saved);
-      setDescription(saved.description);
-      setDescriptionSegments(createInlineMediaSegments(saved.description));
+      const savedWithAddedRelations = await addMentionRelations(saved, descriptionSegments);
+      const savedWithRelations = await removeUnreferencedMentionRelations(
+        savedWithAddedRelations,
+        removedMentionIds,
+      );
+      setCurrentTask(savedWithRelations);
+      setDescription(savedWithRelations.description);
+      setDescriptionSegments(createInlineMediaSegments(savedWithRelations.description, referenceTasks));
       setAttachments((current) => [
         ...current,
         ...uploaded.filter((attachment) => !current.some((item) => item.id === attachment.id)),
@@ -707,10 +748,10 @@ export function TaskDetail({
       const comment = await createComment(task.id, body);
       const [results, inlineAttachments] = await Promise.all([
         Promise.allSettled(
-          pendingCommentFiles.map((file) => uploadCommentAttachment(comment.id, file)),
+          pendingCommentFiles.map((file) => uploadCommentAttachment(comment.id, file, "attachment")),
         ),
         Promise.all(
-          commentInlineImages.map((image) => uploadCommentAttachment(comment.id, image.file)),
+          commentInlineImages.map((image) => uploadCommentAttachment(comment.id, image.file, "inline")),
         ),
       ]);
       const uploaded = results.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
@@ -724,11 +765,15 @@ export function TaskDetail({
       setCommentSegments(createInlineMediaSegments());
       setPendingCommentFiles([]);
       if (commentAttachmentInputRef.current) commentAttachmentInputRef.current.value = "";
+      let relationAnchor = await getTask(currentTask.id);
       if (changeStatusToTodo) {
-        const saved = await onUpdate(currentTask, { status: "todo" });
+        const saved = await onUpdate(relationAnchor, { status: "todo" });
         setCurrentTask(saved);
+        relationAnchor = saved;
         setChangeStatusToTodo(false);
       }
+      const savedWithRelations = await addMentionRelations(relationAnchor, commentSegments);
+      setCurrentTask(savedWithRelations);
       const failed = results.length - uploaded.length;
       if (failed > 0) setCommentsError([
         `评论已发布，但有 ${failed} 个附件上传失败。`,
@@ -760,7 +805,7 @@ export function TaskDetail({
     });
   }
 
-  function handleSubmitShortcut(event: KeyboardEvent<HTMLTextAreaElement>) {
+  function handleSubmitShortcut(event: KeyboardEvent<HTMLDivElement>) {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
       event.preventDefault();
       void submitComment();
@@ -771,7 +816,7 @@ export function TaskDetail({
     if (savingCommentId !== null) return;
     editingUploadedAttachmentsRef.current.clear();
     setEditingId(comment.id);
-    setEditingSegments(createInlineMediaSegments(comment.body));
+    setEditingSegments(createInlineMediaSegments(comment.body, referenceTasks));
     setActiveMenuId(null);
   }
 
@@ -786,6 +831,10 @@ export function TaskDetail({
       if (body === comment.body) endCommentEdit();
       return;
     }
+    const removedMentionIds = removedMentionTaskIds(
+      createInlineMediaSegments(comment.body, referenceTasks),
+      editingSegments,
+    );
     setSavingCommentId(comment.id);
     setCommentsError(null);
     try {
@@ -793,7 +842,7 @@ export function TaskDetail({
       for (const image of editingInlineImages) {
         let attachment = editingUploadedAttachmentsRef.current.get(image.id);
         if (!attachment) {
-          attachment = await uploadCommentAttachment(comment.id, image.file);
+          attachment = await uploadCommentAttachment(comment.id, image.file, "inline");
           editingUploadedAttachmentsRef.current.set(image.id, attachment);
         }
         uploaded.push(attachment);
@@ -803,6 +852,13 @@ export function TaskDetail({
         resolveInlineMediaMarkdown(body, editingInlineImages, uploaded).trim(),
       );
       setComments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      const relationAnchor = await getTask(currentTask.id);
+      const savedWithAddedRelations = await addMentionRelations(relationAnchor, editingSegments);
+      const savedWithRelations = await removeUnreferencedMentionRelations(
+        savedWithAddedRelations,
+        removedMentionIds,
+      );
+      setCurrentTask(savedWithRelations);
       endCommentEdit();
     } catch (error) {
       setCommentsError(messageFor(error));
@@ -813,12 +869,20 @@ export function TaskDetail({
 
   async function confirmDelete() {
     if (!pendingDelete || deleting) return;
+    const removedMentionIds = mentionTaskIds(
+      createInlineMediaSegments(pendingDelete.body, referenceTasks),
+    );
     setDeleting(true);
     setCommentsError(null);
     try {
       await deleteComment(pendingDelete);
       setComments((current) => current.filter((comment) => comment.id !== pendingDelete.id));
       setPendingDelete(null);
+      const savedWithRelations = await removeUnreferencedMentionRelations(
+        currentTask,
+        removedMentionIds,
+      );
+      setCurrentTask(savedWithRelations);
     } catch (error) {
       setCommentsError(messageFor(error));
     } finally {
@@ -843,7 +907,7 @@ export function TaskDetail({
     setAttachmentsError(null);
     try {
       for (const file of selected) {
-        const attachment = await uploadAttachment(task.id, file);
+        const attachment = await uploadAttachment(task.id, file, "attachment");
         setAttachments((current) => current.some((item) => item.id === attachment.id)
           ? current
           : [...current, attachment]);
@@ -853,6 +917,36 @@ export function TaskDetail({
     } finally {
       setUploadingAttachments(false);
       if (attachmentInputRef.current) attachmentInputRef.current.value = "";
+    }
+  }
+
+  async function uploadEditCommentFiles(comment: Comment, files: FileList) {
+    const selected = Array.from(files);
+    if (selected.length === 0 || savingCommentId !== null) return;
+    const oversized = selected.find((file) => file.size > MAX_ATTACHMENT_SIZE);
+    if (oversized) {
+      setCommentsError([
+        `“${oversized.name}” 超过 25 MB，无法上传。`,
+        `“${oversized.name}” is larger than 25 MB and cannot be uploaded.`,
+      ]);
+      if (editCommentAttachmentInputRef.current) editCommentAttachmentInputRef.current.value = "";
+      return;
+    }
+
+    setSavingCommentId(comment.id);
+    setCommentsError(null);
+    try {
+      for (const file of selected) {
+        const attachment = await uploadCommentAttachment(comment.id, file, "attachment");
+        setComments((current) => current.map((item) => item.id === comment.id
+          ? { ...item, attachments: [...item.attachments, attachment] }
+          : item));
+      }
+    } catch (error) {
+      setCommentsError(messageFor(error));
+    } finally {
+      setSavingCommentId(null);
+      if (editCommentAttachmentInputRef.current) editCommentAttachmentInputRef.current.value = "";
     }
   }
 
@@ -890,12 +984,12 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, AGENT_ACTOR]
+  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
   const visibleTaskAttachments = attachments.filter(
-    (attachment) => !markdownIncludesAttachment(description, attachment),
+    (attachment) => attachment.kind === "attachment",
   );
   const activityTimeline = [
     ...taskActivities.flatMap((activity) => activity.changes.map((change, index) => ({
@@ -939,15 +1033,6 @@ export function TaskDetail({
                   onKeyDown={handleTitleKeyDown}
                   onBlur={() => void saveTitle()}
                 />
-                {currentTask.workflowId === null && (
-                  <div className="missing-workflow-notice" role="status">
-                    <LinearIcon name="alert" />
-                    <div>
-                      <strong>Missing Workflow</strong>
-                      <span>This issue is not bound to a delivery workflow.</span>
-                    </div>
-                  </div>
-                )}
                 <IssueParentLink
                   task={currentTask}
                   tasks={tasks}
@@ -971,6 +1056,11 @@ export function TaskDetail({
                       ref={descriptionComposerRef}
                       segments={descriptionSegments}
                       mentionTasks={tasks}
+                      referenceTasks={referenceTasks}
+                      completionContext={{
+                        projectId: currentTask.projectId,
+                        surface: "issue-description",
+                      }}
                       placeholder={text("添加描述…", "Add description…")}
                       ariaLabel={text("议题描述", "Issue description")}
                       disabled={savingProperty === "description"}
@@ -979,7 +1069,11 @@ export function TaskDetail({
                       onKeyDown={(event) => {
                         if (event.key === "Escape") {
                           event.preventDefault();
-                          setDescriptionSegments(createInlineMediaSegments(currentTask.description));
+                          event.stopPropagation();
+                          setDescriptionSegments(createInlineMediaSegments(
+                            currentTask.description,
+                            referenceTasks,
+                          ));
                           setEditingDescription(false);
                         }
                       }}
@@ -993,58 +1087,54 @@ export function TaskDetail({
                     aria-label={text("编辑议题描述", "Edit issue description")}
                     onClick={() => {
                       if (window.getSelection()?.isCollapsed === false) return;
-                      setDescriptionSegments(createInlineMediaSegments(description));
+                      setDescriptionSegments(createInlineMediaSegments(description, referenceTasks));
                       setEditingDescription(true);
                     }}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" || event.key === " ") {
                         event.preventDefault();
-                        setDescriptionSegments(createInlineMediaSegments(description));
+                        setDescriptionSegments(createInlineMediaSegments(description, referenceTasks));
                         setEditingDescription(true);
                       }
                     }}
                   >
                     {description
-                      ? <DescriptionDocument value={description} tasks={tasks} onOpenTask={onOpenTask} />
+                      ? <DescriptionDocument
+                          value={description}
+                          referenceTasks={referenceTasks}
+                          onOpenTask={onOpenTask}
+                        />
                       : text("添加描述…", "Add description…")}
                   </div>
                 )}
-                {currentTask.threadId && (
+                {(currentTask.threadBinding || currentTask.legacyLocalThreadId) && (
                   <div
                     className="issue-conversation-list"
                     aria-label={text("处理此议题的对话", "Conversations for this issue")}
                   >
-                    <ConversationLink threadId={currentTask.threadId} onOpen={onOpenThread} />
+                    <ConversationLink
+                      threadId={currentTask.threadBinding?.threadId ?? currentTask.legacyLocalThreadId!}
+                      onOpen={() => currentTask.threadBinding
+                        ? onOpenThread(currentTask.threadBinding)
+                        : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
+                    />
                   </div>
                 )}
               </div>
-            </article>
-
-            <IssueSubIssues
-              task={currentTask}
-              tasks={tasks}
-              onOpenTask={onOpenTask}
-              onAddRelation={(anchor, type, relatedTaskId) => applyRelationMutation(
-                () => onAddRelation(anchor, type, relatedTaskId),
-              )}
-              onRemoveRelation={(anchor, type, relatedTaskId) => applyRelationMutation(
-                () => onRemoveRelation(anchor, type, relatedTaskId),
-              )}
-            />
-
-            <section className="issue-attachments" aria-labelledby="attachments-heading">
-              <header className="attachments-heading">
-                <div>
-                  <h2 id="attachments-heading">{text("附件", "Attachments")}</h2>
-                  <span>{visibleTaskAttachments.length}</span>
-                </div>
+              <div className="attachments-heading issue-attachment-controls">
+                {visibleTaskAttachments.length > 0 && (
+                  <div>
+                    <h2 id="attachments-heading">{text("附件", "Attachments")}</h2>
+                    <span>{visibleTaskAttachments.length}</span>
+                  </div>
+                )}
                 <button
                   className="attachment-add-button"
                   type="button"
                   disabled={uploadingAttachments}
                   onClick={() => attachmentInputRef.current?.click()}
                 >
-                  <LinearIcon name="attachment" />
+                  <AttachmentIcon color="currentColor" />
                   {uploadingAttachments
                     ? text("上传中…", "Uploading…")
                     : text("添加附件", "Add attachment")}
@@ -1058,56 +1148,50 @@ export function TaskDetail({
                     if (event.currentTarget.files) void uploadFiles(event.currentTarget.files);
                   }}
                 />
-              </header>
-
-              {attachmentsLoading ? (
-                <div className="attachments-loading" aria-label={text("正在加载附件", "Loading attachments")} aria-busy="true"><i /><i /></div>
-              ) : visibleTaskAttachments.length > 0 ? (
-                <ul className="attachment-list">
-                  {visibleTaskAttachments.map((attachment) => (
-                    <li key={attachment.id}>
-                      <a
-                        className="attachment-link"
-                        href={attachmentDownloadUrl(attachment)}
-                        download={attachment.filename}
-                        title={text(`下载 ${attachment.filename}`, `Download ${attachment.filename}`)}
-                        onClick={(event) => handleAttachmentDownload(event, attachment)}
-                      >
-                        <span className="attachment-file-icon" aria-hidden="true">
-                          <LinearIcon name="file" />
-                        </span>
-                        <span className="attachment-copy">
-                          <strong>{attachment.filename}</strong>
-                          <span>{fileSize(attachment.size)} · {relativeTime(attachment.createdAt, locale)}</span>
-                        </span>
-                      </a>
-                      <div className="attachment-actions">
+              </div>
+              {visibleTaskAttachments.length > 0 && (
+                <section className="issue-attachments" aria-labelledby="attachments-heading">
+                  <ul className="attachment-list">
+                    {visibleTaskAttachments.map((attachment) => (
+                      <li key={attachment.id}>
                         <a
+                          className="attachment-link"
                           href={attachmentDownloadUrl(attachment)}
                           download={attachment.filename}
-                          aria-label={text(`下载 ${attachment.filename}`, `Download ${attachment.filename}`)}
-                          title={text("下载附件", "Download attachment")}
+                          title={text(`下载 ${attachment.filename}`, `Download ${attachment.filename}`)}
                           onClick={(event) => handleAttachmentDownload(event, attachment)}
                         >
-                          <LinearIcon name="openExternal" />
+                          <span className="attachment-file-icon" aria-hidden="true">
+                            <LinearIcon name="file" />
+                          </span>
+                          <span className="attachment-copy">
+                            <strong>{attachment.filename}</strong>
+                            <span>{fileSize(attachment.size)} · {relativeTime(attachment.createdAt, locale)}</span>
+                          </span>
                         </a>
-                        <button
-                          type="button"
-                          aria-label={text(`删除 ${attachment.filename}`, `Delete ${attachment.filename}`)}
-                          title={text("删除附件", "Delete attachment")}
-                          onClick={() => setPendingAttachmentDelete(attachment)}
-                        >
-                          <LinearIcon name="trash" />
-                        </button>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <p className="attachments-empty">{text(
-                  "添加图片、文档或其他文件，单个文件不超过 25 MB。",
-                  "Add images, documents, or other files up to 25 MB each.",
-                )}</p>
+                        <div className="attachment-actions">
+                          <a
+                            href={attachmentDownloadUrl(attachment)}
+                            download={attachment.filename}
+                            aria-label={text(`下载 ${attachment.filename}`, `Download ${attachment.filename}`)}
+                            title={text("下载附件", "Download attachment")}
+                            onClick={(event) => handleAttachmentDownload(event, attachment)}
+                          >
+                            <LinearIcon name="openExternal" />
+                          </a>
+                          <button
+                            type="button"
+                            aria-label={text(`删除 ${attachment.filename}`, `Delete ${attachment.filename}`)}
+                            title={text("删除附件", "Delete attachment")}
+                            onClick={() => setPendingAttachmentDelete(attachment)}
+                          >
+                            <DeleteIcon color="currentColor" />
+                          </button>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
               )}
               {attachmentsError && (
                 <div className="attachments-error" role="alert">
@@ -1116,7 +1200,19 @@ export function TaskDetail({
                     : text(attachmentsError[0], attachmentsError[1])}
                 </div>
               )}
-            </section>
+            </article>
+
+            <IssueSubIssues
+              task={currentTask}
+              tasks={tasks}
+              onOpenTask={onOpenTask}
+              onAddRelation={(anchor, type, relatedTaskId) => applyRelationMutation(
+                () => onAddRelation(anchor, type, relatedTaskId),
+              )}
+              onRemoveRelation={(anchor, type, relatedTaskId) => applyRelationMutation(
+                () => onRemoveRelation(anchor, type, relatedTaskId),
+              )}
+            />
 
             <section className="activity-section" aria-labelledby="activity-heading">
               <header className="activity-heading">
@@ -1250,7 +1346,7 @@ export function TaskDetail({
                               aria-expanded={activeMenuId === comment.id}
                               onClick={() => setActiveMenuId((current) => current === comment.id ? null : comment.id)}
                             >
-                              <LinearIcon name="more" />
+                              <MoreIcon color="currentColor" />
                             </button>
                             {activeMenuId === comment.id && (
                               <div className="comment-action-menu" role="menu">
@@ -1260,7 +1356,7 @@ export function TaskDetail({
                                   disabled={savingCommentId !== null}
                                   onClick={() => beginEdit(comment)}
                                 >
-                                  <LinearIcon name="write" />
+                                  <EditIcon color="currentColor" />
                                   {text("编辑评论", "Edit comment")}
                                 </button>
                                 <button
@@ -1269,7 +1365,7 @@ export function TaskDetail({
                                   className="danger"
                                   onClick={() => { setPendingDelete(comment); setActiveMenuId(null); }}
                                 >
-                                  <LinearIcon name="trash" />
+                                  <DeleteIcon color="currentColor" />
                                   {text("删除评论", "Delete comment")}
                                 </button>
                               </div>
@@ -1285,13 +1381,23 @@ export function TaskDetail({
                             className="comment-inline-media"
                             segments={editingSegments}
                             mentionTasks={tasks}
+                            referenceTasks={referenceTasks}
+                            completionContext={{
+                              projectId: currentTask.projectId,
+                              surface: "comment",
+                            }}
                             placeholder={text("编辑评论", "Edit comment")}
                             ariaLabel={text("编辑评论", "Edit comment")}
                             disabled={savingCommentId === comment.id}
                             onChange={setEditingSegments}
                             onError={setCommentsError}
                             onKeyDown={(event) => {
-                              if (event.key === "Escape") endCommentEdit();
+                              if (event.key === "Escape") {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                endCommentEdit();
+                                return;
+                              }
                               if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                                 event.preventDefault();
                                 void saveComment(comment);
@@ -1299,61 +1405,66 @@ export function TaskDetail({
                             }}
                           />
                           <div className="comment-edit-actions">
-                            <button
-                              className="button secondary"
-                              type="button"
-                              disabled={savingCommentId === comment.id}
-                              onClick={() => editCommentImageInputRef.current?.click()}
-                            >
-                              <LinearIcon name="attachment" />
-                              {text("添加图片", "Add images")}
-                            </button>
-                            <input
-                              ref={editCommentImageInputRef}
-                              type="file"
-                              accept="image/*"
-                              multiple
-                              hidden
-                              onChange={(event) => {
-                                if (event.currentTarget.files) {
-                                  editingComposerRef.current?.addImages(event.currentTarget.files);
-                                }
-                                event.currentTarget.value = "";
-                              }}
-                            />
-                            <button
-                              className="button secondary"
-                              type="button"
-                              disabled={savingCommentId === comment.id}
-                              onClick={endCommentEdit}
-                            >
-                              {text("取消", "Cancel")}
-                            </button>
-                            <button
-                              className="button primary"
-                              type="button"
-                              disabled={!editingDraft.trim() || savingCommentId === comment.id}
-                              onClick={() => void saveComment(comment)}
-                            >
-                              {savingCommentId === comment.id
-                                ? text("保存中…", "Saving…")
-                                : text("保存", "Save")}
-                            </button>
+                            <div className="composer-footer-leading">
+                              <button
+                                className="comment-attach-button"
+                                type="button"
+                                disabled={savingCommentId === comment.id}
+                                aria-label={text("添加评论附件", "Add comment attachments")}
+                                title={text("添加附件", "Add attachments")}
+                                onClick={() => editCommentAttachmentInputRef.current?.click()}
+                              >
+                                <AttachmentIcon color="currentColor" />
+                              </button>
+                              <input
+                                ref={editCommentAttachmentInputRef}
+                                type="file"
+                                multiple
+                                hidden
+                                onChange={(event) => {
+                                  if (event.currentTarget.files) {
+                                    void uploadEditCommentFiles(comment, event.currentTarget.files);
+                                  }
+                                }}
+                              />
+                            </div>
+                            <div>
+                              <button
+                                className="button secondary"
+                                type="button"
+                                disabled={savingCommentId === comment.id}
+                                onClick={endCommentEdit}
+                              >
+                                {text("取消", "Cancel")}
+                              </button>
+                              <button
+                                className="button primary"
+                                type="button"
+                                disabled={!editingDraft.trim() || savingCommentId === comment.id}
+                                onClick={() => void saveComment(comment)}
+                              >
+                                {savingCommentId === comment.id
+                                  ? text("保存中…", "Saving…")
+                                  : text("保存", "Save")}
+                              </button>
+                            </div>
                           </div>
                         </div>
                       ) : (
                         comment.body && (
                           <div className="comment-body">
-                            <DescriptionDocument value={comment.body} tasks={tasks} onOpenTask={onOpenTask} />
+                            <DescriptionDocument
+                              value={comment.body}
+                              referenceTasks={referenceTasks}
+                              onOpenTask={onOpenTask}
+                            />
                           </div>
                         )
                       )}
-                      {comment.attachments.some(
-                        (attachment) => !markdownIncludesAttachment(comment.body, attachment),
-                      ) && (
+                      {comment.attachments.some((attachment) => attachment.kind === "attachment") && (
                         <ul className="comment-attachment-list" aria-label={text("评论附件", "Comment attachments")}>
                           {comment.attachments
-                            .filter((attachment) => !markdownIncludesAttachment(comment.body, attachment))
+                            .filter((attachment) => attachment.kind === "attachment")
                             .map((attachment) => (
                               <li key={attachment.id}>
                                 <a
@@ -1374,16 +1485,21 @@ export function TaskDetail({
                                     title={text("删除附件", "Delete attachment")}
                                     onClick={() => setPendingAttachmentDelete(attachment)}
                                   >
-                                    <LinearIcon name="trash" />
+                                    <DeleteIcon color="currentColor" />
                                   </button>
                                 )}
                               </li>
                             ))}
                         </ul>
                       )}
-                      {comment.threadId && (
+                      {(comment.threadBinding || comment.legacyLocalThreadId) && (
                         <div className="comment-conversation-link">
-                          <ConversationLink threadId={comment.threadId} onOpen={onOpenThread} />
+                          <ConversationLink
+                            threadId={comment.threadBinding?.threadId ?? comment.legacyLocalThreadId!}
+                            onOpen={() => comment.threadBinding
+                              ? onOpenThread(comment.threadBinding)
+                              : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}
+                          />
                         </div>
                       )}
                     </div>
@@ -1414,6 +1530,11 @@ export function TaskDetail({
                   className="comment-inline-media"
                   segments={commentSegments}
                   mentionTasks={tasks}
+                  referenceTasks={referenceTasks}
+                  completionContext={{
+                    projectId: currentTask.projectId,
+                    surface: "comment",
+                  }}
                   placeholder={text("留下评论…", "Leave a comment…")}
                   ariaLabel={text("留下评论", "Leave a comment")}
                   onChange={setCommentSegments}
@@ -1438,7 +1559,7 @@ export function TaskDetail({
                       title={text("添加附件", "Add attachments")}
                       onClick={() => commentAttachmentInputRef.current?.click()}
                     >
-                      <LinearIcon name="attachment" />
+                      <AttachmentIcon color="currentColor" />
                     </button>
                     <input
                       ref={commentAttachmentInputRef}
@@ -1489,19 +1610,21 @@ export function TaskDetail({
                 disabled={openingThread}
                 onClick={() => onOpenInThread(currentTask)}
               >
-                <ActorAvatar actor={AGENT_ACTOR} className="detail-thread-avatar" />
+                <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
                 <span>{openingThread
                   ? text("正在打开…", "Opening…")
-                  : text("在对话中打开", "Open in conversation")}</span>
+                  : text("在新对话打开", "Open in new conversation")}</span>
               </button>
               <button
                 className="detail-copy-action"
                 type="button"
-                title={text("复制 Prompt", "Copy prompt")}
+                title="Copy Prompt"
                 onClick={() => onCopyPrompt(currentTask)}
               >
-                <span className="detail-copy-action-icon" aria-hidden="true"><LinearIcon name="copy" /></span>
-                <span className="detail-copy-action-label">{text("复制 Prompt", "Copy prompt")}</span>
+                <span className="detail-copy-action-icon" aria-hidden="true">
+                  <LinearIcon name="copy" />
+                </span>
+                <span className="detail-copy-action-label">Copy Prompt</span>
               </button>
               {currentTask.externalUrl && (
                 <a
@@ -1550,40 +1673,28 @@ export function TaskDetail({
             </div>
             <h2>{text("属性", "Properties")}</h2>
             <div className="detail-property-row">
-              <span className="detail-property-label">Workflow</span>
-              <TaskPropertyPicker
-                value={currentTask.workflowId ?? ""}
-                options={[
-                  { value: "", label: "Not set", icon: <LinearIcon name="displayOptions" /> },
-                  ...workflows.map((workflow) => ({
-                    value: workflow.id,
-                    label: workflow.name,
-                    icon: <LinearIcon name="play" />,
-                  })),
-                ]}
-                open={propertyMenu === "workflow"}
-                disabled={savingProperty === "workflowId"}
-                className="detail-property-picker"
-                triggerClassName="detail-property-trigger"
-                ariaLabel="Workflow"
-                onOpenChange={(open) => setPropertyMenu(open ? "workflow" : null)}
-                onChange={(value) => void saveTask({ workflowId: value || null }, "workflowId")}
-              />
-            </div>
-            <div className="detail-property-row">
               <span className="detail-property-label">{text("状态", "Status")}</span>
               <TaskPropertyPicker
                 value={currentTask.status}
                 options={TASK_STATUSES.map((status) => ({
                   value: status,
                   label: taskStatusLabel(language, status),
-                  icon: <StatusIcon status={status} />,
-                  className: `status-icon-${STATUS_DETAILS[status].tone}`,
+                  icon: <StatusIcon status={status} color="currentColor" size={14} />,
                 }))}
                 open={propertyMenu === "status"}
                 disabled={savingProperty === "status"}
                 className="detail-property-picker"
                 triggerClassName="detail-property-trigger"
+                triggerContent={(
+                  <>
+                    <span className="task-property-trigger-icon">
+                      <StatusIcon status={currentTask.status} color="currentColor" size={14} />
+                    </span>
+                    <span className="task-property-trigger-label">
+                      {taskStatusLabel(language, currentTask.status)}
+                    </span>
+                  </>
+                )}
                 ariaLabel={text("状态", "Status")}
                 onOpenChange={(open) => setPropertyMenu(open ? "status" : null)}
                 onChange={(status) => void saveTask({ status }, "status")}
@@ -1596,7 +1707,7 @@ export function TaskDetail({
                 options={TASK_PRIORITIES.map((priority) => ({
                   value: priority,
                   label: taskPriorityLabel(language, priority),
-                  icon: <LinearPriorityIcon priority={priority} />,
+                  icon: <PriorityIcon priority={priority} size={14} />,
                   className: `priority-${priority}`,
                 }))}
                 open={propertyMenu === "priority"}
@@ -1636,7 +1747,7 @@ export function TaskDetail({
             </div>
             <div className="detail-property-row labels-property">
               <span className="detail-property-icon" aria-hidden="true">
-                <LinearIcon name="label" />
+                <LabelIcon color="currentColor" size={14} />
               </span>
               <span className="detail-property-label">{text("标签", "Labels")}</span>
               <LabelPicker
@@ -1654,36 +1765,49 @@ export function TaskDetail({
                 onDeleteLabel={currentTask.source === "jira" ? undefined : onDeleteLabel}
               />
             </div>
-            <label className="detail-property-row development-property">
-              <span className="detail-property-icon" aria-hidden="true">
-                <LinearIcon name="branch" />
-              </span>
+            <div className="detail-property-row development-property">
               <span className="detail-property-label">{text("开发上下文", "Development context")}</span>
-              <select
+              <TaskPropertyPicker
                 value={contextValue(currentTask.developmentContext)}
+                options={[
+                  {
+                    value: "",
+                    label: developmentScanLoading
+                      ? text("正在扫描 Git…", "Scanning Git…")
+                      : text("未绑定", "Not linked"),
+                    icon: <BranchIcon color="currentColor" size={14} />,
+                  },
+                  ...developmentOptions.map((context) => ({
+                    value: contextValue(context),
+                    label: contextLabel(context, text),
+                    icon: context.type === "branch"
+                      ? <BranchIcon color="currentColor" size={14} />
+                      : <LinearIcon name="folder" />,
+                  })),
+                ]}
+                open={propertyMenu === "development"}
                 disabled={developmentScanLoading || savingProperty === "developmentContext"}
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel={text("开发上下文", "Development context")}
                 title={currentTask.developmentContext?.type === "worktree" ? currentTask.developmentContext.path : undefined}
-                onChange={(event) => void saveTask({
-                  developmentContext: event.target.value ? JSON.parse(event.target.value) as DevelopmentContext : null,
+                onOpenChange={(open) => setPropertyMenu(open ? "development" : null)}
+                onChange={(value) => void saveTask({
+                  developmentContext: value ? JSON.parse(value) as DevelopmentContext : null,
                 }, "developmentContext")}
-              >
-                <option value="">{developmentScanLoading
-                  ? text("正在扫描 Git…", "Scanning Git…")
-                  : text("未绑定", "Not linked")}</option>
-                <optgroup label={text("代码分支", "Code branches")}>
-                  {developmentOptions.filter((context) => context.type === "branch").map((context) => (
-                    <option value={contextValue(context)} key={contextValue(context)}>{contextLabel(context, text)}</option>
-                  ))}
-                </optgroup>
-                <optgroup label="Worktree">
-                  {developmentOptions.filter((context) => context.type === "worktree").map((context) => (
-                    <option value={contextValue(context)} key={contextValue(context)}>{contextLabel(context, text)}</option>
-                  ))}
-                </optgroup>
-              </select>
-            </label>
-            <label className="detail-property-row">
-              <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>
+              />
+            </div>
+            <label
+              className="detail-property-row detail-date-property-row"
+              onClick={(event) => {
+                const input = event.currentTarget.querySelector("input");
+                if (input && !input.disabled) {
+                  event.preventDefault();
+                  input.showPicker();
+                }
+              }}
+            >
+              <span className="detail-property-icon" aria-hidden="true"><DueDateIcon color="currentColor" size={14} /></span>
               <span className="detail-property-label">{text("开始日期", "Start date")}</span>
               <input
                 type="date"
@@ -1694,8 +1818,17 @@ export function TaskDetail({
                 }, "startDate")}
               />
             </label>
-            <label className="detail-property-row">
-              <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="calendar" /></span>
+            <label
+              className="detail-property-row detail-date-property-row"
+              onClick={(event) => {
+                const input = event.currentTarget.querySelector("input");
+                if (input && !input.disabled) {
+                  event.preventDefault();
+                  input.showPicker();
+                }
+              }}
+            >
+              <span className="detail-property-icon" aria-hidden="true"><DueDateIcon color="currentColor" size={14} /></span>
               <span className="detail-property-label">{text("截止日期", "Due date")}</span>
               <input
                 type="date"
@@ -1707,14 +1840,25 @@ export function TaskDetail({
                 }, "dueDate")}
               />
             </label>
-            <label className="detail-property-row">
-              <span className="detail-property-icon" aria-hidden="true"><LinearIcon name="recurrence" /></span>
+            <div className="detail-property-row">
               <span className="detail-property-label">{text("重复", "Recurrence")}</span>
-              <select
+              <TaskPropertyPicker
                 value={currentTask.recurrence?.unit ?? ""}
+                options={[
+                  { value: "", label: text("不重复", "Does not repeat"), icon: <RecurrenceIcon color="currentColor" size={14} /> },
+                  { value: "day", label: text("每天", "Daily"), icon: <RecurrenceIcon color="currentColor" size={14} /> },
+                  { value: "week", label: text("每周", "Weekly"), icon: <RecurrenceIcon color="currentColor" size={14} /> },
+                  { value: "month", label: text("每月", "Monthly"), icon: <RecurrenceIcon color="currentColor" size={14} /> },
+                  { value: "year", label: text("每年", "Yearly"), icon: <RecurrenceIcon color="currentColor" size={14} /> },
+                ]}
+                open={propertyMenu === "recurrence"}
                 disabled={savingProperty === "recurrence"}
-                onChange={(event) => {
-                  const unit = event.target.value as Recurrence["unit"] | "";
+                className="detail-property-picker"
+                triggerClassName="detail-property-trigger"
+                ariaLabel={text("重复", "Recurrence")}
+                onOpenChange={(open) => setPropertyMenu(open ? "recurrence" : null)}
+                onChange={(value) => {
+                  const unit = value as Recurrence["unit"] | "";
                   const changes: Partial<TaskDraft> = {
                     recurrence: unit ? { interval: 1, unit } : null,
                   };
@@ -1726,14 +1870,8 @@ export function TaskDetail({
                   }
                   void saveTask(changes, "recurrence");
                 }}
-              >
-                <option value="">{text("不重复", "Does not repeat")}</option>
-                <option value="day">{text("每天", "Daily")}</option>
-                <option value="week">{text("每周", "Weekly")}</option>
-                <option value="month">{text("每月", "Monthly")}</option>
-                <option value="year">{text("每年", "Yearly")}</option>
-              </select>
-            </label>
+              />
+            </div>
             <IssueRelationSidebar
               task={currentTask}
               tasks={tasks}

@@ -151,10 +151,6 @@ async function prepareMacNodeRuntime() {
     path.join(runtimes.get("arm64"), "LICENSE"),
     path.join(resourcesDirectory, "licenses", "Node-LICENSE"),
   );
-  await copyFile(
-    path.join(tauriRoot, "licenses", "Lobe-Icons-LICENSE.txt"),
-    path.join(resourcesDirectory, "licenses", "Lobe-Icons-LICENSE.txt"),
-  );
 }
 
 async function prepareWindowsNodeRuntime() {
@@ -182,10 +178,6 @@ async function prepareWindowsNodeRuntime() {
     path.join(runtime, "LICENSE"),
     path.join(resourcesDirectory, "licenses", "Node-LICENSE"),
   );
-  await copyFile(
-    path.join(tauriRoot, "licenses", "Lobe-Icons-LICENSE.txt"),
-    path.join(resourcesDirectory, "licenses", "Lobe-Icons-LICENSE.txt"),
-  );
 }
 
 async function copyApplicationResources() {
@@ -195,6 +187,11 @@ async function copyApplicationResources() {
   await Promise.all([
     cp(path.join(projectRoot, "server"), path.join(appResources, "server"), { recursive: true }),
     cp(path.join(projectRoot, "shared"), path.join(appResources, "shared"), { recursive: true }),
+    cp(
+      path.join(projectRoot, "node_modules", "smol-toml"),
+      path.join(appResources, "node_modules", "smol-toml"),
+      { recursive: true },
+    ),
     cp(path.join(projectRoot, "dist", "web"), path.join(appResources, "dist", "web"), {
       recursive: true,
     }),

@@ -8,21 +8,26 @@ import type {
   AiChatThreadSnapshot,
   Attachment,
   Comment,
-  CodingWorkflowSettings,
-  DevelopmentContext,
+  ComposerCandidatesQuery,
+  ComposerCandidatesResponse,
+  ComposerRebindRequest,
+  ComposerRebindResponse,
+  ComposerTurnInput,
+  CodexThreadBinding,
   DevelopmentScan,
   HostContext,
+  IssueRelationOrigin,
   IssueRelationType,
   JiraConnection,
   Project,
+  ProjectReadme,
+  ProjectReadmeAttachment,
   ProjectSummary,
   Task,
   TaskChangeActivity,
   TaskboardMetadata,
   TaskDraft,
   TaskStatus,
-  WorkflowCapabilities,
-  WorkflowWorkspaceRecord,
 } from "./types";
 
 const DEFAULT_USER_ACTOR: ActorIdentity = {
@@ -66,7 +71,6 @@ export class ApiError extends Error {
 }
 
 export function resolveTaskboardUrl(path: string): string {
-  if (typeof document === "undefined") return path;
   return new URL(path.replace(/^\//, ""), document.baseURI).href;
 }
 
@@ -89,9 +93,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       response = await fetch(resolveTaskboardUrl(path), { ...init, headers });
       break;
     } catch (error) {
-      if (error && typeof error === "object" && "name" in error && error.name === "AbortError") {
-        throw error;
-      }
+      if (error instanceof Error && error.name === "AbortError") throw error;
       if (readRequest && attempt < 2) {
         await new Promise((resolve) => setTimeout(resolve, 250 * (attempt + 1)));
         continue;
@@ -204,10 +206,33 @@ export async function getTaskboardRevision(
 export async function getHostRuntime(signal?: AbortSignal): Promise<HostContext | null> {
   const data = await request<{
     runtime: (Pick<HostContext, "threadId" | "threadRunning" | "threadTodoProgress"> & {
+      codexProjectId: string | null;
+      codexProjectKind: "local" | "remote" | null;
+      codexHostId: string | null;
+      workspacePath: string | null;
       updatedAt: number;
     }) | null;
   }>("/api/local/host-runtime", { signal });
-  return data.runtime;
+  if (!data.runtime) return null;
+  const { codexProjectId, codexProjectKind, codexHostId, workspacePath } = data.runtime;
+  return {
+    threadId: data.runtime.threadId,
+    threadRunning: data.runtime.threadRunning,
+    threadTodoProgress: data.runtime.threadTodoProgress,
+    ...(codexProjectId && codexProjectKind && codexHostId && workspacePath
+      ? {
+          projectId: codexProjectId,
+          workspacePath,
+          projects: [{
+            id: codexProjectId,
+            name: codexProjectId,
+            projectKind: codexProjectKind,
+            workspacePath,
+            hostId: codexHostId,
+          }],
+        }
+      : {}),
+  };
 }
 
 export async function getCodexThreadProgress(
@@ -228,12 +253,17 @@ export async function getCodexThreadProgress(
 
 export async function publishHostRuntime(context: HostContext): Promise<void> {
   if (!context.threadId || context.threadRunning === undefined) return;
+  const project = context.projects?.find((candidate) => candidate.id === context.projectId);
   await request("/api/local/host-runtime", {
     method: "PUT",
     body: JSON.stringify({
       threadId: context.threadId,
       threadRunning: context.threadRunning,
       threadTodoProgress: context.threadTodoProgress ?? null,
+      codexProjectId: project?.id ?? null,
+      codexProjectKind: project?.projectKind ?? null,
+      codexHostId: project?.hostId ?? null,
+      workspacePath: project?.workspacePath ?? null,
     }),
   });
 }
@@ -246,6 +276,29 @@ export async function getAiChatCatalog(
     `/api/local/ai/catalog?projectId=${encodeURIComponent(projectId)}`,
     { signal },
   );
+}
+
+export async function getAiChatComposerCandidates(
+  input: ComposerCandidatesQuery,
+  signal?: AbortSignal,
+): Promise<ComposerCandidatesResponse> {
+  const query = new URLSearchParams({
+    trigger: input.trigger,
+    query: input.query,
+  });
+  if (input.projectId) query.set("projectId", input.projectId);
+  if (input.threadId) query.set("threadId", input.threadId);
+  if (input.surface) query.set("surface", input.surface);
+  return request<ComposerCandidatesResponse>(`/api/local/ai/composer/candidates?${query}`, { signal });
+}
+
+export async function rebindAiChatComposerReferences(
+  input: ComposerRebindRequest,
+): Promise<ComposerRebindResponse> {
+  return request<ComposerRebindResponse>("/api/local/ai/composer/rebind", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
 }
 
 export async function listAiChatThreads(signal?: AbortSignal): Promise<AiChatThread[]> {
@@ -323,12 +376,34 @@ export async function startAiChatTurn(
   return data.run;
 }
 
+export async function startAiChatComposerTurn(
+  threadId: string,
+  input: ComposerTurnInput,
+): Promise<AiChatRun> {
+  const data = await request<{ run: AiChatRun }>(
+    `/api/local/ai/threads/${encodeURIComponent(threadId)}/turns`,
+    {
+      method: "POST",
+      body: JSON.stringify(input),
+    },
+  );
+  return data.run;
+}
+
 export async function interruptAiChatRun(runId: string): Promise<AiChatRun> {
   const data = await request<{ run: AiChatRun }>(
     `/api/local/ai/runs/${encodeURIComponent(runId)}/interrupt`,
     { method: "POST" },
   );
   return data.run;
+}
+
+export async function compactAiChatThread(threadId: string): Promise<AiChatThread> {
+  const data = await request<{ thread: AiChatThread }>(
+    `/api/local/ai/threads/${encodeURIComponent(threadId)}/compact`,
+    { method: "POST" },
+  );
+  return data.thread;
 }
 
 export function subscribeAiChatThread(
@@ -355,65 +430,49 @@ export async function listDeviceWorkspaces(signal?: AbortSignal): Promise<Record
   }
 }
 
-export async function listWorkflowCapabilities(
-  workspacePath?: string,
-  signal?: AbortSignal,
-): Promise<WorkflowCapabilities> {
-  const query = new URLSearchParams();
-  if (workspacePath) query.set("workspacePath", workspacePath);
-  const suffix = query.size > 0 ? `?${query}` : "";
-  return request<WorkflowCapabilities>(`/api/workflow-capabilities${suffix}`, { signal });
-}
-
-export async function getWorkflowWorkspace<T>(
+export async function getProjectReadme(
   projectId: string,
   signal?: AbortSignal,
-): Promise<WorkflowWorkspaceRecord<T>> {
-  const data = await request<{ workflow: WorkflowWorkspaceRecord<T> }>(
-    `/api/projects/${encodeURIComponent(projectId)}/workflow-workspace`,
+): Promise<ProjectReadme> {
+  const data = await request<{ readme: ProjectReadme }>(
+    `/api/projects/${encodeURIComponent(projectId)}/readme`,
     { signal },
   );
-  return data.workflow;
+  return data.readme;
 }
 
-export async function saveWorkflowWorkspace<T>(
+export async function saveProjectReadme(
   projectId: string,
-  workspace: T,
-  version: number,
-): Promise<WorkflowWorkspaceRecord<T>> {
-  const data = await request<{ workflow: WorkflowWorkspaceRecord<T> }>(
-    `/api/projects/${encodeURIComponent(projectId)}/workflow-workspace`,
+  content: string,
+  version?: number,
+): Promise<ProjectReadme> {
+  const data = await request<{ readme: ProjectReadme }>(
+    `/api/projects/${encodeURIComponent(projectId)}/readme`,
     {
       method: "PUT",
-      body: JSON.stringify({ version, workspace }),
+      body: JSON.stringify({ content, ...(version !== undefined ? { version } : {}) }),
     },
   );
-  return data.workflow;
+  return data.readme;
 }
 
-export async function getCodingWorkflowSettings(
+export async function uploadProjectReadmeAttachment(
   projectId: string,
-  signal?: AbortSignal,
-): Promise<CodingWorkflowSettings> {
-  const data = await request<{ settings: CodingWorkflowSettings }>(
-    `/api/local/coding/projects/${encodeURIComponent(projectId)}/settings`,
-    { signal },
-  );
-  return data.settings;
-}
-
-export async function saveCodingWorkflowSettings(
-  settings: CodingWorkflowSettings,
-  changes: Pick<CodingWorkflowSettings, "defaultWorkflowId" | "config">,
-): Promise<CodingWorkflowSettings> {
-  const data = await request<{ settings: CodingWorkflowSettings }>(
-    `/api/local/coding/projects/${encodeURIComponent(settings.projectId)}/settings`,
+  file: File,
+): Promise<ProjectReadmeAttachment> {
+  const data = await request<{ attachment: ProjectReadmeAttachment }>(
+    `/api/projects/${encodeURIComponent(projectId)}/readme/attachments`,
     {
-      method: "PUT",
-      body: JSON.stringify({ version: settings.version, ...changes }),
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Taskboard-Filename": encodeURIComponent(file.name),
+        "X-Taskboard-Attachment-Kind": "inline",
+      },
+      body: file,
     },
   );
-  return data.settings;
+  return data.attachment;
 }
 
 export async function createProject(input: {
@@ -475,20 +534,29 @@ export async function listDevelopmentContexts(
 }
 
 async function listTasksByArchive(
-  projectId: string,
+  projectId: string | undefined,
   archived: "true" | "false",
   signal?: AbortSignal,
 ): Promise<Task[]> {
-  const params = new URLSearchParams({ projectId, archived });
+  const params = new URLSearchParams({ archived });
+  if (projectId) params.set("projectId", projectId);
   const data = await request<{ tasks: Task[] }>(`/api/tasks?${params}`, { signal });
   return data.tasks;
 }
 
-export function listTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
+export function listTasks(projectId?: string, signal?: AbortSignal): Promise<Task[]> {
   return listTasksByArchive(projectId, "false", signal);
 }
 
-export function listArchivedTasks(projectId: string, signal?: AbortSignal): Promise<Task[]> {
+export async function getTask(taskId: string, signal?: AbortSignal): Promise<Task> {
+  const data = await request<{ task: Task }>(
+    `/api/tasks/${encodeURIComponent(taskId)}`,
+    { signal },
+  );
+  return data.task;
+}
+
+export function listArchivedTasks(projectId?: string, signal?: AbortSignal): Promise<Task[]> {
   return listTasksByArchive(projectId, "true", signal);
 }
 
@@ -511,14 +579,21 @@ export async function updateTask(task: Task, draft: TaskDraft, threadId?: string
 export async function moveTask(
   task: Task,
   status: TaskStatus,
-  sortOrder: number,
+  sortOrder?: number,
+  threadBinding?: CodexThreadBinding | null,
   threadId?: string,
 ): Promise<Task> {
   const data = await request<{ task: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/move`,
     {
       method: "POST",
-      body: JSON.stringify({ version: task.version, status, sortOrder, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        version: task.version,
+        status,
+        ...(sortOrder === undefined ? {} : { sortOrder }),
+        ...(threadBinding === undefined ? {} : { threadBinding }),
+        ...(threadId ? { threadId } : {}),
+      }),
     },
   );
   return data.task;
@@ -558,12 +633,17 @@ export async function addTaskRelation(
   type: IssueRelationType,
   relatedTaskId: string,
   threadId?: string,
+  origin?: IssueRelationOrigin,
 ): Promise<{ task: Task; relatedTask: Task }> {
   return request<{ task: Task; relatedTask: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/relations/${type}/${encodeURIComponent(relatedTaskId)}`,
     {
       method: "POST",
-      body: JSON.stringify({ version: task.version, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        version: task.version,
+        ...(origin ? { origin } : {}),
+        ...(threadId ? { threadId } : {}),
+      }),
     },
   );
 }
@@ -573,12 +653,17 @@ export async function removeTaskRelation(
   type: IssueRelationType,
   relatedTaskId: string,
   threadId?: string,
+  origin?: IssueRelationOrigin,
 ): Promise<{ task: Task; relatedTask: Task }> {
   return request<{ task: Task; relatedTask: Task }>(
     `/api/tasks/${encodeURIComponent(task.id)}/relations/${type}/${encodeURIComponent(relatedTaskId)}`,
     {
       method: "DELETE",
-      body: JSON.stringify({ version: task.version, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        version: task.version,
+        ...(origin ? { origin } : {}),
+        ...(threadId ? { threadId } : {}),
+      }),
     },
   );
 }
@@ -602,12 +687,21 @@ export async function listTaskActivities(
   return data.activities;
 }
 
-export async function createComment(taskId: string, body: string, threadId?: string): Promise<Comment> {
+export async function createComment(
+  taskId: string,
+  body: string,
+  threadId?: string,
+  threadBinding?: CodexThreadBinding | null,
+): Promise<Comment> {
   const data = await request<{ comment: Comment }>(
     `/api/tasks/${encodeURIComponent(taskId)}/comments`,
     {
       method: "POST",
-      body: JSON.stringify({ body, ...(threadId ? { threadId } : {}) }),
+      body: JSON.stringify({
+        body,
+        ...(threadId ? { threadId } : {}),
+        ...(threadBinding === undefined ? {} : { threadBinding }),
+      }),
     },
   );
   return data.comment;
@@ -639,7 +733,11 @@ export async function listAttachments(taskId: string, signal?: AbortSignal): Pro
   return data.attachments;
 }
 
-export async function uploadAttachment(taskId: string, file: File): Promise<Attachment> {
+export async function uploadAttachment(
+  taskId: string,
+  file: File,
+  kind: Attachment["kind"],
+): Promise<Attachment> {
   const data = await request<{ attachment: Attachment }>(
     `/api/tasks/${encodeURIComponent(taskId)}/attachments`,
     {
@@ -647,6 +745,7 @@ export async function uploadAttachment(taskId: string, file: File): Promise<Atta
       headers: {
         "Content-Type": file.type || "application/octet-stream",
         "X-Taskboard-Filename": encodeURIComponent(file.name),
+        "X-Taskboard-Attachment-Kind": kind,
       },
       body: file,
     },
@@ -654,7 +753,11 @@ export async function uploadAttachment(taskId: string, file: File): Promise<Atta
   return data.attachment;
 }
 
-export async function uploadCommentAttachment(commentId: string, file: File): Promise<Attachment> {
+export async function uploadCommentAttachment(
+  commentId: string,
+  file: File,
+  kind: Attachment["kind"],
+): Promise<Attachment> {
   const data = await request<{ attachment: Attachment }>(
     `/api/comments/${encodeURIComponent(commentId)}/attachments`,
     {
@@ -662,6 +765,7 @@ export async function uploadCommentAttachment(commentId: string, file: File): Pr
       headers: {
         "Content-Type": file.type || "application/octet-stream",
         "X-Taskboard-Filename": encodeURIComponent(file.name),
+        "X-Taskboard-Attachment-Kind": kind,
       },
       body: file,
     },
@@ -675,7 +779,7 @@ export async function deleteAttachment(attachment: Attachment): Promise<void> {
   });
 }
 
-export function attachmentContentUrl(attachment: Attachment): string {
+export function attachmentContentUrl(attachment: { id: string }): string {
   return `api/attachments/${encodeURIComponent(attachment.id)}/content`;
 }
 
@@ -697,8 +801,4 @@ export function resolvePersistedAttachmentUrl(value: string): string {
     return value;
   }
   return value;
-}
-
-export function markdownIncludesAttachment(markdown: string, attachment: Attachment): boolean {
-  return markdown.includes(`api/attachments/${encodeURIComponent(attachment.id)}/content`);
 }

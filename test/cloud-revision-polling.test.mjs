@@ -235,5 +235,5 @@ test("the app connects the selected realtime transport without reloading the pag
     appSource.indexOf("function pushUndo"),
   );
   assert.doesNotMatch(pollingEffect, /\bdetailTaskId\b|\btaskboardMetadata\b|\bselectedProjectId\b/);
-  assert.match(pollingEffect, /selectedProjectIdRef\.current/);
+  assert.match(pollingEffect, /taskScopeProjectIdRef\.current/);
 });

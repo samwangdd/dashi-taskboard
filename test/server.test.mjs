@@ -1,18 +1,15 @@
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
 import { createHmac } from "node:crypto";
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
-import { promisify } from "node:util";
 
 import { createTaskboardServer } from "../server/index.mjs";
 
 const runningApps = [];
-const run = promisify(execFile);
 
 afterEach(async () => {
   while (runningApps.length > 0) {
@@ -124,702 +121,6 @@ test("launcher mode proves service identity and hides every route behind its ins
   assert.equal(launcherApi.response.headers.get("access-control-allow-origin"), "null");
 });
 
-test("workflow workspaces persist centrally with optimistic concurrency", async () => {
-  const baseUrl = await startServer();
-  const initial = await request(baseUrl, "/api/projects/local/workflow-workspace");
-  assert.deepEqual(initial.body.workflow, {
-    projectId: "local",
-    workspace: null,
-    version: 0,
-    updatedAt: null,
-  });
-
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "issue-delivery", name: "议题处理与交付" }],
-    activeWorkflowId: "issue-delivery",
-    snapshots: {
-      "issue-delivery": {
-        nodes: [{ id: "issue-trigger", position: { x: 100, y: 80 }, data: { kind: "issue-trigger" } }],
-        flow: {
-          version: 2,
-          root: { items: [{ type: "step", nodeId: "issue-trigger" }] },
-        },
-        selectedNodeId: "issue-trigger",
-      },
-    },
-  };
-  const created = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 0, workspace },
-  });
-  assert.equal(created.response.status, 200);
-  assert.equal(created.body.workflow.version, 1);
-  assert.deepEqual(created.body.workflow.workspace, workspace);
-
-  const fromAnotherClient = await request(baseUrl, "/api/projects/local/workflow-workspace");
-  assert.equal(fromAnotherClient.body.workflow.version, 1);
-  assert.deepEqual(fromAnotherClient.body.workflow.workspace, workspace);
-
-  const renamedWorkspace = {
-    ...workspace,
-    tabs: [{ id: "issue-delivery", name: "统一交付流程" }],
-  };
-  const updated = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 1, workspace: renamedWorkspace },
-  });
-  assert.equal(updated.response.status, 200);
-  assert.equal(updated.body.workflow.version, 2);
-
-  const stale = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 1, workspace },
-  });
-  assert.equal(stale.response.status, 409);
-  assert.equal(stale.body.error.code, "VERSION_CONFLICT");
-  assert.deepEqual(stale.body.error.details, {
-    expectedVersion: 1,
-    actualVersion: 2,
-  });
-});
-
-test("Twitter post content survives the shared workflow workspace round trip", async () => {
-  const baseUrl = await startServer();
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "twitter-publishing", name: "Twitter 发布" }],
-    activeWorkflowId: "twitter-publishing",
-    snapshots: {
-      "twitter-publishing": {
-        nodes: [
-          {
-            id: "issue-trigger",
-            position: { x: 0, y: 0 },
-            data: { kind: "issue-trigger" },
-          },
-          {
-            id: "twitter-post",
-            position: { x: 0, y: 220 },
-            data: {
-              kind: "twitter-post",
-              twitterPostContent: "发布产品更新",
-            },
-          },
-        ],
-        flow: {
-          version: 2,
-          root: {
-            items: [
-              { type: "step", nodeId: "issue-trigger" },
-              { type: "step", nodeId: "twitter-post" },
-            ],
-          },
-        },
-        selectedNodeId: "twitter-post",
-      },
-    },
-  };
-
-  const saved = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 0, workspace },
-  });
-  assert.equal(saved.response.status, 200);
-  assert.equal(
-    saved.body.workflow.workspace.snapshots["twitter-publishing"].nodes[1].data.twitterPostContent,
-    "发布产品更新",
-  );
-
-  const restored = await request(baseUrl, "/api/projects/local/workflow-workspace");
-  assert.equal(restored.response.status, 200);
-  assert.equal(
-    restored.body.workflow.workspace.snapshots["twitter-publishing"].nodes[1].data.twitterPostContent,
-    "发布产品更新",
-  );
-});
-
-test("workflow service accepts legacy edge snapshots and persists them as V2 control flow", async () => {
-  const baseUrl = await startServer();
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "legacy", name: "Legacy" }],
-    activeWorkflowId: "legacy",
-    snapshots: {
-      legacy: {
-        nodes: [
-          { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-          { id: "condition", position: { x: 0, y: 100 }, data: { kind: "condition" } },
-          { id: "yes", position: { x: -180, y: 280 }, data: { kind: "skill" } },
-          { id: "no", position: { x: 180, y: 280 }, data: { kind: "mcp" } },
-        ],
-        edges: [
-          { id: "root", source: "trigger", target: "condition" },
-          {
-            id: "yes-edge",
-            source: "condition",
-            target: "yes",
-            data: { conditionId: "condition", conditionOutcome: "true" },
-          },
-          {
-            id: "no-edge",
-            source: "condition",
-            target: "no",
-            data: { conditionId: "condition", conditionOutcome: "false" },
-          },
-        ],
-        selectedNodeId: null,
-      },
-    },
-  };
-
-  const saved = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 0, workspace },
-  });
-
-  assert.equal(saved.response.status, 200);
-  const snapshot = saved.body.workflow.workspace.snapshots.legacy;
-  assert.equal("edges" in snapshot, false);
-  assert.deepEqual(snapshot.flow, {
-    version: 2,
-    root: {
-      items: [
-        { type: "step", nodeId: "trigger" },
-        {
-          type: "condition",
-          nodeId: "condition",
-          branches: {
-            true: { items: [{ type: "step", nodeId: "yes" }] },
-            false: { items: [{ type: "step", nodeId: "no" }] },
-          },
-        },
-      ],
-    },
-  });
-});
-
-test("workflow service recursively migrates V1 linear conditions and persists V2 control flow", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "legacy", name: "Legacy" }],
-        activeWorkflowId: "legacy",
-        snapshots: {
-          legacy: {
-            nodes: [
-              { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-              { id: "first", position: { x: 0, y: 100 }, data: { kind: "condition" } },
-              { id: "action", position: { x: 0, y: 200 }, data: { kind: "skill" } },
-              { id: "second", position: { x: 0, y: 300 }, data: { kind: "condition" } },
-              { id: "tail", position: { x: 0, y: 400 }, data: { kind: "mcp" } },
-            ],
-            edges: [
-              { id: "a", source: "trigger", target: "first" },
-              { id: "b", source: "first", target: "action" },
-              { id: "c", source: "action", target: "second" },
-              { id: "d", source: "second", target: "tail" },
-            ],
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 200);
-  const snapshot = result.body.workflow.workspace.snapshots.legacy;
-  assert.equal("edges" in snapshot, false);
-  assert.deepEqual(snapshot.flow.root.items, [
-    { type: "step", nodeId: "trigger" },
-    {
-      type: "condition",
-      nodeId: "first",
-      branches: {
-        true: {
-          items: [
-            { type: "step", nodeId: "action" },
-            {
-              type: "condition",
-              nodeId: "second",
-              branches: {
-                true: { items: [{ type: "step", nodeId: "tail" }] },
-                false: { items: [] },
-              },
-            },
-          ],
-        },
-        false: { items: [] },
-      },
-    },
-  ]);
-});
-
-test("workflow service rejects snapshots with unknown flow versions", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-            ],
-            flow: {
-              version: 3,
-              root: { items: [{ type: "step", nodeId: "trigger" }] },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /version 2/i);
-});
-
-test("workflow service rejects malformed V2 snapshots with repeated triggers", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "first", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-              { id: "second", position: { x: 0, y: 100 }, data: { kind: "git-trigger" } },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [
-                  { type: "step", nodeId: "first" },
-                  { type: "step", nodeId: "second" },
-                ],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /trigger/i);
-});
-
-test("workflow service rejects V2 item types that do not match node kinds", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-              { id: "condition", position: { x: 0, y: 100 }, data: { kind: "condition" } },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [
-                  { type: "step", nodeId: "trigger" },
-                  { type: "step", nodeId: "condition" },
-                ],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /condition/i);
-});
-
-test("workflow service rejects V2 snapshots with duplicate node records", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-              { id: "trigger", position: { x: 0, y: 100 }, data: { kind: "issue-trigger" } },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [{ type: "step", nodeId: "trigger" }],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /node ids must be unique/i);
-});
-
-test("workflow service rejects V2 flow items that reference parented plan children", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-              { id: "plan", position: { x: 0, y: 100 }, data: { kind: "planning" } },
-              {
-                id: "plan-child",
-                parentId: "plan",
-                position: { x: 0, y: 0 },
-                data: { kind: "skill" },
-              },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [
-                  { type: "step", nodeId: "trigger" },
-                  { type: "step", nodeId: "plan" },
-                  { type: "step", nodeId: "plan-child" },
-                ],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /root node/i);
-});
-
-test("workflow service rejects malformed parented workflow nodes", async () => {
-  const cases = [
-    {
-      name: "missing parent",
-      nodes: [
-        { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-        {
-          id: "orphan",
-          parentId: "missing-plan",
-          position: { x: 0, y: 0 },
-          data: { kind: "skill" },
-        },
-      ],
-      items: [{ type: "step", nodeId: "trigger" }],
-      message: /missing parent/i,
-    },
-    {
-      name: "nested parent",
-      nodes: [
-        { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-        {
-          id: "root-plan",
-          position: { x: 0, y: 100 },
-          data: { kind: "basic-planning", acceptsChildren: true },
-        },
-        {
-          id: "nested-plan",
-          parentId: "root-plan",
-          position: { x: 0, y: 0 },
-          data: { kind: "basic-planning", acceptsChildren: true },
-        },
-        {
-          id: "nested-child",
-          parentId: "nested-plan",
-          position: { x: 0, y: 0 },
-          data: { kind: "skill" },
-        },
-      ],
-      items: [
-        { type: "step", nodeId: "trigger" },
-        { type: "step", nodeId: "root-plan" },
-      ],
-      message: /root parent/i,
-    },
-    {
-      name: "parent cannot accept children",
-      nodes: [
-        { id: "trigger", position: { x: 0, y: 0 }, data: { kind: "issue-trigger" } },
-        { id: "plain-step", position: { x: 0, y: 100 }, data: { kind: "skill" } },
-        {
-          id: "invalid-child",
-          parentId: "plain-step",
-          position: { x: 0, y: 0 },
-          data: { kind: "mcp" },
-        },
-      ],
-      items: [
-        { type: "step", nodeId: "trigger" },
-        { type: "step", nodeId: "plain-step" },
-      ],
-      message: /acceptsChildren/i,
-    },
-  ];
-
-  for (const invalidCase of cases) {
-    const baseUrl = await startServer();
-    const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-      method: "PUT",
-      body: {
-        version: 0,
-        workspace: {
-          version: 1,
-          tabs: [{ id: "invalid", name: "Invalid" }],
-          activeWorkflowId: "invalid",
-          snapshots: {
-            invalid: {
-              nodes: invalidCase.nodes,
-              flow: {
-                version: 2,
-                root: { items: invalidCase.items },
-              },
-              selectedNodeId: null,
-            },
-          },
-        },
-      },
-    });
-
-    assert.equal(result.response.status, 400, invalidCase.name);
-    assert.equal(result.body.error.code, "INVALID_FIELD", invalidCase.name);
-    assert.match(result.body.error.message, invalidCase.message, invalidCase.name);
-  }
-});
-
-test("workflow service rejects non-empty V2 snapshots without a trigger", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              { id: "step", position: { x: 0, y: 0 }, data: { kind: "skill" } },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [{ type: "step", nodeId: "step" }],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /trigger/i);
-});
-
-test("workflow service rejects unknown node kinds that only look like triggers", async () => {
-  const baseUrl = await startServer();
-  const result = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: {
-      version: 0,
-      workspace: {
-        version: 1,
-        tabs: [{ id: "invalid", name: "Invalid" }],
-        activeWorkflowId: "invalid",
-        snapshots: {
-          invalid: {
-            nodes: [
-              {
-                id: "unknown-trigger",
-                position: { x: 0, y: 0 },
-                data: { kind: "made-up-trigger" },
-              },
-            ],
-            flow: {
-              version: 2,
-              root: {
-                items: [{ type: "step", nodeId: "unknown-trigger" }],
-              },
-            },
-            selectedNodeId: null,
-          },
-        },
-      },
-    },
-  });
-
-  assert.equal(result.response.status, 400);
-  assert.equal(result.body.error.code, "INVALID_FIELD");
-  assert.match(result.body.error.message, /trigger kind/i);
-});
-
-test("workflow workspace changes are broadcast to other open clients", async () => {
-  const baseUrl = await startServer();
-  const eventResponse = await fetch(`${baseUrl}/api/events`);
-  const reader = eventResponse.body.getReader();
-  const decoder = new TextDecoder();
-  await reader.read();
-
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "issue-delivery", name: "议题处理与交付" }],
-    activeWorkflowId: "issue-delivery",
-    snapshots: {
-      "issue-delivery": { nodes: [], edges: [], selectedNodeId: null },
-    },
-  };
-  const saved = await request(baseUrl, "/api/projects/local/workflow-workspace", {
-    method: "PUT",
-    body: { version: 0, workspace },
-  });
-  assert.equal(saved.response.status, 200);
-
-  let message = "";
-  while (!message.includes("\n\n")) {
-    const chunk = await reader.read();
-    assert.equal(chunk.done, false);
-    message += decoder.decode(chunk.value, { stream: true });
-  }
-  assert.match(message, /event: workflow\.updated/);
-  const dataLine = message.split("\n").find((line) => line.startsWith("data: "));
-  const event = JSON.parse(dataLine.slice(6));
-  assert.equal(event.type, "workflow.updated");
-  assert.equal(event.projectId, "local");
-  assert.equal(event.workflowVersion, 1);
-  await reader.cancel();
-});
-
-test("workflow capabilities come from the live Codex skill and MCP catalogs", async () => {
-  let workspacePath;
-  const baseUrl = await startServer(async (directory) => {
-    workspacePath = directory;
-    const codexExecutable = path.join(directory, "fake-codex.mjs");
-    await writeFile(codexExecutable, `#!/usr/bin/env node
-const args = process.argv.slice(2);
-if (args[0] === "mcp") {
-  process.stdout.write('[{"name":"context7","enabled":true,"transport":{"type":"streamable_http"}},{"name":"disabled-server","enabled":false,"transport":{"type":"stdio"}}]\\n');
-  process.exit(0);
-}
-process.stdin.setEncoding("utf8");
-let buffer = "";
-process.stdin.on("data", (chunk) => {
-  buffer += chunk;
-  let newlineIndex = buffer.indexOf("\\n");
-  while (newlineIndex >= 0) {
-    const line = buffer.slice(0, newlineIndex);
-    buffer = buffer.slice(newlineIndex + 1);
-    const message = JSON.parse(line);
-    if (message.id === 1) process.stdout.write('{"id":1,"result":{"platformFamily":"unix"}}\\n');
-    if (message.id === 2) process.stdout.write('{"id":2,"result":{"data":[{"cwd":"workspace","skills":[{"name":"user-skill","description":"User skill","path":"/user/skills/user-skill/SKILL.md","enabled":true,"scope":"user","interface":null},{"name":"repo-skill","description":"Repository skill","path":"/workspace/.agents/skills/repo-skill/SKILL.md","enabled":true,"scope":"repo","interface":{"displayName":"Repository Skill"}},{"name":"user-skill","enabled":true,"scope":"system","interface":{"displayName":"Duplicate"}},{"name":"disabled-skill","enabled":false,"scope":"user","interface":null}],"errors":[]}]}}\\n');
-    newlineIndex = buffer.indexOf("\\n");
-  }
-});
-`);
-    await chmod(codexExecutable, 0o755);
-    return { codexExecutable };
-  });
-
-  const result = await request(
-    baseUrl,
-    `/api/workflow-capabilities?workspacePath=${encodeURIComponent(workspacePath)}`,
-  );
-  assert.equal(result.response.status, 200);
-  assert.deepEqual(result.body, {
-    skills: [
-      {
-        id: "repo-skill",
-        label: "Repository Skill",
-        description: "Repository skill",
-        path: "/workspace/.agents/skills/repo-skill/SKILL.md",
-        scope: "repo",
-      },
-      {
-        id: "user-skill",
-        label: "user-skill",
-        description: "User skill",
-        path: "/user/skills/user-skill/SKILL.md",
-        scope: "user",
-      },
-    ],
-    mcpServers: [
-      { id: "context7", label: "context7", transport: "streamable_http" },
-    ],
-  });
-
-  const invalidPath = await request(baseUrl, "/api/workflow-capabilities?workspacePath=relative");
-  assert.equal(invalidPath.response.status, 400);
-  assert.equal(invalidPath.body.error.code, "INVALID_FIELD");
-
-  const unknownQuery = await request(baseUrl, "/api/workflow-capabilities?extra=true");
-  assert.equal(unknownQuery.response.status, 400);
-  assert.equal(unknownQuery.body.error.code, "UNKNOWN_QUERY_PARAMETER");
-
-  const wrongMethod = await request(baseUrl, "/api/workflow-capabilities", { method: "POST" });
-  assert.equal(wrongMethod.response.status, 405);
-});
-
-test("workflow capability discovery fails instead of inventing fallback options", async () => {
-  const baseUrl = await startServer(async (directory) => ({
-    codexExecutable: path.join(directory, "missing-codex"),
-  }));
-  const result = await request(baseUrl, "/api/workflow-capabilities");
-  assert.equal(result.response.status, 500);
-  assert.equal(result.body.error.code, "INTERNAL_ERROR");
-});
-
 test("existing task and comment thread attribution remains content-specific", async () => {
   const baseUrl = await startServer(async (directory) => {
     const databasePath = path.join(directory, "taskboard.sqlite");
@@ -896,34 +197,43 @@ test("existing task and comment thread attribution remains content-specific", as
   const result = await request(baseUrl, "/api/tasks/legacy-task");
   assert.equal(result.response.status, 200);
   assert.equal(result.body.task.threadId, "legacy-thread");
+  assert.equal(result.body.task.threadBinding, null);
+  assert.equal(result.body.task.legacyLocalThreadId, "legacy-thread");
+  assert.deepEqual(result.body.task.conversationRefs.map((ref) => ({
+    threadId: ref.threadId,
+    legacyLocal: ref.legacyLocal,
+  })), [
+    { threadId: "legacy-thread", legacyLocal: true },
+    { threadId: "legacy-comment-thread", legacyLocal: true },
+  ]);
   assert.equal(result.body.task.creatorType, "agent");
   assert.equal(result.body.task.creatorId, "codex-agent");
-  assert.equal(result.body.task.creatorName, "Claude Agent");
+  assert.equal(result.body.task.creatorName, "Codex Agent");
   assert.deepEqual(result.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Claude Agent",
+    name: "Codex Agent",
     avatarUrl: null,
   });
   assert.equal(Object.hasOwn(result.body.task, "linkedThreadId"), false);
   const columns = runningApps.at(-1).app.database.database.prepare("PRAGMA table_info(tasks)").all();
   assert.equal(columns.some((column) => column.name === "thread_id"), true);
-  assert.equal(columns.some((column) => column.name === "workflow_id"), true);
   assert.equal(columns.some((column) => column.name === "assignee_type"), true);
   assert.equal(columns.some((column) => column.name === "assignee_id"), true);
   assert.equal(columns.some((column) => column.name === "assignee_name"), true);
   assert.equal(columns.some((column) => column.name === "assignee_avatar_url"), true);
   assert.equal(columns.some((column) => column.name === "linked_thread_id"), false);
-  assert.equal(result.body.task.workflowId, null);
   const taskThreads = runningApps.at(-1).app.database.database.prepare(`
     SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'task_threads'
   `).get();
   assert.equal(taskThreads, undefined);
   const comments = await request(baseUrl, "/api/tasks/legacy-task/comments");
   assert.equal(comments.body.comments[0].threadId, "legacy-comment-thread");
+  assert.equal(comments.body.comments[0].threadBinding, null);
+  assert.equal(comments.body.comments[0].legacyLocalThreadId, "legacy-comment-thread");
   assert.equal(comments.body.comments[0].authorType, "agent");
   assert.equal(comments.body.comments[0].authorId, "codex-agent");
-  assert.equal(comments.body.comments[0].authorName, "Claude Agent");
+  assert.equal(comments.body.comments[0].authorName, "Codex Agent");
   assert.deepEqual(comments.body.comments[0].attachments, []);
   const attachments = await request(baseUrl, "/api/tasks/legacy-task/attachments");
   assert.equal(attachments.body.attachments[0].commentId, null);
@@ -1143,7 +453,7 @@ test("project and task CRUD flow", async () => {
   });
   assert.equal(createResult.response.status, 201);
   const created = createResult.body.task;
-  assert.equal(created.identifier, "WEBSITE-1");
+  assert.equal(created.identifier, "WEB-1");
   assert.equal(created.version, 1);
   assert.equal(created.sortOrder, 1000);
   assert.equal(created.archivedAt, null);
@@ -1247,377 +557,99 @@ test("moving a task updates its status and sort order", async () => {
   assert.equal(moveResult.body.task.version, 2);
 });
 
-test("tasks can bind, change, and unbind one project workflow", async () => {
+test("remote task bindings keep their own identity and can be cleared independently", async () => {
   const baseUrl = await startServer();
-  const createResult = await request(baseUrl, "/api/tasks", {
+  const legacy = (await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Legacy binding", threadId: "legacy-thread" },
+  })).body.task;
+  assert.equal(legacy.threadId, "legacy-thread");
+  assert.equal(legacy.threadBinding, null);
+  assert.equal(legacy.legacyLocalThreadId, "legacy-thread");
+  assert.deepEqual(legacy.conversationRefs.map((ref) => ({
+    threadId: ref.threadId,
+    legacyLocal: ref.legacyLocal,
+  })), [{ threadId: "legacy-thread", legacyLocal: true }]);
+  const binding = {
+    threadId: "remote-thread-a",
+    codexProjectId: "remote-project-a",
+    codexProjectKind: "remote",
+    codexHostId: "ssh-a",
+    workspacePath: "/same/remote/path",
+  };
+  const created = (await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Remote binding", threadId: binding.threadId, threadBinding: binding },
+  })).body.task;
+  assert.deepEqual(created.threadBinding, binding);
+  assert.deepEqual(created.conversationRefs.map((ref) => ref.codexHostId), ["ssh-a"]);
+
+  const controllerComment = (await request(baseUrl, `/api/tasks/${created.id}/comments`, {
+    method: "POST",
+    body: { body: "Controller note", threadId: "controller-thread" },
+  })).body.comment;
+  assert.equal(controllerComment.threadBinding, null);
+  assert.equal(controllerComment.legacyLocalThreadId, "controller-thread");
+
+  const blocked = (await request(baseUrl, `/api/tasks/${created.id}/move`, {
     method: "POST",
     body: {
-      title: "Bind workflow",
-      workflowId: "issue-delivery",
+      version: created.version,
+      status: "blocked",
+      threadId: "controller-thread",
+      threadBinding: binding,
     },
-  });
-  assert.equal(createResult.response.status, 201);
-  assert.equal(createResult.body.task.workflowId, "issue-delivery");
+  })).body.task;
+  assert.equal(blocked.threadId, binding.threadId);
+  assert.deepEqual(blocked.threadBinding, binding);
+  assert.deepEqual(blocked.conversationRefs.map((ref) => ({
+    threadId: ref.threadId,
+    legacyLocal: ref.legacyLocal ?? false,
+  })), [
+    { threadId: binding.threadId, legacyLocal: false },
+    { threadId: "controller-thread", legacyLocal: true },
+  ]);
 
-  const changedResult = await request(baseUrl, `/api/tasks/${createResult.body.task.id}`, {
-    method: "PATCH",
+  const restored = (await request(baseUrl, `/api/tasks/${created.id}/move`, {
+    method: "POST",
     body: {
-      version: createResult.body.task.version,
-      workflowId: "workflow-123",
+      version: blocked.version,
+      status: "todo",
+      threadId: "controller-thread",
+      threadBinding: null,
     },
-  });
-  assert.equal(changedResult.response.status, 200);
-  assert.equal(changedResult.body.task.workflowId, "workflow-123");
-
-  const unboundResult = await request(baseUrl, `/api/tasks/${createResult.body.task.id}`, {
-    method: "PATCH",
-    body: {
-      version: changedResult.body.task.version,
-      workflowId: null,
-    },
-  });
-  assert.equal(unboundResult.response.status, 200);
-  assert.equal(unboundResult.body.task.workflowId, null);
-
-  const invalidResult = await request(baseUrl, `/api/tasks/${createResult.body.task.id}`, {
-    method: "PATCH",
-    body: {
-      version: unboundResult.body.task.version,
-      workflowId: " ",
-    },
-  });
-  assert.equal(invalidResult.response.status, 400);
-  assert.equal(invalidResult.body.error.code, "INVALID_FIELD");
+  })).body.task;
+  assert.equal(restored.threadId, null);
+  assert.equal(restored.threadBinding, null);
+  assert.deepEqual(restored.conversationRefs.map((ref) => ref.threadId), ["controller-thread"]);
 });
 
-test("task creation inherits the project workflow only when workflowId is omitted", async () => {
+test("the active local Codex conversation supplies its exact task binding identity", async () => {
   const baseUrl = await startServer();
-  const currentSettings = await request(baseUrl, "/api/local/coding/projects/local/settings");
-  const savedSettings = await request(baseUrl, "/api/local/coding/projects/local/settings", {
+  const runtime = await request(baseUrl, "/api/local/host-runtime", {
     method: "PUT",
     body: {
-      version: currentSettings.body.settings.version,
-      defaultWorkflowId: "coding",
-      config: currentSettings.body.settings.config,
+      threadId: "local-thread",
+      threadRunning: true,
+      threadTodoProgress: null,
+      codexProjectId: "local-project",
+      codexProjectKind: "local",
+      codexHostId: "local",
+      workspacePath: "/work/local-project",
     },
   });
-  assert.equal(savedSettings.response.status, 200);
-
-  const inherited = await request(baseUrl, "/api/tasks", {
+  assert.equal(runtime.response.status, 200);
+  const task = (await request(baseUrl, "/api/tasks", {
     method: "POST",
-    body: { title: "Inherit project workflow" },
+    body: { title: "Local binding", threadId: "local-thread" },
+  })).body.task;
+  assert.deepEqual(task.threadBinding, {
+    threadId: "local-thread",
+    codexProjectId: "local-project",
+    codexProjectKind: "local",
+    codexHostId: "local",
+    workspacePath: "/work/local-project",
   });
-  assert.equal(inherited.response.status, 201);
-  assert.equal(inherited.body.task.workflowId, "coding");
-
-  const unbound = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: { title: "Explicitly use no workflow", workflowId: null },
-  });
-  assert.equal(unbound.response.status, 201);
-  assert.equal(unbound.body.task.workflowId, null);
-});
-
-test("a branch development context seeds a stable target branch", async () => {
-  const baseUrl = await startServer();
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      title: "Keep the delivery target stable",
-      developmentContext: {
-        type: "branch",
-        branch: "release/next",
-      },
-    },
-  });
-
-  assert.equal(created.response.status, 201);
-  assert.equal(created.body.task.targetBranch, "release/next");
-
-  const moved = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
-    method: "PATCH",
-    body: {
-      version: created.body.task.version,
-      developmentContext: {
-        type: "worktree",
-        path: "/tmp/C03E81167BD2-12",
-        branch: "codex/C03E81167BD2-12",
-      },
-    },
-  });
-
-  assert.equal(moved.response.status, 200);
-  assert.equal(moved.body.task.targetBranch, "release/next");
-
-  const retargeted = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
-    method: "PATCH",
-    body: {
-      version: moved.body.task.version,
-      targetBranch: "release/later",
-    },
-  });
-  assert.equal(retargeted.response.status, 200);
-  assert.equal(retargeted.body.task.targetBranch, "release/later");
-  assert.deepEqual(retargeted.body.task.developmentContext, moved.body.task.developmentContext);
-});
-
-test("coding claim materializes a dirty branch context into an issue worktree", async () => {
-  let repository;
-  let worktreeRoot;
-  const baseUrl = await startServer(async (directory) => {
-    repository = path.join(directory, "repository");
-    worktreeRoot = path.join(directory, "worktrees");
-    await mkdir(repository);
-    await run("git", ["init", "-q", "-b", "release/next", repository]);
-    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
-    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
-    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
-    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 2;\n");
-    return { codingWorktreeRoot: worktreeRoot };
-  });
-
-  const project = await request(baseUrl, "/api/projects", {
-    method: "POST",
-    body: { id: "dirty-repo", name: "Dirty repository", workspacePath: repository },
-  });
-  assert.equal(project.response.status, 201);
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      projectId: project.body.project.id,
-      title: "Claim from a dirty branch",
-      status: "todo",
-      workflowId: "coding",
-      developmentContext: { type: "branch", branch: "release/next" },
-    },
-  });
-
-  const claimed = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
-    method: "POST",
-    body: { version: created.body.task.version, threadId: "thread-dirty-claim" },
-  });
-
-  const expectedPath = path.join(worktreeRoot, "repository", created.body.task.identifier);
-  assert.equal(claimed.response.status, 200);
-  assert.deepEqual(claimed.body.task.developmentContext, {
-    type: "worktree",
-    path: expectedPath,
-    branch: `codex/${created.body.task.identifier}`,
-  });
-  assert.equal(claimed.body.task.targetBranch, "release/next");
-  assert.equal((await run("git", ["-C", expectedPath, "status", "--porcelain"])).stdout, "");
-  assert.equal(
-    (await run("git", ["-C", expectedPath, "config", "--get", `branch.codex/${created.body.task.identifier}.mxBase`])).stdout.trim(),
-    "release/next",
-  );
-});
-
-test("bind coding and claim atomically creates one frozen coding run", async () => {
-  let repository;
-  let revision;
-  const baseUrl = await startServer(async (directory) => {
-    repository = path.join(directory, "repository");
-    await mkdir(repository);
-    await run("git", ["init", "-q", "-b", "codex/claim-test", repository]);
-    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
-    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
-    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
-    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
-    revision = (await run("git", ["-C", repository, "rev-parse", "HEAD"])).stdout.trim();
-    return {};
-  });
-
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      title: "Historical coding issue",
-      status: "todo",
-      workflowId: null,
-      developmentContext: {
-        type: "branch",
-        branch: "codex/claim-test",
-      },
-    },
-  });
-  const claimed = await request(
-    baseUrl,
-    `/api/local/coding/tasks/${created.body.task.id}/claim`,
-    {
-      method: "POST",
-      body: {
-        version: created.body.task.version,
-        threadId: "thread-claim",
-        developmentContext: {
-          type: "worktree",
-          path: repository,
-          branch: "codex/claim-test",
-        },
-      },
-    },
-  );
-  assert.equal(claimed.response.status, 200);
-  assert.equal(claimed.body.task.workflowId, "coding");
-  assert.equal(claimed.body.task.status, "in_progress");
-  assert.equal(claimed.body.task.threadId, "thread-claim");
-  assert.deepEqual(claimed.body.task.developmentContext, {
-    type: "worktree",
-    path: repository,
-    branch: "codex/claim-test",
-  });
-  assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
-  assert.equal(claimed.body.codingRun.startRevision, revision);
-
-  const stale = await request(
-    baseUrl,
-    `/api/local/coding/tasks/${created.body.task.id}/claim`,
-    {
-      method: "POST",
-      body: { version: created.body.task.version, threadId: "thread-stale" },
-    },
-  );
-  assert.equal(stale.response.status, 409);
-  assert.equal(stale.body.error.code, "VERSION_CONFLICT");
-
-  const resumed = await request(
-    baseUrl,
-    `/api/local/coding/tasks/${created.body.task.id}/runs`,
-    { method: "POST" },
-  );
-  assert.equal(resumed.response.status, 200);
-  assert.equal(resumed.body.run.id, claimed.body.codingRun.id);
-});
-
-test("coding claim accepts a todo issue already assigned to the coding workflow", async () => {
-  let repository;
-  const baseUrl = await startServer(async (directory) => {
-    repository = path.join(directory, "repository");
-    await mkdir(repository);
-    await run("git", ["init", "-q", "-b", "codex/claim-prebound-test", repository]);
-    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
-    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
-    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
-    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
-    return {};
-  });
-
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      title: "Prebound coding issue",
-      status: "todo",
-      workflowId: "coding",
-      targetBranch: "codex/claim-prebound-test",
-      developmentContext: {
-        type: "worktree",
-        path: repository,
-        branch: "codex/claim-prebound-test",
-      },
-    },
-  });
-  const claimed = await request(
-    baseUrl,
-    `/api/local/coding/tasks/${created.body.task.id}/claim`,
-    {
-      method: "POST",
-      body: {
-        version: created.body.task.version,
-        threadId: "thread-prebound-claim",
-      },
-    },
-  );
-
-  assert.equal(claimed.response.status, 200);
-  assert.equal(claimed.body.task.status, "in_progress");
-  assert.equal(claimed.body.task.workflowId, "coding");
-  assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
-});
-
-test("coding claim cannot take over an active coding run", async () => {
-  let repository;
-  const baseUrl = await startServer(async (directory) => {
-    repository = path.join(directory, "repository");
-    await mkdir(repository);
-    await run("git", ["init", "-q", "-b", "codex/active-run-test", repository]);
-    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
-    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
-    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
-    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
-    return {};
-  });
-
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      title: "Do not take over active work",
-      status: "todo",
-      workflowId: "coding",
-      targetBranch: "codex/active-run-test",
-      developmentContext: {
-        type: "worktree",
-        path: repository,
-        branch: "codex/active-run-test",
-      },
-    },
-  });
-  const firstClaim = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
-    method: "POST",
-    body: { version: created.body.task.version, threadId: "thread-first-agent" },
-  });
-  assert.equal(firstClaim.response.status, 200);
-
-  const resetToTodo = await request(baseUrl, `/api/tasks/${created.body.task.id}`, {
-    method: "PATCH",
-    body: { version: firstClaim.body.task.version, status: "todo" },
-  });
-  assert.equal(resetToTodo.response.status, 200);
-  const takeover = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
-    method: "POST",
-    body: { version: resetToTodo.body.task.version, threadId: "thread-second-agent" },
-  });
-
-  assert.equal(takeover.response.status, 409);
-  assert.equal(takeover.body.error.code, "CODING_RUN_ACTIVE");
-});
-
-test("coding claim rejects a worktree-only issue without a target branch", async () => {
-  let repository;
-  const baseUrl = await startServer(async (directory) => {
-    repository = path.join(directory, "repository");
-    await mkdir(repository);
-    await run("git", ["init", "-q", "-b", "codex/no-target-test", repository]);
-    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
-    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
-    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
-    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
-    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
-    return {};
-  });
-  const created = await request(baseUrl, "/api/tasks", {
-    method: "POST",
-    body: {
-      title: "Missing delivery target",
-      status: "todo",
-      workflowId: "coding",
-      developmentContext: {
-        type: "worktree",
-        path: repository,
-        branch: "codex/no-target-test",
-      },
-    },
-  });
-
-  const claimed = await request(baseUrl, `/api/local/coding/tasks/${created.body.task.id}/claim`, {
-    method: "POST",
-    body: { version: created.body.task.version, threadId: "thread-no-target" },
-  });
-
-  assert.equal(claimed.response.status, 409);
-  assert.equal(claimed.body.error.code, "TARGET_BRANCH_REQUIRED");
 });
 
 test("issues support parent, sub-issue, blocking, and related issue relationships", async () => {
@@ -1920,7 +952,7 @@ test("issue comments can be created, edited, listed, and deleted", async () => {
   assert.equal(taskAfterDelete.body.task.threadId, null);
 });
 
-test("taskctl issue creation and comments use the Claude Agent identity", async () => {
+test("taskctl issue creation and comments use the Codex Agent identity", async () => {
   const baseUrl = await startServer();
   const agentHeaders = {
     "x-taskboard-client": "taskctl",
@@ -1937,12 +969,12 @@ test("taskctl issue creation and comments use the Claude Agent identity", async 
   const task = createTaskResult.body.task;
   assert.equal(task.creatorType, "agent");
   assert.equal(task.creatorId, "codex-agent");
-  assert.equal(task.creatorName, "Claude Agent");
+  assert.equal(task.creatorName, "Codex Agent");
   assert.equal(task.creatorAvatarUrl, null);
   assert.deepEqual(task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Claude Agent",
+    name: "Codex Agent",
     avatarUrl: null,
   });
 
@@ -1955,7 +987,7 @@ test("taskctl issue creation and comments use the Claude Agent identity", async 
   const comment = createCommentResult.body.comment;
   assert.equal(comment.authorType, "agent");
   assert.equal(comment.authorId, "codex-agent");
-  assert.equal(comment.authorName, "Claude Agent");
+  assert.equal(comment.authorName, "Codex Agent");
   assert.equal(comment.authorAvatarUrl, null);
   assert.equal(comment.threadId, "thread-agent-comment");
 });
@@ -1997,7 +1029,7 @@ test("Codex-hosted user mutations persist the current account identity and avata
   assert.deepEqual(assignedToCodexResult.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Claude Agent",
+    name: "Codex Agent",
     avatarUrl: null,
   });
 
@@ -2070,6 +1102,7 @@ test("issue attachments can be uploaded, listed, opened, downloaded, and deleted
     headers: {
       "content-type": "text/plain; charset=utf-8",
       "x-taskboard-filename": encodeURIComponent("设计说明.txt"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: contents,
   });
@@ -2101,6 +1134,7 @@ test("issue attachments can be uploaded, listed, opened, downloaded, and deleted
     headers: {
       "content-type": "text/html",
       "x-taskboard-filename": encodeURIComponent("page.html"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "<script>document.body.textContent = 'unsafe'</script>",
   });
@@ -2137,6 +1171,7 @@ test("permanent task deletion requires archiving and removes attachment files", 
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": "evidence.txt",
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "attachment",
   });
@@ -2154,6 +1189,7 @@ test("permanent task deletion requires archiving and removes attachment files", 
       headers: {
         "content-type": "text/plain",
         "x-taskboard-filename": "comment-evidence.txt",
+        "x-taskboard-attachment-kind": "attachment",
       },
       body: "comment attachment",
     },
@@ -2222,6 +1258,7 @@ test("comments support attachments and deleting a comment removes its files", as
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": encodeURIComponent("comment.txt"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: contents,
   });
@@ -2264,6 +1301,7 @@ test("attachment uploads reject unsafe filenames", async () => {
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": encodeURIComponent("../outside.txt"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "unsafe",
   });

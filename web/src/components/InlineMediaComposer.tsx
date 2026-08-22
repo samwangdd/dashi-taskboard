@@ -7,19 +7,41 @@ import {
   useRef,
   useState,
   type ClipboardEvent,
+  type DragEvent,
   type KeyboardEvent,
   type KeyboardEventHandler,
 } from "react";
+import { createPortal } from "react-dom";
 import { definitions } from "mdast-util-definitions";
 import remarkGfm from "remark-gfm";
 import remarkParse from "remark-parse";
 import { unified } from "unified";
-import type { Attachment, Task } from "../types";
-import { attachmentContentUrl, resolvePersistedAttachmentUrl } from "../api";
+import type {
+  ComposerCandidate,
+  ComposerCandidatesResponse,
+  ComposerSurface,
+  ComposerTrigger,
+  Task,
+} from "../types";
+import {
+  attachmentContentUrl,
+  getAiChatComposerCandidates,
+  resolvePersistedAttachmentUrl,
+} from "../api";
 import { useTaskboardI18n } from "../i18n";
+import { readIssueIdentifier } from "../issueRoute";
+import { STATUS_DETAILS } from "./BoardColumn";
 import { clipboardImages, fileKey, MAX_ATTACHMENT_SIZE } from "./PendingAttachments";
 import { LinearIcon } from "./LinearIcon";
-import { IssueMentionMenu } from "./IssueMentionMenu";
+import {
+  ConversationIcon,
+  ProjectIcon,
+  StatusIcon,
+} from "./SemanticIcons";
+import {
+  ComposerCompletionMenu,
+  type ComposerCompletionGroup,
+} from "./ComposerCompletionMenu";
 
 interface InlineTextSegment {
   id: string;
@@ -32,6 +54,8 @@ interface InlineImageSegment {
   type: "pending-image";
   token: string;
   file: File;
+  dataUrl: string | null;
+  dataUrlReady: Promise<void>;
 }
 
 interface PersistedImageSegment {
@@ -42,6 +66,32 @@ interface PersistedImageSegment {
   url: string;
 }
 
+interface IssueReferenceSegment {
+  id: string;
+  type: "issue-reference";
+  markdown: string;
+  identifier: string;
+  projectId: string;
+  issueIdentifier: string;
+  taskId: string | null;
+}
+
+export interface InlineComposerReferenceSegment {
+  id: string;
+  type: "skill-reference" | "agent-reference";
+  markdown: string;
+  referenceKey: string;
+  label: string;
+}
+
+export interface InlineUnsupportedComposerReferenceSegment {
+  id: string;
+  type: "unsupported-reference";
+  markdown: string;
+  referenceUri: string;
+  label: string;
+}
+
 interface MarkdownAstNode {
   type: string;
   position: {
@@ -49,12 +99,19 @@ interface MarkdownAstNode {
     end: { offset: number };
   };
   children?: MarkdownAstNode[];
+  value?: string;
   alt?: string | null;
   identifier?: string;
   url?: string;
 }
 
-export type InlineMediaSegment = InlineTextSegment | InlineImageSegment | PersistedImageSegment;
+export type InlineMediaSegment =
+  | InlineTextSegment
+  | InlineImageSegment
+  | PersistedImageSegment
+  | IssueReferenceSegment
+  | InlineComposerReferenceSegment
+  | InlineUnsupportedComposerReferenceSegment;
 export type PendingInlineImage = InlineImageSegment;
 type InlineMediaError = string | readonly [string, string];
 
@@ -63,29 +120,68 @@ export interface InlineMediaComposerHandle {
   addImages: (files: FileList | File[]) => void;
 }
 
-interface InlineMediaComposerProps {
+export interface InlineMediaCompletionContext {
+  projectId?: string;
+  threadId?: string;
+  surface: Exclude<ComposerSurface, "ai-chat">;
+}
+
+export interface InlineMediaComposerProps {
   segments: InlineMediaSegment[];
   mentionTasks?: readonly Task[];
+  referenceTasks: readonly Task[];
+  completionContext?: InlineMediaCompletionContext;
   placeholder: string;
   ariaLabel: string;
   disabled?: boolean;
   className?: string;
   onChange: (segments: InlineMediaSegment[]) => void;
   onError: (message: InlineMediaError | null) => void;
-  onKeyDown?: KeyboardEventHandler<HTMLTextAreaElement>;
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
 }
 
-interface IssueMention {
+interface ComposerQuery {
   segmentId: string;
   start: number;
   end: number;
   query: string;
-  anchor: HTMLTextAreaElement;
+  trigger: ComposerTrigger;
+  anchor: HTMLElement;
+  anchorRect: DOMRect;
+}
+
+type CompletionSelection =
+  | { type: "candidate"; candidate: ComposerCandidate }
+  | { type: "issue"; task: Task };
+
+function completionSelectionId(selection: CompletionSelection): string {
+  return selection.type === "candidate"
+    ? `candidate:${selection.candidate.kind}:${selection.candidate.candidateRef}`
+    : `issue:${selection.task.id}`;
 }
 
 let segmentSequence = 0;
 const inlineMediaMarkdownParser = unified().use(remarkParse).use(remarkGfm);
 const EMPTY_MENTION_TASKS: readonly Task[] = [];
+const EMPTY_TEXT_CARET = "\uFEFF";
+const INLINE_MEDIA_CLIPBOARD_MIME = "application/x-taskboard-inline-media";
+const INLINE_MEDIA_HTML_BLOCKS = new Set([
+  "ADDRESS",
+  "BLOCKQUOTE",
+  "DIV",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6",
+  "LI",
+  "OL",
+  "P",
+  "PRE",
+  "UL",
+]);
+let inlineMediaClipboard: { id: string; segments: InlineMediaSegment[] } | null = null;
 
 function segmentId(prefix: string): string {
   segmentSequence += 1;
@@ -96,19 +192,195 @@ function textSegment(text = ""): InlineTextSegment {
   return { id: segmentId("text"), type: "text", text };
 }
 
-function imageSegment(file: File): InlineImageSegment {
+function imageSegment(file: File, dataUrl: string | null = null): InlineImageSegment {
   const id = segmentId("image");
-  return {
+  const segment: InlineImageSegment = {
     id,
     type: "pending-image",
     token: `<!--taskboard-inline-image:${id}-->`,
     file,
+    dataUrl,
+    dataUrlReady: Promise.resolve(),
+  };
+  if (!dataUrl) {
+    const reader = new FileReader();
+    segment.dataUrlReady = new Promise((resolve, reject) => {
+      reader.addEventListener("load", () => {
+        segment.dataUrl = reader.result as string;
+        resolve();
+      });
+      reader.addEventListener("error", () => reject(reader.error));
+    });
+    reader.readAsDataURL(file);
+  }
+  return segment;
+}
+
+const COMPOSER_REFERENCE_URL = /^taskboard:\/\/composer-reference\/v1\/(skill|agent)\/([A-Za-z0-9_-]+)$/;
+const COMPOSER_REFERENCE_NAMESPACE_URL = /^taskboard:\/\/composer-reference\/([^/]+)\/([^/]+)\/([A-Za-z0-9_-]+)$/;
+const ISSUE_COMPOSER_REFERENCE_URL = /^taskboard:\/\/composer-reference\/v1\/issue\/([A-Za-z0-9_-]+)$/;
+const IMAGE_COMPOSER_REFERENCE_URL = /^taskboard:\/\/composer-reference\/v1\/image\/([A-Za-z0-9_-]+)$/;
+const PENDING_IMAGE_COMPOSER_REFERENCE_URL = /^taskboard:\/\/composer-reference\/v1\/pending-image\/([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/;
+
+function encodedComposerReferenceKey(value: string): string {
+  return btoa(String.fromCharCode(...new TextEncoder().encode(value)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+function decodedComposerReferenceKey(value: string): string | null {
+  if (!value || value.length % 4 === 1) return null;
+  try {
+    const padded = `${value.replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - value.length % 4) % 4)}`;
+    const bytes = Uint8Array.from(atob(padded), (character) => character.charCodeAt(0));
+    const decoded = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return decoded && encodedComposerReferenceKey(decoded) === value ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+function base64UrlReferenceKey(
+  value: string,
+  requireNfc: boolean,
+): string | null {
+  const decoded = decodedComposerReferenceKey(value);
+  return decoded && (!requireNfc || decoded === decoded.normalize("NFC")) ? value : null;
+}
+
+function issueComposerReference(url: string) {
+  const match = ISSUE_COMPOSER_REFERENCE_URL.exec(url);
+  const value = match ? decodedComposerReferenceKey(match[1]) : null;
+  if (!value) return null;
+  const route = new URLSearchParams(value);
+  const projectId = route.get("project")?.trim();
+  const identifier = readIssueIdentifier(value);
+  return projectId && identifier ? { projectId, identifier } : null;
+}
+
+function attachmentIdFromUrl(url: string): string | null {
+  try {
+    const path = new URL(url, "http://taskboard.local").pathname;
+    return path.match(/\/api\/attachments\/([A-Za-z0-9_-]+)\/content$/)?.[1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function imageComposerReference(url: string): string | null {
+  const match = IMAGE_COMPOSER_REFERENCE_URL.exec(url);
+  const attachmentId = match ? decodedComposerReferenceKey(match[1]) : null;
+  return attachmentId && /^[A-Za-z0-9_-]+$/.test(attachmentId) ? attachmentId : null;
+}
+
+function pendingImageComposerReference(
+  url: string,
+  name: string,
+): { file: File; dataUrl: string } | null {
+  const match = PENDING_IMAGE_COMPOSER_REFERENCE_URL.exec(url);
+  const type = match ? decodedComposerReferenceKey(match[1]) : null;
+  if (!match || !type?.startsWith("image/")) return null;
+  try {
+    const base64 = `${match[2].replace(/-/g, "+").replace(/_/g, "/")}${"=".repeat((4 - match[2].length % 4) % 4)}`;
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+    return {
+      file: new File([bytes], name || "image", { type }),
+      dataUrl: `data:${type};base64,${base64}`,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function markdownNodeText(node: MarkdownAstNode): string | null {
+  if (node.type === "text") return node.value ?? "";
+  if (!node.children) return null;
+  let result = "";
+  for (const child of node.children) {
+    const text = markdownNodeText(child);
+    if (text === null) return null;
+    result += text;
+  }
+  return result;
+}
+
+function composerReferenceFromNode(
+  node: MarkdownAstNode,
+  source: string,
+): (
+  | Omit<InlineComposerReferenceSegment, "id">
+  | Omit<InlineUnsupportedComposerReferenceSegment, "id">
+) & { start: number; end: number } | null {
+  if (node.type !== "link" || !node.url) return null;
+  const namespaceMatch = COMPOSER_REFERENCE_NAMESPACE_URL.exec(node.url);
+  if (!namespaceMatch || !base64UrlReferenceKey(namespaceMatch[3], namespaceMatch[2] === "skill")) return null;
+  const label = markdownNodeText(node);
+  const markdown = source.slice(node.position.start.offset, node.position.end.offset);
+  if (
+    !label
+    || !markdown.startsWith("[")
+    || !markdown.endsWith(`](${node.url})`)
+  ) return null;
+  const urlMatch = COMPOSER_REFERENCE_URL.exec(node.url);
+  if (!urlMatch) {
+    return {
+      type: "unsupported-reference",
+      start: node.position.start.offset,
+      end: node.position.end.offset,
+      markdown,
+      referenceUri: node.url,
+      label,
+    };
+  }
+  const kind = urlMatch[1] as "skill" | "agent";
+  const referenceKey = base64UrlReferenceKey(urlMatch[2], kind === "skill")!;
+  return {
+    type: `${kind}-reference`,
+    start: node.position.start.offset,
+    end: node.position.end.offset,
+    markdown,
+    referenceKey,
+    label,
   };
 }
 
-export function createInlineMediaSegments(text = ""): InlineMediaSegment[] {
+export function createInlineMediaSegments(
+  text = "",
+  referenceTasks: readonly Task[] = EMPTY_MENTION_TASKS,
+): InlineMediaSegment[] {
   const segments: InlineMediaSegment[] = [];
-  const images: Array<{ start: number; end: number; alt: string; url: string }> = [];
+  const items: Array<
+    | {
+        type: "persisted-image";
+        start: number;
+        end: number;
+        alt: string;
+        url: string;
+        markdown?: string;
+      }
+    | {
+        type: "issue-reference";
+        start: number;
+        end: number;
+        identifier: string;
+        projectId: string;
+        issueIdentifier: string;
+        taskId: string | null;
+        markdown?: string;
+      }
+    | {
+        type: "pending-image";
+        start: number;
+        end: number;
+        file: File;
+        dataUrl: string;
+      }
+    | (Omit<InlineComposerReferenceSegment, "id"> & { start: number; end: number })
+    | (Omit<InlineUnsupportedComposerReferenceSegment, "id"> & { start: number; end: number })
+  > = [];
   const root = inlineMediaMarkdownParser.parse(text);
   const getDefinition = definitions(root);
   const nodes = [root as MarkdownAstNode];
@@ -116,17 +388,35 @@ export function createInlineMediaSegments(text = ""): InlineMediaSegment[] {
   while (nodes.length > 0) {
     const node = nodes.pop()!;
     if (node.type === "image") {
-      images.push({
-        start: node.position.start.offset,
-        end: node.position.end.offset,
-        alt: node.alt ?? "",
-        url: node.url!,
-      });
+      const alt = node.alt ?? "";
+      const pendingImage = pendingImageComposerReference(node.url!, alt);
+      if (pendingImage) {
+        items.push({
+          type: "pending-image",
+          start: node.position.start.offset,
+          end: node.position.end.offset,
+          ...pendingImage,
+        });
+      } else {
+        const attachmentId = imageComposerReference(node.url!);
+        const url = attachmentId ? `api/attachments/${attachmentId}/content` : node.url!;
+        items.push({
+          type: "persisted-image",
+          start: node.position.start.offset,
+          end: node.position.end.offset,
+          alt,
+          url,
+          markdown: attachmentId
+            ? `![${alt.replace(/[\\[\]]/g, "\\$&")}](${url})`
+            : undefined,
+        });
+      }
     }
     if (node.type === "imageReference") {
       const definition = getDefinition(node.identifier);
       if (definition) {
-        images.push({
+        items.push({
+          type: "persisted-image",
           start: node.position.start.offset,
           end: node.position.end.offset,
           alt: node.alt ?? "",
@@ -134,22 +424,82 @@ export function createInlineMediaSegments(text = ""): InlineMediaSegment[] {
         });
       }
     }
+    let handledIssueReference = false;
+    if (node.type === "link" && node.url) {
+      const stableIssue = issueComposerReference(node.url);
+      const projectId = stableIssue?.projectId
+        ?? (node.url.startsWith("?") ? new URLSearchParams(node.url).get("project") : null);
+      const identifier = stableIssue?.identifier
+        ?? (node.url.startsWith("?") ? readIssueIdentifier(node.url) : null);
+      const task = projectId && identifier
+        ? referenceTasks.find((candidate) => (
+            candidate.projectId === projectId && candidate.identifier === identifier
+          ))
+        : null;
+      if (projectId && identifier) {
+        items.push({
+          type: "issue-reference",
+          start: node.position.start.offset,
+          end: node.position.end.offset,
+          identifier: task?.externalKey ?? identifier,
+          projectId,
+          issueIdentifier: identifier,
+          taskId: task?.id ?? null,
+          markdown: stableIssue
+            ? `[@${task?.externalKey ?? identifier}](?${new URLSearchParams({ project: projectId, issue: identifier })})`
+            : undefined,
+        });
+        handledIssueReference = true;
+      }
+    }
+    const composerReference = handledIssueReference ? null : composerReferenceFromNode(node, text);
+    if (composerReference) items.push(composerReference);
     if (node.children) nodes.push(...node.children);
   }
 
-  images.sort((a, b) => a.start - b.start);
+  items.sort((a, b) => a.start - b.start);
   let offset = 0;
 
-  for (const image of images) {
-    if (image.start > offset) segments.push(textSegment(text.slice(offset, image.start)));
-    segments.push({
-      id: segmentId("image"),
-      type: "persisted-image",
-      markdown: text.slice(image.start, image.end),
-      alt: image.alt,
-      url: image.url,
-    });
-    offset = image.end;
+  for (const item of items) {
+    if (item.start > offset) segments.push(textSegment(text.slice(offset, item.start)));
+    if (item.type === "pending-image") {
+      segments.push(imageSegment(item.file, item.dataUrl));
+    } else if (item.type === "persisted-image") {
+      segments.push({
+        id: segmentId("image"),
+        type: "persisted-image",
+        markdown: item.markdown ?? text.slice(item.start, item.end),
+        alt: item.alt,
+        url: item.url,
+      });
+    } else if (item.type === "issue-reference") {
+      segments.push({
+        id: segmentId("issue"),
+        type: "issue-reference",
+        markdown: item.markdown ?? text.slice(item.start, item.end),
+        identifier: item.identifier,
+        projectId: item.projectId,
+        issueIdentifier: item.issueIdentifier,
+        taskId: item.taskId,
+      });
+    } else if (item.type === "unsupported-reference") {
+      segments.push({
+        id: segmentId("unsupported"),
+        type: item.type,
+        markdown: item.markdown,
+        label: item.label,
+        referenceUri: item.referenceUri,
+      });
+    } else {
+      segments.push({
+        id: segmentId(item.type === "skill-reference" ? "skill" : "agent"),
+        type: item.type,
+        markdown: item.markdown,
+        label: item.label,
+        referenceKey: item.referenceKey,
+      });
+    }
+    offset = item.end;
   }
 
   if (offset < text.length) segments.push(textSegment(text.slice(offset)));
@@ -160,26 +510,38 @@ export function inlineMediaImages(segments: InlineMediaSegment[]): PendingInline
   return segments.filter((segment): segment is PendingInlineImage => segment.type === "pending-image");
 }
 
+export function inlineMediaComposerReferences(
+  segments: InlineMediaSegment[],
+): Array<InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment> {
+  return segments.filter((segment): segment is (
+    InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment
+  ) => (
+    segment.type === "skill-reference"
+    || segment.type === "agent-reference"
+    || segment.type === "unsupported-reference"
+  ));
+}
+
 export function inlineMediaText(segments: InlineMediaSegment[]): string {
   return segments.map((segment) => {
     if (segment.type === "text") return segment.text;
-    if (segment.type === "persisted-image") return segment.markdown;
-    return "";
+    if (segment.type === "pending-image") return "";
+    return segment.markdown;
   }).join("");
 }
 
 export function serializeInlineMedia(segments: InlineMediaSegment[]): string {
   return segments.map((segment) => {
     if (segment.type === "text") return segment.text;
-    if (segment.type === "persisted-image") return segment.markdown;
-    return `\n\n${segment.token}\n\n`;
+    if (segment.type === "pending-image") return `\n\n${segment.token}\n\n`;
+    return segment.markdown;
   }).join("");
 }
 
 export function resolveInlineMediaMarkdown(
   value: string,
   images: PendingInlineImage[],
-  attachments: Attachment[],
+  attachments: Array<{ id: string }>,
 ): string {
   return images.reduce((markdown, image, index) => {
     const attachment = attachments[index];
@@ -196,10 +558,17 @@ function normalizeSegments(segments: InlineMediaSegment[]): InlineMediaSegment[]
   const normalized: InlineMediaSegment[] = [];
   for (const segment of segments) {
     const previous = normalized.at(-1);
-    if (segment.type === "text" && previous?.type === "text") {
+    if (
+      (isInlineReference(segment) && previous?.type !== "text")
+      || (previous && isInlineReference(previous) && segment.type !== "text")
+    ) {
+      normalized.push(textSegment());
+    }
+    const adjacent = normalized.at(-1);
+    if (segment.type === "text" && adjacent?.type === "text") {
       normalized[normalized.length - 1] = {
-        ...previous,
-        text: previous.text + segment.text,
+        ...adjacent,
+        text: adjacent.text + segment.text,
       };
     } else {
       normalized.push(segment);
@@ -211,10 +580,336 @@ function normalizeSegments(segments: InlineMediaSegment[]): InlineMediaSegment[]
   return normalized;
 }
 
-function resizeTextarea(element: HTMLTextAreaElement | null) {
-  if (!element) return;
-  element.style.height = "0px";
-  element.style.height = `${element.scrollHeight}px`;
+function isInlineReference(
+  segment: InlineMediaSegment,
+): segment is IssueReferenceSegment | InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment {
+  return segment.type === "issue-reference"
+    || segment.type === "skill-reference"
+    || segment.type === "agent-reference"
+    || segment.type === "unsupported-reference";
+}
+
+function segmentLength(segment: InlineMediaSegment): number {
+  return segment.type === "text" ? segment.text.length : 1;
+}
+
+function segmentsLength(segments: InlineMediaSegment[]): number {
+  return segments.reduce((length, segment) => length + segmentLength(segment), 0);
+}
+
+function inlineMediaRangeSegments(
+  segments: InlineMediaSegment[],
+  start: number,
+  end: number,
+): InlineMediaSegment[] {
+  let offset = 0;
+  return segments.flatMap<InlineMediaSegment>((segment): InlineMediaSegment[] => {
+    const length = segmentLength(segment);
+    const segmentStart = offset;
+    const segmentEnd = offset + length;
+    offset = segmentEnd;
+    if (end <= segmentStart || start >= segmentEnd) return [];
+    if (segment.type !== "text") return [segment];
+    return [{
+      ...segment,
+      text: segment.text.slice(
+        Math.max(start - segmentStart, 0),
+        Math.min(end - segmentStart, length),
+      ),
+    }];
+  });
+}
+
+function inlineMediaClipboardText(segments: InlineMediaSegment[]): string {
+  return segments.map((segment) => {
+    if (segment.type === "text") return segment.text;
+    if (segment.type === "pending-image") {
+      return pendingImageClipboardMarkdown(segment) ?? segment.file.name;
+    }
+    return segment.markdown;
+  }).join("");
+}
+
+function pendingImageClipboardMarkdown(segment: InlineImageSegment): string | null {
+  const match = segment.dataUrl?.match(/^data:([^;,]+);base64,(.+)$/);
+  if (!match) return null;
+  const typeKey = encodedComposerReferenceKey(match[1]);
+  const dataKey = match[2].replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  const alt = segment.file.name.replace(/[\\[\]]/g, "\\$&");
+  return `![${alt}](taskboard://composer-reference/v1/pending-image/${typeKey}.${dataKey})`;
+}
+
+function selfContainedClipboardSegments(
+  segments: InlineMediaSegment[],
+): InlineMediaSegment[] {
+  return segments.map((segment) => {
+    if (
+      segment.type !== "persisted-image"
+      || /^!\[(?:\\.|[^\]])*\]\(/.test(segment.markdown)
+    ) return segment;
+    const alt = segment.alt.replace(/[\\[\]]/g, "\\$&");
+    return { ...segment, markdown: `![${alt}](${segment.url})` };
+  });
+}
+
+function stableClipboardSegments(
+  segments: InlineMediaSegment[],
+): InlineMediaSegment[] {
+  return segments.map((segment) => {
+    if (segment.type === "issue-reference") {
+      const route = new URLSearchParams({
+        project: segment.projectId,
+        issue: segment.issueIdentifier,
+      });
+      const referenceKey = encodedComposerReferenceKey(route.toString());
+      return {
+        ...segment,
+        markdown: `[@${segment.identifier}](taskboard://composer-reference/v1/issue/${referenceKey})`,
+      };
+    }
+    if (segment.type === "persisted-image") {
+      const attachmentId = attachmentIdFromUrl(segment.url);
+      if (!attachmentId) return segment;
+      const alt = segment.alt.replace(/[\\[\]]/g, "\\$&");
+      const referenceKey = encodedComposerReferenceKey(attachmentId);
+      return {
+        ...segment,
+        markdown: `![${alt}](taskboard://composer-reference/v1/image/${referenceKey})`,
+      };
+    }
+    return segment;
+  });
+}
+
+function inlineMediaClipboardHtml(
+  segments: InlineMediaSegment[],
+  clipboardId: string,
+  ownerDocument: Document,
+): string {
+  const wrapper = ownerDocument.createElement("div");
+  wrapper.dataset.taskboardInlineMediaClipboard = clipboardId;
+
+  for (const segment of segments) {
+    if (segment.type === "text") {
+      const text = ownerDocument.createElement("span");
+      text.style.whiteSpace = "pre-wrap";
+      text.textContent = segment.text;
+      wrapper.append(text);
+      continue;
+    }
+    if (segment.type === "issue-reference") {
+      const route = new URLSearchParams({
+        project: segment.projectId,
+        issue: segment.issueIdentifier,
+      });
+      const issue = ownerDocument.createElement("a");
+      issue.dataset.taskboardInlineMediaMarkdown = segment.markdown;
+      issue.href = new URL(`?${route}`, ownerDocument.baseURI).toString();
+      issue.textContent = `@${segment.identifier}`;
+      wrapper.append(issue);
+      continue;
+    }
+    if (segment.type === "persisted-image") {
+      const persistedImage = ownerDocument.createElement("img");
+      persistedImage.dataset.taskboardInlineMediaMarkdown = segment.markdown;
+      persistedImage.src = new URL(
+        resolvePersistedAttachmentUrl(segment.url),
+        ownerDocument.baseURI,
+      ).toString();
+      persistedImage.alt = segment.alt;
+      wrapper.append(persistedImage);
+      continue;
+    }
+    if (isInlineReference(segment)) {
+      const markdown = ownerDocument.createElement("span");
+      markdown.dataset.taskboardInlineMediaMarkdown = segment.markdown;
+      markdown.textContent = segment.markdown;
+      wrapper.append(markdown);
+      continue;
+    }
+    if (segment.dataUrl) {
+      const pendingImage = ownerDocument.createElement("img");
+      pendingImage.dataset.taskboardInlineMediaPendingImage = segment.id;
+      pendingImage.dataset.taskboardInlineMediaMarkdown = pendingImageClipboardMarkdown(segment) ?? "";
+      pendingImage.src = segment.dataUrl;
+      pendingImage.alt = segment.file.name;
+      wrapper.append(pendingImage);
+    } else {
+      const pendingImage = ownerDocument.createElement("span");
+      pendingImage.dataset.taskboardInlineMediaPendingImage = segment.id;
+      pendingImage.textContent = segment.file.name;
+      wrapper.append(pendingImage);
+    }
+  }
+
+  return wrapper.outerHTML;
+}
+
+function inlineMediaClipboardPayload(
+  segments: InlineMediaSegment[],
+  ownerDocument: Document,
+): { id: string; plainText: string; html: string } {
+  const id = segmentId("clipboard");
+  const clipboardSegments = selfContainedClipboardSegments(segments);
+  const exportedSegments = stableClipboardSegments(clipboardSegments);
+  inlineMediaClipboard = { id, segments: clipboardSegments };
+  return {
+    id,
+    plainText: inlineMediaClipboardText(exportedSegments),
+    html: inlineMediaClipboardHtml(exportedSegments, id, ownerDocument),
+  };
+}
+
+export function writeInlineMediaClipboard(
+  clipboardData: DataTransfer,
+  segments: InlineMediaSegment[],
+  ownerDocument: Document,
+) {
+  const payload = inlineMediaClipboardPayload(segments, ownerDocument);
+  clipboardData.setData(INLINE_MEDIA_CLIPBOARD_MIME, payload.id);
+  clipboardData.setData("text/plain", payload.plainText);
+  clipboardData.setData("text/html", payload.html);
+}
+
+function inlineMediaClipboardIdFromHtml(html: string): string {
+  if (!html) return "";
+  const document = new DOMParser().parseFromString(html, "text/html");
+  return document.body
+    .querySelector<HTMLElement>("[data-taskboard-inline-media-clipboard]")
+    ?.dataset.taskboardInlineMediaClipboard ?? "";
+}
+
+export function createInlineMediaSegmentsFromHtml(
+  html: string,
+  referenceTasks: readonly Task[],
+): InlineMediaSegment[] | null {
+  if (!html) return null;
+  const document = new DOMParser().parseFromString(html, "text/html");
+  let markdown = "";
+  let structured = false;
+
+  const visit = (node: Node) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      markdown += node.textContent ?? "";
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const element = node as HTMLElement;
+    if (["SCRIPT", "STYLE"].includes(element.tagName)) return;
+
+    const inlineMarkdown = element.dataset.taskboardInlineMediaMarkdown;
+    if (inlineMarkdown) {
+      markdown += inlineMarkdown;
+      structured = true;
+      return;
+    }
+    if (element.tagName === "BUTTON") return;
+    if (element.tagName === "A") {
+      const href = element.getAttribute("href") ?? "";
+      try {
+        const base = new URL(window.document.baseURI);
+        base.search = "";
+        base.hash = "";
+        const url = new URL(href, base);
+        if (url.origin === base.origin && url.pathname === base.pathname) {
+          const identifier = readIssueIdentifier(url.search);
+          const projectId = url.searchParams.get("project");
+          if (identifier && projectId) {
+            const task = referenceTasks.find((candidate) => (
+              candidate.projectId === projectId && candidate.identifier === identifier
+            ));
+            const displayIdentifier = task?.externalKey ?? identifier;
+            const route = new URLSearchParams({ project: projectId, issue: identifier });
+            markdown += `[@${displayIdentifier}](?${route})`;
+            structured = true;
+            return;
+          }
+        }
+      } catch {}
+    }
+    if (element.tagName === "IMG") {
+      const source = element.getAttribute("src");
+      if (source) {
+        let url = source;
+        try {
+          const parsed = new URL(source);
+          const attachment = parsed.pathname.match(/\/api\/attachments\/([^/]+)\/content$/);
+          if (parsed.protocol === "http:" && parsed.hostname === "127.0.0.1" && attachment) {
+            url = `api/attachments/${attachment[1]}/content`;
+          }
+        } catch {}
+        const alt = (element.getAttribute("alt") ?? "").replace(/[\\[\]]/g, "\\$&");
+        markdown += `![${alt}](${url})`;
+        structured = true;
+      }
+      return;
+    }
+    if (element.tagName === "BR") {
+      markdown += "\n";
+      return;
+    }
+
+    const block = INLINE_MEDIA_HTML_BLOCKS.has(element.tagName);
+    if (block && markdown && !markdown.endsWith("\n")) markdown += "\n";
+    for (const child of element.childNodes) visit(child);
+    if (block && element.nextSibling && !markdown.endsWith("\n")) markdown += "\n";
+  };
+
+  for (const child of document.body.childNodes) visit(child);
+  return structured ? createInlineMediaSegments(markdown, referenceTasks) : null;
+}
+
+function cloneInlineMediaSegments(segments: InlineMediaSegment[]): InlineMediaSegment[] {
+  return segments.map((segment) => {
+    if (segment.type === "text") return textSegment(segment.text);
+    if (segment.type === "pending-image") return imageSegment(segment.file, segment.dataUrl);
+    const prefix = segment.type === "persisted-image"
+      ? "image"
+      : segment.type === "issue-reference"
+        ? "issue"
+        : segment.type === "skill-reference"
+          ? "skill"
+          : segment.type === "agent-reference"
+            ? "agent"
+            : "unsupported";
+    return { ...segment, id: segmentId(prefix) };
+  });
+}
+
+function replaceInlineMediaRange(
+  segments: InlineMediaSegment[],
+  start: number,
+  end: number,
+  insertion: InlineMediaSegment[],
+): { segments: InlineMediaSegment[]; caret: number } {
+  const before: InlineMediaSegment[] = [];
+  const after: InlineMediaSegment[] = [];
+  let offset = 0;
+
+  for (const segment of segments) {
+    const length = segmentLength(segment);
+    const segmentStart = offset;
+    const segmentEnd = offset + length;
+    offset = segmentEnd;
+    if (segmentEnd <= start) before.push(segment);
+    else if (segment.type === "text" && segmentStart < start) {
+      before.push({ ...segment, text: segment.text.slice(0, start - segmentStart) });
+    }
+    if (segmentStart >= end) after.push(segment);
+    else if (segment.type === "text" && segmentEnd > end) {
+      after.push({ ...segment, text: segment.text.slice(end - segmentStart) });
+    }
+  }
+
+  const usedIds = new Set([...before, ...insertion].map((segment) => segment.id));
+  const uniqueAfter = after.map((segment) => {
+    if (!usedIds.has(segment.id)) return segment;
+    return { ...segment, id: segmentId(segment.type === "text" ? "text" : "segment") };
+  });
+  return {
+    segments: normalizeSegments([...before, ...insertion, ...uniqueAfter]),
+    caret: segmentsLength(before) + segmentsLength(insertion),
+  };
 }
 
 function PendingImageBlock({
@@ -236,8 +931,12 @@ function PendingImageBlock({
   }, [segment.file]);
 
   return (
-    <figure className="inline-media-image">
-      {previewUrl && <img src={previewUrl} alt={segment.file.name} />}
+    <figure
+      className="inline-media-image"
+      contentEditable={false}
+      data-inline-media-segment={segment.id}
+    >
+      {previewUrl && <img src={previewUrl} alt={segment.file.name} draggable={false} />}
       <button
         type="button"
         disabled={disabled}
@@ -262,8 +961,12 @@ function PersistedImageBlock({
   const { text } = useTaskboardI18n();
 
   return (
-    <figure className="inline-media-image">
-      <img src={resolvePersistedAttachmentUrl(segment.url)} alt={segment.alt} />
+    <figure
+      className="inline-media-image"
+      contentEditable={false}
+      data-inline-media-segment={segment.id}
+    >
+      <img src={resolvePersistedAttachmentUrl(segment.url)} alt={segment.alt} draggable={false} />
       <button
         type="button"
         disabled={disabled}
@@ -276,10 +979,108 @@ function PersistedImageBlock({
   );
 }
 
+function IssueReferenceChip({
+  segment,
+  task,
+  disabled,
+  onRemove,
+}: {
+  segment: IssueReferenceSegment;
+  task: Task | null;
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  const { text } = useTaskboardI18n();
+  const displayIdentifier = task?.externalKey ?? segment.identifier;
+
+  return (
+    <span
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      className={`issue-reference-inline inline-media-issue-reference${task ? ` issue-reference-status-${task.status}` : ""}`}
+      contentEditable={false}
+      data-inline-media-segment={segment.id}
+      data-taskboard-inline-media-markdown={segment.markdown}
+      aria-disabled={disabled}
+      aria-label={task
+        ? text(
+            `${displayIdentifier} ${task.title}，按退格键或删除键移除`,
+            `${displayIdentifier} ${task.title}, press Backspace or Delete to remove`,
+          )
+        : text(
+            `${displayIdentifier}，按退格键或删除键移除`,
+            `${displayIdentifier}, press Backspace or Delete to remove`,
+          )}
+      onKeyDown={(event) => {
+        if (disabled) return;
+        if (event.defaultPrevented) return;
+        if (event.key !== "Backspace" && event.key !== "Delete") return;
+        event.preventDefault();
+        onRemove();
+      }}
+    >
+      <span className="issue-reference-identity">
+        {task && (
+          <span className={`status-icon issue-reference-status status-icon-${STATUS_DETAILS[task.status].tone}`}>
+            <StatusIcon status={task.status} color="var(--column-status-color)" size={15} />
+          </span>
+        )}
+        <span className="issue-reference-id">{displayIdentifier}</span>
+      </span>
+      {task && <span className="issue-reference-title">{task.title}</span>}
+    </span>
+  );
+}
+
+function ComposerReferenceChip({
+  segment,
+  disabled,
+  onRemove,
+}: {
+  segment: InlineComposerReferenceSegment | InlineUnsupportedComposerReferenceSegment;
+  disabled: boolean;
+  onRemove: () => void;
+}) {
+  const { text } = useTaskboardI18n();
+  const kind = segment.type === "skill-reference"
+    ? text("Skill", "Skill")
+    : segment.type === "agent-reference"
+      ? text("Agent", "Agent")
+      : text("不支持的引用", "Unsupported reference");
+
+  return (
+    <button
+      type="button"
+      className={`inline-media-composer-reference is-${segment.type}`}
+      contentEditable={false}
+      data-inline-media-segment={segment.id}
+      data-taskboard-inline-media-markdown={segment.markdown}
+      disabled={disabled}
+      aria-label={text(
+        `${kind} ${segment.label}，按退格键或删除键移除`,
+        `${kind} ${segment.label}, press Backspace or Delete to remove`,
+      )}
+      onKeyDown={(event) => {
+        if (event.defaultPrevented) return;
+        if (event.key !== "Backspace" && event.key !== "Delete") return;
+        event.preventDefault();
+        onRemove();
+      }}
+    >
+      {segment.type === "skill-reference"
+        ? <ProjectIcon color="currentColor" />
+        : <ConversationIcon color="currentColor" />}
+      <span>{segment.label}</span>
+    </button>
+  );
+}
+
 export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineMediaComposerProps>(
   function InlineMediaComposer({
     segments,
     mentionTasks = EMPTY_MENTION_TASKS,
+    referenceTasks,
+    completionContext,
     placeholder,
     ariaLabel,
     disabled = false,
@@ -288,260 +1089,1075 @@ export const InlineMediaComposer = forwardRef<InlineMediaComposerHandle, InlineM
     onError,
     onKeyDown,
   }, ref) {
-    const textareas = useRef(new Map<string, HTMLTextAreaElement>());
-    const pendingFocus = useRef<{ id: string; offset: number } | null>(null);
     const { text } = useTaskboardI18n();
-    const [mention, setMention] = useState<IssueMention | null>(null);
-    const [activeMentionIndex, setActiveMentionIndex] = useState(0);
-    const mentionResults = useMemo(() => {
-      if (!mention) return [];
-      const query = mention.query.toLocaleLowerCase();
+    const rootRef = useRef<HTMLDivElement>(null);
+    const latestSegments = useRef(segments);
+    latestSegments.current = segments;
+    const atomHosts = useRef(new Map<string, HTMLElement>());
+    const nativeSegments = useRef(new Map<string, InlineMediaSegment>());
+    const pendingSelection = useRef<number | null>(null);
+    const pendingMentionUpdate = useRef(false);
+    const pendingAtomHostRevision = useRef(0);
+    const composing = useRef(false);
+    const nativeInputPending = useRef(false);
+    const [atomHostRevision, refreshAtomHosts] = useState(0);
+    const requestSequence = useRef(0);
+    const [completionQuery, setCompletionQuery] = useState<ComposerQuery | null>(null);
+    const [activeCompletionId, setActiveCompletionId] = useState<string | null>(null);
+    const [completionResponse, setCompletionResponse] = useState<ComposerCandidatesResponse | null>(null);
+    const [completionLoading, setCompletionLoading] = useState(false);
+    const [completionError, setCompletionError] = useState<string | null>(null);
+    const issueResults = useMemo(() => {
+      if (!completionQuery || completionQuery.trigger !== "@") return [];
+      const query = completionQuery.query.toLocaleLowerCase();
       return mentionTasks.filter((task) => (
         !query
         || (task.externalKey ?? task.identifier).toLocaleLowerCase().includes(query)
         || task.title.toLocaleLowerCase().includes(query)
       ));
-    }, [mention, mentionTasks]);
-    const selectedMentionIndex = Math.min(
-      activeMentionIndex,
-      Math.max(mentionResults.length - 1, 0),
-    );
+    }, [completionQuery, mentionTasks]);
+    const completionSelections = useMemo<CompletionSelection[]>(() => {
+      const candidates = completionResponse?.candidates.filter((candidate) => {
+        if (!candidate.selectable || candidate.trigger !== completionQuery?.trigger) return false;
+        if (candidate.kind === "slashAction") {
+          return candidate.selection?.type === "insertText"
+            && typeof candidate.selection.text === "string";
+        }
+        return candidate.persistence?.format === "taskboard.composer-reference.v1"
+          && candidate.persistence.kind === candidate.kind
+          && Boolean(candidate.persistence.referenceKey)
+          && Boolean(candidate.persistence.markdown);
+      }) ?? [];
+      return [
+        ...issueResults.map((task): CompletionSelection => ({ type: "issue", task })),
+        ...candidates.map((candidate): CompletionSelection => ({ type: "candidate", candidate })),
+      ];
+    }, [completionQuery?.trigger, completionResponse, issueResults]);
+    const selectedCompletionIndex = completionSelections.length === 0
+      ? -1
+      : Math.max(
+          completionSelections.findIndex((selection) => (
+            completionSelectionId(selection) === activeCompletionId
+          )),
+          0,
+        );
+    const completionGroups = useMemo<ComposerCompletionGroup[]>(() => {
+      const groups: ComposerCompletionGroup[] = [];
+      const groupsById = new Map<string, ComposerCompletionGroup>();
+      let selectableIndex = 0;
+      for (const selection of completionSelections) {
+        const candidate = selection.type === "candidate" ? selection.candidate : null;
+        const groupId = candidate ? `codex:${candidate.group}` : "taskboard:issues";
+        const groupLabel = candidate?.group ?? text("Taskboard 议题", "Taskboard issues");
+        let group = groupsById.get(groupId);
+        if (!group) {
+          group = { id: groupId, label: groupLabel, options: [] };
+          groups.push(group);
+          groupsById.set(groupId, group);
+        }
+        const task = selection.type === "issue" ? selection.task : null;
+        group.options.push({
+          id: completionSelectionId(selection),
+          label: candidate?.kind === "slashAction"
+            ? candidate.command
+            : candidate?.label ?? task!.externalKey ?? task!.identifier,
+          description: candidate ? candidate.description : task!.title,
+          icon: candidate?.kind === "skill"
+            ? "project"
+            : candidate?.kind === "agent"
+              ? "conversation"
+              : candidate?.kind === "slashAction"
+                ? "action"
+                : "project",
+          selectableIndex,
+        });
+        selectableIndex += 1;
+      }
+      return groups;
+    }, [completionSelections, text]);
+    const completionDiagnostics = useMemo(() => (
+      completionResponse?.sources
+        .filter((source) => source.state !== "available")
+        .map((source) => `${source.kind}: ${source.state}${
+          source.reasonCode ? ` (${source.reasonCode})` : ""
+        }`) ?? []
+    ), [completionResponse]);
 
     useLayoutEffect(() => {
-      for (const element of textareas.current.values()) resizeTextarea(element);
-      const focus = pendingFocus.current;
-      if (!focus) return;
-      const target = textareas.current.get(focus.id);
-      if (!target) return;
-      target.focus();
-      target.setSelectionRange(focus.offset, focus.offset);
-      pendingFocus.current = null;
+      const root = rootRef.current;
+      if (!root) return;
+      if (nativeInputPending.current) {
+        nativeInputPending.current = false;
+        pendingSelection.current = null;
+        if (pendingMentionUpdate.current) {
+          pendingMentionUpdate.current = false;
+          updateCompletionFromSelection();
+        }
+        return;
+      }
+      const fragment = document.createDocumentFragment();
+      const nextAtomHosts = new Map<string, HTMLElement>();
+
+      for (const segment of segments) {
+        nativeSegments.current.set(segment.id, segment);
+        const element = document.createElement("span");
+        element.dataset.inlineMediaSegment = segment.id;
+        if (segment.type === "text") {
+          element.className = "inline-media-text";
+          if (segment.text) {
+            element.textContent = segment.text;
+            if (segment.text.endsWith("\n")) element.append(document.createElement("br"));
+          } else {
+            element.dataset.inlineMediaEmptyText = "true";
+            element.append(document.createTextNode(EMPTY_TEXT_CARET), document.createElement("br"));
+          }
+        } else {
+          element.className = isInlineReference(segment)
+            ? "inline-media-atom"
+            : "inline-media-atom inline-media-image-atom";
+          if (segment.type === "pending-image") element.contentEditable = "false";
+          else element.dataset.taskboardInlineMediaMarkdown = segment.markdown;
+          nextAtomHosts.set(segment.id, element);
+        }
+        fragment.append(element);
+      }
+
+      root.replaceChildren(fragment);
+      atomHosts.current = nextAtomHosts;
+      pendingAtomHostRevision.current = atomHostRevision + 1;
+      refreshAtomHosts(pendingAtomHostRevision.current);
     }, [segments]);
 
-    useEffect(() => {
-      setActiveMentionIndex(0);
-    }, [mention?.query]);
+    useLayoutEffect(() => {
+      if (atomHostRevision !== pendingAtomHostRevision.current) return;
+      if (pendingSelection.current === null) return;
+      setCollapsedSelection(pendingSelection.current);
+      pendingSelection.current = null;
+      if (!pendingMentionUpdate.current) return;
+      pendingMentionUpdate.current = false;
+      updateCompletionFromSelection();
+    }, [atomHostRevision, segments]);
 
     useEffect(() => {
-      if (disabled || mentionTasks.length === 0) setMention(null);
-    }, [disabled, mentionTasks.length]);
+      setActiveCompletionId(null);
+    }, [completionQuery?.query, completionQuery?.trigger]);
 
-    useImperativeHandle(ref, () => ({
-      focus() {
-        const firstText = segments.find((segment) => segment.type === "text");
-        if (firstText) textareas.current.get(firstText.id)?.focus();
-      },
-      addImages(files) {
-        const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
-        if (selected.length === 0) return;
+    useEffect(() => {
+      if (disabled || (!completionContext && mentionTasks.length === 0)) setCompletionQuery(null);
+    }, [completionContext, disabled, mentionTasks.length]);
 
-        const oversized = selected.find((file) => file.size > MAX_ATTACHMENT_SIZE);
-        if (oversized) {
-          onError([
-            `“${oversized.name}” 超过 25 MB，无法上传。`,
-            `“${oversized.name}” is larger than 25 MB and cannot be uploaded.`,
-          ]);
-          return;
-        }
-
-        const existing = new Set(inlineMediaImages(segments).map((image) => fileKey(image.file)));
-        const images = selected.filter((file) => {
-          const key = fileKey(file);
-          if (existing.has(key)) return false;
-          existing.add(key);
-          return true;
-        });
-        if (images.length === 0) return;
-        onError(null);
-        onChange(normalizeSegments([...segments, ...images.map(imageSegment)]));
-      },
-    }), [onChange, onError, segments]);
-
-    function changeText(id: string, text: string) {
-      onChange(segments.map((segment) => (
-        segment.id === id && segment.type === "text" ? { ...segment, text } : segment
-      )));
-    }
-
-    function updateMention(
-      segment: InlineTextSegment,
-      value: string,
-      textarea: HTMLTextAreaElement,
-    ) {
-      if (mentionTasks.length === 0 || textarea.selectionStart !== textarea.selectionEnd) {
-        setMention(null);
+    useEffect(() => {
+      if (!completionQuery || !completionContext) {
+        requestSequence.current += 1;
+        setCompletionResponse(null);
+        setCompletionLoading(false);
+        setCompletionError(null);
         return;
       }
-      const end = textarea.selectionStart;
-      const prefix = value.slice(0, end);
-      const match = /(?:^|\s)@([^\s@]*)$/.exec(prefix);
-      if (!match) {
-        setMention(null);
-        return;
-      }
-      setMention({
-        segmentId: segment.id,
-        start: prefix.lastIndexOf("@"),
-        end,
-        query: match[1],
-        anchor: textarea,
+      const controller = new AbortController();
+      const sequence = requestSequence.current + 1;
+      requestSequence.current = sequence;
+      setCompletionResponse(null);
+      setCompletionLoading(true);
+      setCompletionError(null);
+      void getAiChatComposerCandidates({
+        projectId: completionContext.projectId,
+        threadId: completionContext.threadId,
+        surface: completionContext.surface,
+        trigger: completionQuery.trigger,
+        query: completionQuery.query,
+      }, controller.signal).then((response) => {
+        if (requestSequence.current !== sequence) return;
+        setCompletionResponse(response);
+        setCompletionLoading(false);
+      }, (error: unknown) => {
+        if (controller.signal.aborted || requestSequence.current !== sequence) return;
+        setCompletionError(error instanceof Error ? error.message : text(
+          "补全来源暂时不可用",
+          "Completion sources are temporarily unavailable.",
+        ));
+        setCompletionLoading(false);
       });
-    }
+      return () => controller.abort();
+    }, [
+      completionContext?.projectId,
+      completionContext?.surface,
+      completionContext?.threadId,
+      completionQuery?.query,
+      completionQuery?.trigger,
+      text,
+    ]);
 
-    function selectMention(task: Task) {
-      if (!mention) return;
-      const segment = segments.find((candidate): candidate is InlineTextSegment => (
-        candidate.id === mention.segmentId && candidate.type === "text"
-      ));
-      if (!segment) return;
-      const displayIdentifier = task.externalKey ?? task.identifier;
-      const route = new URLSearchParams({ project: task.projectId, issue: task.identifier });
-      const suffix = segment.text.slice(mention.end);
-      const reference = `[@${displayIdentifier}](?${route})${/^\s/.test(suffix) ? "" : " "}`;
-      const nextText = `${segment.text.slice(0, mention.start)}${reference}${suffix}`;
-      pendingFocus.current = { id: segment.id, offset: mention.start + reference.length };
-      setMention(null);
-      onChange(segments.map((candidate) => (
-        candidate.id === segment.id ? { ...segment, text: nextText } : candidate
-      )));
-    }
+    useEffect(() => {
+      const root = rootRef.current;
+      if (!root) return;
+      root.addEventListener("beforeinput", handleBeforeInput);
+      return () => root.removeEventListener("beforeinput", handleBeforeInput);
+    }, [disabled, onChange, segments]);
 
-    function handleTextareaKeyDown(
-      event: KeyboardEvent<HTMLTextAreaElement>,
-    ) {
-      if (event.nativeEvent.isComposing || event.keyCode === 229) {
-        onKeyDown?.(event);
-        return;
+    useEffect(() => {
+      function collapseFromOutsidePointer(event: PointerEvent) {
+        const root = rootRef.current;
+        if (!root || root.contains(event.target as Node)) return;
+        collapseComposerSelection("focus");
       }
-      if (mention && event.key === "ArrowDown" && mentionResults.length > 0) {
-        event.preventDefault();
-        setActiveMentionIndex((index) => (index + 1) % mentionResults.length);
-        return;
-      }
-      if (mention && event.key === "ArrowUp" && mentionResults.length > 0) {
-        event.preventDefault();
-        setActiveMentionIndex((index) => (index - 1 + mentionResults.length) % mentionResults.length);
-        return;
-      }
-      if (mention && event.key === "Enter" && mentionResults[selectedMentionIndex]) {
-        event.preventDefault();
-        selectMention(mentionResults[selectedMentionIndex]);
-        return;
-      }
-      if (mention && event.key === "Escape") {
-        event.preventDefault();
-        setMention(null);
-        return;
-      }
-      onKeyDown?.(event);
-    }
 
-    function pasteImages(
-      event: ClipboardEvent<HTMLTextAreaElement>,
-      segment: InlineTextSegment,
-    ) {
-      const clipboardFiles = clipboardImages(event.clipboardData);
-      if (clipboardFiles.length === 0) return;
-      event.preventDefault();
+      document.addEventListener("pointerdown", collapseFromOutsidePointer, true);
+      return () => document.removeEventListener("pointerdown", collapseFromOutsidePointer, true);
+    }, [atomHostRevision, segments]);
 
-      const oversized = clipboardFiles.find((file) => file.size > MAX_ATTACHMENT_SIZE);
+    useEffect(() => {
+      document.addEventListener("selectionchange", syncAtomSelection);
+      syncAtomSelection();
+      return () => document.removeEventListener("selectionchange", syncAtomSelection);
+    }, [atomHostRevision, segments]);
+
+    function insertableImages(files: FileList | File[]): File[] | null {
+      const selected = Array.from(files).filter((file) => file.type.startsWith("image/"));
+      if (selected.length === 0) return [];
+
+      const oversized = selected.find((file) => file.size > MAX_ATTACHMENT_SIZE);
       if (oversized) {
         onError([
           `“${oversized.name}” 超过 25 MB，无法上传。`,
           `“${oversized.name}” is larger than 25 MB and cannot be uploaded.`,
         ]);
-        return;
+        return null;
       }
 
       const existing = new Set(inlineMediaImages(segments).map((image) => fileKey(image.file)));
-      const images = clipboardFiles.filter((file) => {
+      const images = selected.filter((file) => {
         const key = fileKey(file);
         if (existing.has(key)) return false;
         existing.add(key);
         return true;
       });
-      if (images.length === 0) return;
-      onError(null);
-
-      const textarea = event.currentTarget;
-      const start = textarea.selectionStart;
-      const end = textarea.selectionEnd;
-      const before = { ...segment, text: segment.text.slice(0, start) };
-      const after = textSegment(segment.text.slice(end));
-      const insertion = images.map(imageSegment);
-      const next = segments.flatMap((candidate) => (
-        candidate.id === segment.id ? [before, ...insertion, after] : [candidate]
-      ));
-      pendingFocus.current = { id: after.id, offset: 0 };
-      onChange(next);
+      if (images.length > 0) onError(null);
+      return images;
     }
 
-    function removeImage(id: string) {
-      onChange(normalizeSegments(segments.filter((segment) => segment.id !== id)));
+    useImperativeHandle(ref, () => ({
+      focus() {
+        rootRef.current?.focus();
+        setCollapsedSelection(segmentsLength(segments));
+      },
+      addImages(files) {
+        const images = insertableImages(files);
+        if (!images || images.length === 0) return;
+        onChange(normalizeSegments([...segments, ...images.map((file) => imageSegment(file))]));
+      },
+    }), [onChange, onError, segments]);
+
+    function directRootTextSegment(): InlineTextSegment | null {
+      const root = rootRef.current;
+      const segment = segments.length === 1 && segments[0].type === "text"
+        ? segments[0]
+        : null;
+      if (!root || !segment || root.childNodes.length !== 1) return null;
+      return root.firstChild instanceof Text || root.firstChild instanceof HTMLBRElement
+        ? segment
+        : null;
+    }
+
+    function segmentElement(node: Node | null): HTMLElement | null {
+      const root = rootRef.current;
+      if (!root || !node || !root.contains(node)) return null;
+      const element = node instanceof Element ? node : node.parentElement;
+      return element?.closest<HTMLElement>("[data-inline-media-segment]") ?? null;
+    }
+
+    function segmentOffset(id: string): number {
+      let offset = 0;
+      for (const segment of segments) {
+        if (segment.id === id) return offset;
+        offset += segmentLength(segment);
+      }
+      return offset;
+    }
+
+    function logicalOffsetForPoint(
+      node: Node,
+      offset: number,
+      edge: "start" | "end",
+    ): number | null {
+      const root = rootRef.current;
+      if (!root || !root.contains(node)) return null;
+      const directText = directRootTextSegment();
+      if (directText) {
+        const child = root.firstChild;
+        if (node === child && child instanceof Text) {
+          return Math.max(0, Math.min(offset, child.length));
+        }
+        if (node === root) {
+          return child instanceof Text && offset > 0 ? directText.text.length : 0;
+        }
+      }
+      if (node === root) {
+        let logicalOffset = 0;
+        const boundary = Math.max(0, Math.min(offset, root.childNodes.length));
+        for (let index = 0; index < boundary; index += 1) {
+          const child = root.childNodes[index];
+          if (child instanceof Text) {
+            logicalOffset += child.length;
+            continue;
+          }
+          if (!(child instanceof HTMLElement)) continue;
+          const id = child.dataset.inlineMediaSegment;
+          const segment = id ? nativeSegments.current.get(id) : null;
+          logicalOffset += segment && segment.type !== "text"
+            ? segmentLength(segment)
+            : child.textContent?.length ?? 0;
+        }
+        return Math.min(logicalOffset, segmentsLength(segments));
+      }
+      const element = segmentElement(node);
+      const id = element?.dataset.inlineMediaSegment;
+      if (!element || !id) return null;
+      const segment = segments.find((candidate) => candidate.id === id);
+      if (!segment) return null;
+      const start = segmentOffset(id);
+      if (segment.type !== "text") return start + (edge === "end" ? 1 : 0);
+      const range = document.createRange();
+      range.selectNodeContents(element);
+      range.setEnd(node, offset);
+      return start + range.toString().length;
+    }
+
+    function currentLogicalRange(): { start: number; end: number } | null {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      if (!root || !selection || selection.rangeCount === 0) return null;
+      const range = selection.getRangeAt(0);
+      if (!range.intersectsNode(root)) return null;
+      const start = root.contains(range.startContainer)
+        ? logicalOffsetForPoint(range.startContainer, range.startOffset, "start")
+        : 0;
+      if (start === null) return null;
+      if (range.collapsed) return { start, end: start };
+      const end = root.contains(range.endContainer)
+        ? logicalOffsetForPoint(range.endContainer, range.endOffset, "end")
+        : segmentsLength(segments);
+      return end === null ? null : { start, end };
+    }
+
+    function elementForSegment(id: string): HTMLElement | null {
+      const root = rootRef.current;
+      if (!root) return null;
+      return Array.from(root.querySelectorAll<HTMLElement>("[data-inline-media-segment]"))
+        .find((element) => element.dataset.inlineMediaSegment === id) ?? null;
+    }
+
+    function domPointAtOffset(offset: number): { node: Node; offset: number } | null {
+      const root = rootRef.current;
+      if (!root) return null;
+      const directText = directRootTextSegment();
+      if (directText) {
+        const child = root.firstChild;
+        if (child instanceof Text) {
+          return { node: child, offset: Math.max(0, Math.min(offset, child.length)) };
+        }
+        return { node: root, offset: 0 };
+      }
+      let current = 0;
+      for (const segment of segments) {
+        const element = elementForSegment(segment.id);
+        if (!element) continue;
+        const length = segmentLength(segment);
+        if (segment.type === "text" && offset <= current + length) {
+          const textNode = element.firstChild;
+          if (textNode instanceof Text) {
+            return { node: textNode, offset: Math.max(0, Math.min(offset - current, textNode.length)) };
+          }
+          return { node: element, offset: 0 };
+        }
+        const childIndex = Array.from(root.childNodes).indexOf(element);
+        if (segment.type !== "text" && offset <= current) {
+          return { node: root, offset: Math.max(childIndex, 0) };
+        }
+        if (segment.type !== "text" && offset < current + length) {
+          return { node: root, offset: Math.max(childIndex + 1, 0) };
+        }
+        current += length;
+      }
+      return { node: root, offset: root.childNodes.length };
+    }
+
+    function setCollapsedSelection(offset: number) {
+      const root = rootRef.current;
+      const point = domPointAtOffset(offset);
+      if (!root || !point) return;
+      root.focus();
+      const range = document.createRange();
+      range.setStart(point.node, point.offset);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      syncAtomSelection();
+    }
+
+    function collapseComposerSelection(edge: "start" | "end" | "focus"): boolean {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      if (!root || !selection || selection.rangeCount === 0 || selection.isCollapsed) return false;
+      const range = selection.getRangeAt(0);
+      if (!root.contains(range.startContainer) || !root.contains(range.endContainer)) return false;
+      if (edge === "focus" && selection.focusNode && root.contains(selection.focusNode)) {
+        selection.collapse(selection.focusNode, selection.focusOffset);
+        syncAtomSelection();
+        return true;
+      }
+      const collapsed = range.cloneRange();
+      collapsed.collapse(edge === "start");
+      selection.removeAllRanges();
+      selection.addRange(collapsed);
+      syncAtomSelection();
+      return true;
+    }
+
+    function syncAtomSelection() {
+      const range = currentLogicalRange();
+      let offset = 0;
+      for (const segment of segments) {
+        const length = segmentLength(segment);
+        if (segment.type !== "text") {
+          elementForSegment(segment.id)?.classList.toggle(
+            "is-range-selected",
+            range !== null && range.start < offset + length && range.end > offset,
+          );
+        }
+        offset += length;
+      }
+    }
+
+    function applyRangeReplacement(
+      start: number,
+      end: number,
+      insertion: InlineMediaSegment[],
+      updateMention = true,
+    ) {
+      const replacement = replaceInlineMediaRange(segments, start, end, insertion);
+      pendingSelection.current = replacement.caret;
+      pendingMentionUpdate.current = updateMention;
+      setCompletionQuery(null);
+      onChange(replacement.segments);
+    }
+
+    function removeSegment(id: string) {
+      const index = segments.findIndex((segment) => segment.id === id);
+      if (index < 0) return;
+      const start = segmentsLength(segments.slice(0, index));
+      applyRangeReplacement(start, start + segmentLength(segments[index]), [], false);
+    }
+
+    function completionRangeFromCaret(caretRange: Range, triggerLength: number): Range | null {
+      const root = rootRef.current;
+      if (!root || !caretRange.collapsed || !root.contains(caretRange.startContainer)) return null;
+      const textNode = caretRange.startContainer;
+      if (!(textNode instanceof Text) || caretRange.startOffset < triggerLength) return null;
+      const range = document.createRange();
+      const triggerOffset = caretRange.startOffset - triggerLength;
+      range.setStart(textNode, triggerOffset);
+      range.setEnd(textNode, triggerOffset + 1);
+      return range;
+    }
+
+    function completionAnchorRect(query: ComposerQuery): DOMRect {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      if (!root || !selection || selection.rangeCount === 0) return query.anchorRect;
+      const caretRange = selection.getRangeAt(0);
+      return completionRangeFromCaret(caretRange, query.end - query.start)
+        ?.getBoundingClientRect() ?? query.anchorRect;
+    }
+
+    function updateCompletionFromSelection() {
+      const root = rootRef.current;
+      const selection = window.getSelection();
+      if (
+        !root
+        || (!completionContext && mentionTasks.length === 0)
+        || !selection
+        || selection.rangeCount === 0
+      ) {
+        setCompletionQuery(null);
+        return;
+      }
+      const range = selection.getRangeAt(0);
+      if (!range.collapsed) {
+        setCompletionQuery(null);
+        return;
+      }
+      const directText = directRootTextSegment();
+      const selectedElement = segmentElement(range.startContainer) ?? (directText ? root : null);
+      const selectedId = selectedElement === root
+        ? directText?.id
+        : selectedElement?.dataset.inlineMediaSegment;
+      const caretOffset = logicalOffsetForPoint(
+        range.startContainer,
+        range.startOffset,
+        "start",
+      );
+      let segmentStart = 0;
+      let segment = selectedId
+        ? segments.find((candidate): candidate is InlineTextSegment => (
+            candidate.id === selectedId && candidate.type === "text"
+          ))
+        : null;
+      if (segment) {
+        segmentStart = segmentOffset(segment.id);
+      } else if (caretOffset !== null) {
+        let offset = 0;
+        segment = segments.find((candidate): candidate is InlineTextSegment => {
+          const start = offset;
+          offset += segmentLength(candidate);
+          if (candidate.type !== "text") return false;
+          const containsCaret = caretOffset >= start && caretOffset <= offset;
+          if (containsCaret) segmentStart = start;
+          return containsCaret;
+        }) ?? null;
+      }
+      if (!segment || caretOffset === null) {
+        setCompletionQuery(null);
+        return;
+      }
+      const end = Math.max(0, Math.min(caretOffset - segmentStart, segment.text.length));
+      const prefix = segment.text.slice(0, end);
+      const match = /(?:^|\s)([@/])([^\s@/]*)$/.exec(prefix);
+      if (!match) {
+        setCompletionQuery(null);
+        return;
+      }
+      const trigger = match[1] as ComposerTrigger;
+      if ((trigger === "/" && !completionContext) || (
+        trigger === "@" && !completionContext && mentionTasks.length === 0
+      )) {
+        setCompletionQuery(null);
+        return;
+      }
+      const start = prefix.lastIndexOf(trigger);
+      const triggerLength = end - start;
+      let anchorRange = completionRangeFromCaret(range, triggerLength);
+      if (!anchorRange) {
+        anchorRange = range.cloneRange();
+        anchorRange.setStart(range.startContainer, range.startOffset);
+        anchorRange.collapse(true);
+      }
+      const anchorRect = anchorRange.getBoundingClientRect();
+      setCompletionQuery({
+        segmentId: segment.id,
+        start,
+        end,
+        query: match[2],
+        trigger,
+        anchor: root,
+        anchorRect,
+      });
+    }
+
+    function selectCompletion(selection: CompletionSelection) {
+      if (!completionQuery) return;
+      const segment = segments.find((candidate): candidate is InlineTextSegment => (
+        candidate.id === completionQuery.segmentId && candidate.type === "text"
+      ));
+      if (!segment) return;
+      const suffix = segment.text.slice(completionQuery.end);
+      const start = segmentOffset(segment.id) + completionQuery.start;
+      const end = start + completionQuery.end - completionQuery.start;
+
+      if (selection.type === "issue") {
+        const task = selection.task;
+        const displayIdentifier = task.externalKey ?? task.identifier;
+        const route = new URLSearchParams({ project: task.projectId, issue: task.identifier });
+        const reference: IssueReferenceSegment = {
+          id: segmentId("issue"),
+          type: "issue-reference",
+          markdown: `[@${displayIdentifier}](?${route})`,
+          identifier: displayIdentifier,
+          projectId: task.projectId,
+          issueIdentifier: task.identifier,
+          taskId: task.id,
+        };
+        applyRangeReplacement(
+          start,
+          end,
+          [reference, textSegment(/^\s/.test(suffix) ? "" : " ")],
+          false,
+        );
+        return;
+      }
+
+      const candidate = selection.candidate;
+      if (candidate.kind === "slashAction") {
+        if (candidate.selection?.type !== "insertText") return;
+        applyRangeReplacement(start, end, [textSegment(candidate.selection.text)], false);
+        return;
+      }
+
+      const persistence = candidate.persistence;
+      if (!persistence || persistence.kind !== candidate.kind) return;
+      const parsed = createInlineMediaSegments(persistence.markdown).filter((item) => item.type !== "text");
+      const reference = parsed.length === 1 && (
+        parsed[0].type === "skill-reference" || parsed[0].type === "agent-reference"
+      ) ? parsed[0] : null;
+      if (
+        !reference
+        || reference.type !== `${candidate.kind}-reference`
+        || reference.referenceKey !== persistence.referenceKey
+      ) return;
+      applyRangeReplacement(
+        start,
+        end,
+        [reference, textSegment(/^\s/.test(suffix) ? "" : " ")],
+        false,
+      );
+    }
+
+    function handleComposerKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+      if (event.nativeEvent.isComposing || event.keyCode === 229) {
+        onKeyDown?.(event);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "a") {
+        event.preventDefault();
+        const root = rootRef.current;
+        if (!root) return;
+        root.focus();
+        const range = document.createRange();
+        range.selectNodeContents(root);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+        syncAtomSelection();
+        setCompletionQuery(null);
+        return;
+      }
+      if (
+        (event.key === "PageUp" || event.key === "PageDown")
+        && collapseComposerSelection(event.key === "PageUp" ? "start" : "end")
+      ) {
+        event.preventDefault();
+        setCompletionQuery(null);
+        return;
+      }
+      if (completionQuery && event.key === "ArrowDown" && completionSelections.length > 0) {
+        event.preventDefault();
+        const nextIndex = (selectedCompletionIndex + 1) % completionSelections.length;
+        setActiveCompletionId(completionSelectionId(completionSelections[nextIndex]));
+        return;
+      }
+      if (completionQuery && event.key === "ArrowUp" && completionSelections.length > 0) {
+        event.preventDefault();
+        const nextIndex = (
+          selectedCompletionIndex - 1 + completionSelections.length
+        ) % completionSelections.length;
+        setActiveCompletionId(completionSelectionId(completionSelections[nextIndex]));
+        return;
+      }
+      if (
+        completionQuery
+        && (event.key === "Enter" || event.key === "Tab")
+        && selectedCompletionIndex >= 0
+        && completionSelections[selectedCompletionIndex]
+      ) {
+        event.preventDefault();
+        selectCompletion(completionSelections[selectedCompletionIndex]);
+        return;
+      }
+      if (completionQuery && event.key === "Escape") {
+        event.preventDefault();
+        setCompletionQuery(null);
+        return;
+      }
+      onKeyDown?.(event);
+    }
+
+    function handleBeforeInput(input: InputEvent) {
+      if (disabled || composing.current) return;
+      const targetRange = input.getTargetRanges()[0];
+      if (!targetRange) return;
+      const root = rootRef.current;
+      const start = logicalOffsetForPoint(
+        targetRange.startContainer,
+        targetRange.startOffset,
+        "start",
+      );
+      const end = logicalOffsetForPoint(
+        targetRange.endContainer,
+        targetRange.endOffset,
+        "end",
+      );
+      if (start === null || end === null) return;
+      const startElement = segmentElement(targetRange.startContainer);
+      const endElement = segmentElement(targetRange.endContainer);
+      const directText = directRootTextSegment();
+      const directTextTarget = Boolean(
+        root
+        && directText
+        && [targetRange.startContainer, targetRange.endContainer].every((node) => (
+          node === root || node.parentNode === root
+        )),
+      );
+      const targetSegment = startElement?.dataset.inlineMediaSegment
+        ? segments.find((segment) => segment.id === startElement.dataset.inlineMediaSegment)
+        : directTextTarget ? directText : null;
+      const sameTextSegment = targetSegment?.type === "text"
+        && (directTextTarget || startElement === endElement);
+      const fullDelete = start === 0 && end > start && end === segmentsLength(segments);
+      const nativeTextEdit = (
+        sameTextSegment
+        && (
+          input.inputType.startsWith("delete")
+          || ["insertText", "insertReplacementText"].includes(input.inputType)
+        )
+      ) || (
+        input.inputType.startsWith("delete")
+        && fullDelete
+      );
+      if (nativeTextEdit) return;
+      let insertion: InlineMediaSegment[] | null = null;
+      if (["insertText", "insertReplacementText"].includes(input.inputType)) {
+        insertion = [textSegment(input.data ?? "")];
+      } else if (["insertLineBreak", "insertParagraph"].includes(input.inputType)) {
+        insertion = [textSegment("\n")];
+      } else if (input.inputType.startsWith("delete")) {
+        insertion = [];
+      }
+      if (insertion === null) return;
+      input.preventDefault();
+      applyRangeReplacement(start, end, insertion);
+    }
+
+    async function copyContent(event: ClipboardEvent<HTMLDivElement>): Promise<{
+      range: { start: number; end: number };
+      segments: InlineMediaSegment[];
+    } | null> {
+      const currentTarget = event.currentTarget;
+      const ownerDocument = currentTarget.ownerDocument;
+      const selection = ownerDocument.getSelection();
+      if (!selection || selection.rangeCount === 0) return null;
+      const selectedRange = selection.getRangeAt(0);
+      if (
+        !currentTarget.contains(selectedRange.startContainer)
+        || !currentTarget.contains(selectedRange.endContainer)
+      ) return null;
+      const range = currentLogicalRange();
+      if (!range || range.start === range.end) return null;
+      const copiedSegments = inlineMediaRangeSegments(segments, range.start, range.end);
+      event.preventDefault();
+      const image = copiedSegments.find((segment): segment is InlineImageSegment => (
+        segment.type === "pending-image" && segment.file.type === "image/png"
+      ));
+      if (image) {
+        await Promise.all(copiedSegments.flatMap((segment) => (
+          segment.type === "pending-image" ? [segment.dataUrlReady] : []
+        )));
+        const payload = inlineMediaClipboardPayload(
+          copiedSegments,
+          ownerDocument,
+        );
+        const imageOnly = copiedSegments.every((segment) => (
+          segment.type === "pending-image"
+          || (segment.type === "text" && segment.text.length === 0)
+        ));
+        await navigator.clipboard.write([new ClipboardItem(imageOnly ? {
+          "image/png": image.file,
+          "text/html": new Blob([payload.html], { type: "text/html" }),
+          "text/plain": new Blob([payload.plainText], { type: "text/plain" }),
+        } : {
+          "text/html": new Blob([payload.html], { type: "text/html" }),
+          "text/plain": new Blob([payload.plainText], { type: "text/plain" }),
+        })]);
+      } else {
+        writeInlineMediaClipboard(
+          event.clipboardData,
+          copiedSegments,
+          ownerDocument,
+        );
+      }
+      return { range, segments: copiedSegments };
+    }
+
+    function pasteContent(event: ClipboardEvent<HTMLDivElement>) {
+      const range = currentLogicalRange();
+      if (!range) return;
+      const clipboardHtml = event.clipboardData.getData("text/html");
+      const clipboardId = event.clipboardData.getData(INLINE_MEDIA_CLIPBOARD_MIME)
+        || inlineMediaClipboardIdFromHtml(clipboardHtml);
+      if (clipboardId && inlineMediaClipboard?.id === clipboardId) {
+        event.preventDefault();
+        applyRangeReplacement(
+          range.start,
+          range.end,
+          cloneInlineMediaSegments(inlineMediaClipboard.segments),
+          false,
+        );
+        return;
+      }
+      const taskboardHtml = clipboardId
+        || clipboardHtml.includes("data-taskboard-inline-media-markdown");
+      const pendingImageHtml = clipboardHtml.includes(
+        "data-taskboard-inline-media-pending-image",
+      );
+      if (taskboardHtml) {
+        const htmlSegments = createInlineMediaSegmentsFromHtml(clipboardHtml, referenceTasks);
+        if (htmlSegments) {
+          event.preventDefault();
+          applyRangeReplacement(range.start, range.end, htmlSegments, false);
+          return;
+        }
+      }
+      const clipboardFiles = clipboardImages(event.clipboardData);
+      if (clipboardFiles.length > 0) {
+        event.preventDefault();
+        const images = insertableImages(clipboardFiles);
+        if (!images || images.length === 0) return;
+        applyRangeReplacement(
+          range.start,
+          range.end,
+          images.map((file) => imageSegment(file)),
+          false,
+        );
+        return;
+      }
+      const htmlSegments = pendingImageHtml
+        ? null
+        : createInlineMediaSegmentsFromHtml(clipboardHtml, referenceTasks);
+      if (htmlSegments) {
+        event.preventDefault();
+        applyRangeReplacement(range.start, range.end, htmlSegments, false);
+        return;
+      }
+
+      const pastedText = event.clipboardData.getData("text/plain");
+      const insertion = createInlineMediaSegments(pastedText, referenceTasks);
+      event.preventDefault();
+      applyRangeReplacement(range.start, range.end, insertion);
+    }
+
+    function dragContent(event: DragEvent<HTMLDivElement>) {
+      if (Array.from(event.dataTransfer.items).some((item) => (
+        item.kind === "file" && item.type.startsWith("image/")
+      ))) event.preventDefault();
+    }
+
+    function dropContent(event: DragEvent<HTMLDivElement>) {
+      const images = insertableImages(event.dataTransfer.files);
+      if (!images || images.length === 0) return;
+      event.preventDefault();
+      const caretRange = (document as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+      }).caretRangeFromPoint?.(event.clientX, event.clientY);
+      const offset = caretRange
+        ? logicalOffsetForPoint(caretRange.startContainer, caretRange.startOffset, "start")
+        : null;
+      const insertionOffset = offset ?? currentLogicalRange()?.end ?? segmentsLength(segments);
+      applyRangeReplacement(
+        insertionOffset,
+        insertionOffset,
+        images.map((file) => imageSegment(file)),
+        false,
+      );
+    }
+
+    function syncSegmentsFromDom() {
+      const root = rootRef.current;
+      if (!root) return;
+      const existing = nativeSegments.current;
+      for (const segment of segments) existing.set(segment.id, segment);
+      const directText = directRootTextSegment();
+      const next: InlineMediaSegment[] = [];
+      const nextAtomHosts = new Map<string, HTMLElement>();
+      for (const child of root.childNodes) {
+        if (child instanceof Text) {
+          if (child.data) {
+            next.push(directText ? { ...directText, text: child.data } : textSegment(child.data));
+          }
+          continue;
+        }
+        if (!(child instanceof HTMLElement)) continue;
+        const id = child.dataset.inlineMediaSegment;
+        const segment = id ? existing.get(id) : null;
+        if (segment?.type === "text") {
+          let text = child.textContent ?? "";
+          if (child.dataset.inlineMediaEmptyText) {
+            const textNode = child.firstChild;
+            const placeholderOffset = textNode instanceof Text
+              ? textNode.data.indexOf(EMPTY_TEXT_CARET)
+              : -1;
+            text = text.replace(EMPTY_TEXT_CARET, "");
+            if (text) {
+              if (textNode instanceof Text && placeholderOffset >= 0) {
+                textNode.deleteData(placeholderOffset, 1);
+              }
+              delete child.dataset.inlineMediaEmptyText;
+            }
+          }
+          next.push({ ...segment, text });
+        } else if (segment) {
+          next.push(segment);
+          nextAtomHosts.set(segment.id, child);
+        } else if (child.tagName === "BR" && root.childNodes.length > 1) {
+          next.push(textSegment("\n"));
+        } else if (child.textContent) {
+          next.push(textSegment(child.textContent));
+        }
+      }
+      if (next.length === 0) {
+        const text = segments.find((segment): segment is InlineTextSegment => segment.type === "text");
+        if (text) next.push({ ...text, text: "" });
+      }
+      const normalized = normalizeSegments(next);
+      for (const segment of normalized) existing.set(segment.id, segment);
+      atomHosts.current = nextAtomHosts;
+      nativeInputPending.current = true;
+      pendingSelection.current = null;
+      pendingMentionUpdate.current = true;
+      onChange(normalized);
     }
 
     const isEmpty = segments.every((segment) => (
       segment.type === "text" ? segment.text.length === 0 : false
     ));
+    const atomPortals = segments.flatMap((segment) => {
+      if (segment.type === "text") return [];
+      const host = atomHosts.current.get(segment.id);
+      if (!host) return [];
+      const content = segment.type === "pending-image" ? (
+        <PendingImageBlock
+          segment={segment}
+          disabled={disabled}
+          onRemove={() => removeSegment(segment.id)}
+        />
+      ) : segment.type === "persisted-image" ? (
+        <PersistedImageBlock
+          segment={segment}
+          disabled={disabled}
+          onRemove={() => removeSegment(segment.id)}
+        />
+      ) : segment.type === "issue-reference" ? (
+        <IssueReferenceChip
+          segment={segment}
+          task={segment.taskId
+            ? referenceTasks.find((task) => task.id === segment.taskId) ?? null
+            : null}
+          disabled={disabled}
+          onRemove={() => removeSegment(segment.id)}
+        />
+      ) : (
+        <ComposerReferenceChip
+          segment={segment}
+          disabled={disabled}
+          onRemove={() => removeSegment(segment.id)}
+        />
+      );
+      return [createPortal(content, host, segment.id)];
+    });
 
     return (
-      <div className={`inline-media-composer ${className}`.trim()} aria-label={ariaLabel}>
-        {segments.map((segment, index) => (
-          segment.type === "text" ? (
-            <textarea
-              key={segment.id}
-              ref={(element) => {
-                if (element) textareas.current.set(segment.id, element);
-                else textareas.current.delete(segment.id);
-              }}
-              value={segment.text}
-              rows={1}
-              disabled={disabled}
-              aria-label={index === 0 ? ariaLabel : text(`${ariaLabel}续写`, `${ariaLabel} continuation`)}
-              placeholder={isEmpty && index === 0 ? placeholder : undefined}
-              onChange={(event) => {
-                changeText(segment.id, event.target.value);
-                resizeTextarea(event.currentTarget);
-                updateMention(segment, event.target.value, event.currentTarget);
-              }}
-              onPaste={(event) => pasteImages(event, segment)}
-              onKeyDown={handleTextareaKeyDown}
-              onKeyUp={(event) => {
-                if (["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
-                  updateMention(segment, event.currentTarget.value, event.currentTarget);
-                }
-              }}
-              onClick={(event) => updateMention(segment, event.currentTarget.value, event.currentTarget)}
-              onBlur={() => setMention(null)}
-            />
-          ) : segment.type === "pending-image" ? (
-            <PendingImageBlock
-              key={segment.id}
-              segment={segment}
-              disabled={disabled}
-              onRemove={() => removeImage(segment.id)}
-            />
-          ) : (
-            <PersistedImageBlock
-              key={segment.id}
-              segment={segment}
-              disabled={disabled}
-              onRemove={() => removeImage(segment.id)}
-            />
-          )
-        ))}
-        {mention && (
-          <IssueMentionMenu
-            anchor={mention.anchor}
-            anchorOffset={mention.start}
-            tasks={mentionResults}
-            activeIndex={selectedMentionIndex}
-            onActiveIndexChange={setActiveMentionIndex}
-            onSelect={selectMention}
-            onClose={() => setMention(null)}
+      <>
+        <div
+          ref={rootRef}
+          className={`inline-media-composer ${className}`.trim()}
+          contentEditable={!disabled}
+          suppressContentEditableWarning
+          role="textbox"
+          aria-multiline="true"
+          aria-label={ariaLabel}
+          aria-disabled={disabled}
+          data-empty={isEmpty ? "true" : undefined}
+          data-placeholder={placeholder}
+          onKeyDownCapture={handleComposerKeyDown}
+          onInput={() => {
+            if (!composing.current) syncSegmentsFromDom();
+          }}
+          onCompositionStart={(event) => {
+            composing.current = true;
+            event.currentTarget.removeAttribute("data-empty");
+          }}
+          onCompositionEnd={(event) => {
+            composing.current = false;
+            if (isEmpty && !event.currentTarget.textContent?.replace(EMPTY_TEXT_CARET, "")) {
+              event.currentTarget.dataset.empty = "true";
+            }
+            syncSegmentsFromDom();
+          }}
+          onDragOver={dragContent}
+          onDrop={dropContent}
+          onPaste={pasteContent}
+          onCopy={copyContent}
+          onCut={(event) => {
+            void copyContent(event).then((copied) => {
+              if (!copied) return;
+              const currentSegments = latestSegments.current;
+              const currentCut = inlineMediaRangeSegments(
+                currentSegments,
+                copied.range.start,
+                copied.range.end,
+              );
+              const unchanged = currentCut.length === copied.segments.length
+                && currentCut.every((segment, index) => {
+                  const snapshot = copied.segments[index];
+                  return segment.id === snapshot.id
+                    && segment.type === snapshot.type
+                    && (
+                      segment.type !== "text"
+                      || (snapshot.type === "text" && segment.text === snapshot.text)
+                    );
+                });
+              if (!unchanged) return;
+              const replacement = replaceInlineMediaRange(
+                currentSegments,
+                copied.range.start,
+                copied.range.end,
+                [],
+              );
+              pendingSelection.current = replacement.caret;
+              pendingMentionUpdate.current = false;
+              setCompletionQuery(null);
+              onChange(replacement.segments);
+            });
+          }}
+          onKeyUp={(event) => {
+            if (event.key !== "Escape") updateCompletionFromSelection();
+          }}
+          onPointerUp={() => {
+            syncAtomSelection();
+            updateCompletionFromSelection();
+          }}
+          onBlur={(event) => {
+            setCompletionQuery(null);
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              collapseComposerSelection("focus");
+            }
+          }}
+        >
+          {atomPortals}
+        </div>
+        {completionQuery
+          && (completionLoading || completionError !== null || completionSelections.length > 0)
+          && (
+          <ComposerCompletionMenu
+            anchor={completionQuery.anchor}
+            anchorRect={completionQuery.anchorRect}
+            getAnchorRect={() => completionAnchorRect(completionQuery)}
+            groups={completionGroups}
+            activeIndex={selectedCompletionIndex}
+            loading={completionLoading}
+            error={completionError}
+            emptyDiagnostics={completionDiagnostics}
+            onActiveIndexChange={(index) => {
+              const selection = completionSelections[index];
+              if (selection) setActiveCompletionId(completionSelectionId(selection));
+            }}
+            onSelect={(index) => {
+              const selection = completionSelections[index];
+              if (selection) selectCompletion(selection);
+            }}
+            onClose={() => setCompletionQuery(null)}
           />
-        )}
-      </div>
+          )}
+      </>
     );
   },
 );

@@ -1,10 +1,8 @@
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-# Claude Taskboard
+# Codex Taskboard
 
-A local-first issue board that runs in a browser and is driven by Claude Code through the `manage-taskboard` skill. The same HTTP API powers the React UI and the `taskctl` CLI.
-
-This is a fork of [chuspeeism/dashi-taskboard](https://github.com/chuspeeism/dashi-taskboard) adapted for Claude Code. The upstream Codex desktop embedding is preserved but not adapted; see [Embed in Codex](#embed-in-codex).
+A local-first issue board that runs in a browser and can be embedded in Codex through the standalone CDP launcher or its injection script. The same HTTP API powers the React UI and the `taskctl` CLI used by the bundled Codex Skill.
 
 ![Codex Taskboard product screenshot](docs/assets/codex-taskboard.png)
 
@@ -32,71 +30,6 @@ npm run dev
 
 The Vite UI runs at <http://127.0.0.1:5173> and proxies API requests to the local service.
 
-To run several checkouts side by side, give each one its own pair of ports so the UI keeps proxying to its own backend:
-
-```bash
-TASKBOARD_WEB_PORT=5174 TASKBOARD_PORT=47901 npm run dev
-```
-
-## Lark notifications
-
-Set `TASKBOARD_LARK_USER_ID` to your Lark `open_id` and the service sends you a
-direct message whenever an issue moves into `in_review` or `blocked` — the two
-statuses that need a human. This covers every path that changes a status in the
-local service: the board UI, `taskctl`, the `manage-taskboard` skill, and the
-Coding workflow's own automatic transitions.
-
-The message ends with a link that opens the issue directly:
-
-```text
-🔍 待审核 · WEBSITE-7 Fix the login redirect
-项目：Website
-状态：in_progress → in_review
-http://127.0.0.1:5173/?project=website&issue=WEBSITE-7
-```
-
-The link uses `TASKBOARD_WEB_PORT` (the same variable the Vite UI binds to, so
-side-by-side checkouts each link to their own board). When you serve the built
-UI with `npm start` instead of `npm run dev`, point it at the service port:
-`TASKBOARD_WEB_PORT=47823`.
-
-```bash
-TASKBOARD_LARK_USER_ID=ou_xxx npm start
-```
-
-Delivery goes through `lark-cli` as a bot
-(`lark-cli im +messages-send --as bot`), so the CLI must already be configured
-and the app must have a direct-message relationship with you. Point
-`TASKBOARD_LARK_CLI` at the executable when it is not on the service's `PATH`:
-
-```bash
-TASKBOARD_LARK_USER_ID=ou_xxx \
-TASKBOARD_LARK_CLI=$HOME/.nvm/versions/node/v20.18.1/bin/lark-cli \
-npm start
-```
-
-Leaving `TASKBOARD_LARK_USER_ID` unset disables notifications. A failed send is
-logged to the server console and never fails the API request that triggered it.
-Because the feature has no interface of its own, an unset recipient looks exactly
-like the feature not being there — if nothing arrives, check this variable first.
-
-To avoid retyping it, put machine-local settings in `.env.local` at the project
-root. Both `npm run dev` and `npm start` load it at startup, and it is
-git-ignored:
-
-```bash
-TASKBOARD_LARK_USER_ID=ou_xxx
-TASKBOARD_LARK_CLI=/absolute/path/to/lark-cli
-```
-
-Any variable this README documents can go there, including `TASKBOARD_PORT` and
-`TASKBOARD_WEB_PORT`. A variable already set in the shell wins over the file, so
-`TASKBOARD_PORT=47901 npm run dev` still overrides it for one run.
-
-See [Lark notification TODO](docs/lark-notification-todo.md) for the two known
-gaps — cloud mode sends nothing, and a failed send is never retried — with what
-happens today and the replacement that would close each one.
-
 ## Use the CLI
 
 Run it from the project:
@@ -115,52 +48,22 @@ npm run taskctl -- issue create \
   --labels product,mvp
 ```
 
-Use `npm link` if you want `taskctl` on your shell path. Set `TASKBOARD_URL` (or the legacy `CODEX_TASKBOARD_URL`) to point the CLI at another local or LAN service. Cloud deployments are configured through the **loopback companion** (device-local loopback service for auth and path mapping—not a chat persona) with `taskctl cloud login`.
+Use `npm link` if you want `taskctl` on your shell path. Set `CODEX_TASKBOARD_URL` to point the CLI at another local or LAN service. Cloud deployments are configured through the **loopback companion** (device-local loopback service for auth and path mapping—not a chat persona) with `taskctl cloud login`.
 
-## Install the Skill
+## Install the Codex Skill
 
-The `manage-taskboard` skill is distributed through sync-spells at
-`skill-category/workflow/manage-taskboard/`. Activate it through a profile
-rather than copying it into `~/.claude/skills/`.
+Copy or symlink `skills/manage-taskboard` into the Codex skills directory, then start a new Codex task:
 
-The skill teaches Claude Code to inspect an issue, move it to `in_progress`
-with an optimistic version, verify the work, and move it to `in_review`; it
-moves the issue to `done` only after the user explicitly confirms acceptance.
-
-The upstream Codex version of the skill is kept unchanged at
-`skills/manage-taskboard/` so that merges from upstream stay clean. It is not
-the copy Claude Code uses.
-
-## Session attribution
-
-`taskctl` records which conversation made each issue, relation, or comment
-mutation. Register the bundled SessionStart hook so Claude Code reports its
-session id into context:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          { "type": "command", "command": "node /absolute/path/to/dashi-taskboard/scripts/claude-session-context.mjs" }
-        ]
-      }
-    ]
-  }
-}
+```bash
+ln -s /absolute/path/to/codex-taskboard/skills/manage-taskboard \
+  ~/.agents/skills/manage-taskboard
 ```
 
-Outside a hooked session, pass `--thread-id <id>` explicitly or set
-`TASKBOARD_SESSION_ID`.
+The desktop app keeps this same directory synchronized with its bundled Skill. The Skill teaches Codex to inspect an issue, move it to `in_progress`, use optimistic versions, verify the work, and then move it to `in_review`; it moves the issue to `done` only after the user explicitly confirms acceptance or asks to mark it complete.
 
 ## Embed in Codex
 
-> This section and the `npm run codex*` scripts are the upstream Codex desktop
-> embedding. This fork does not adapt them to the Claude desktop app; they are
-> left intact so they keep working against Codex.
-
-### Recommended: keep your current window and open a separate Taskboard window
+### Manual: use a dedicated CDP port
 
 Keep the existing Codex window open. From the Taskboard repository, start a second Codex instance with a dedicated CDP port:
 
@@ -173,7 +76,7 @@ open -n -a /Applications/ChatGPT.app --args \
 After the new Codex window appears, run the injector in another terminal:
 
 ```bash
-TASKBOARD_HOST=127.0.0.1 \
+CODEX_TASKBOARD_HOST=127.0.0.1 \
 npm run codex:inject -- --port 9231 --open
 ```
 
@@ -184,10 +87,10 @@ Keep the injector terminal running while using the embedded panel. The original 
 Keep existing Codex windows open and run:
 
 ```bash
-TASKBOARD_HOST=127.0.0.1 npm run codex
+CODEX_TASKBOARD_HOST=127.0.0.1 npm run codex
 ```
 
-This starts the local Taskboard service when needed, launches the official macOS Codex app with an independent profile and loopback-only port `9231`, waits for the main renderer and sidebar, injects a native-looking Taskboard entry after Plugins, and keeps watching both the service and replacement renderers. Existing Codex windows remain unchanged. Keep this command running while using the embedded panel. The launcher does not modify `ChatGPT.app` or its `app.asar`.
+This starts the local Taskboard service when needed. It reuses an open Codex with a reachable CDP renderer, opens Taskboard in the native browser panel of an ordinary Codex without CDP, or launches the official macOS Codex app with an independent profile and loopback-only port `9231` when no Codex is open. It injects a native-looking Taskboard entry after Plugins when CDP is available and keeps watching both the service and replacement renderers. Keep this command running while using the embedded panel. The launcher does not modify `ChatGPT.app` or its `app.asar`.
 
 The source launcher writes its authenticated endpoint to `.data/launcher-runtime.json`. A `taskctl` command installed with `npm link` reads this file by default, so a normal shell and a Codex task opened from the panel use the same Taskboard service without an extra environment variable.
 
@@ -208,7 +111,7 @@ npm run app:build
 
 Open `src-tauri/target/universal-apple-darwin/release/bundle/macos/Codex Taskboard.app` from Finder. The DMG is in `src-tauri/target/universal-apple-darwin/release/bundle/dmg/`. If you only want the stable App, download the current DMG from [GitHub Releases](https://github.com/chuspeeism/dashi-taskboard/releases/latest).
 
-The App contains its own Node runtime, Taskboard service, built web UI, Skill, CLI wrapper, and injection script. It starts the service, launches the official Codex app, waits for the renderer, injects the sidebar entry, and opens the panel without showing a terminal window. The App can be copied away from this checkout; the target Mac only needs the official Codex app and does not need this repository, a system Node installation, or a separate Codex CLI installation. Taskboard data is stored in `~/Library/Application Support/Codex Taskboard`, and launcher output is written to `~/Library/Logs/Codex Taskboard/codex-taskboard-launcher.log`.
+The App contains its own Node runtime, Taskboard service, built web UI, Skill, CLI wrapper, and injection script. It starts the service, reuses an open Codex with a reachable CDP renderer, opens Taskboard in the native browser panel of an ordinary Codex without CDP, or launches the official Codex app when no Codex is open. It waits for the renderer, injects the sidebar entry when CDP is available, and opens the panel without showing a terminal window. The App can be copied away from this checkout; the target Mac only needs the official Codex app and does not need this repository, a system Node installation, or a separate Codex CLI installation. Taskboard data is stored in `~/Library/Application Support/Codex Taskboard`, and launcher output is written to `~/Library/Logs/Codex Taskboard/codex-taskboard-launcher.log`.
 
 ### Windows code signing
 
@@ -241,7 +144,7 @@ This command also stays resident so the injected tab can restart Taskboard after
 
 The script adds a Taskboard entry to the Codex sidebar and renders the iframe across Codex's complete main workspace, including the contextual titlebar area so Taskboard's own header does not leave an empty strip. That full rectangular header is placed above Electron's draggable layer and marked `no-drag`; because the native contextual actions are suppressed while Taskboard is active, its own actions use their normal edge padding without an artificial right-side gap. The native sidebar stays mounted, while the previous page selection and contextual header are temporarily suppressed; choosing another Codex page restores them.
 
-“在对话中打开” selects the corresponding native Codex project when one is available and opens an unsent native composer with the `manage-taskboard` Skill plus the issue's project, workspace, and identifier context. “复制 Prompt” copies the same contextual instruction for use outside the embedded panel. A conversation is attributed only after it actually processes the issue. This fork reads `TASKBOARD_SESSION_ID`, so attribution through the Codex embed requires exporting `TASKBOARD_SESSION_ID=$CODEX_THREAD_ID` in that environment. Recorded IDs are clickable through Codex's native route bridge. Each issue can bind either one Git branch or one worktree; the options are scanned from the selected Codex project's repository instead of being typed by hand. The integration uses Codex's existing project, composer, and route markers; it does not patch React, replace `fetch`, load private chunks, or edit Codex data files.
+“在对话中打开” selects the corresponding native Codex project when one is available and opens an unsent native composer with an `e-taskboard` instruction and the issue's actual identifier. The installed Skill is selected implicitly from that instruction, so the composer does not add a `$manage-taskboard` mention. A conversation is attributed only after it actually processes the issue: `taskctl` reads Codex's `CODEX_THREAD_ID` and records that ID on the issue or comment mutation. Recorded IDs are clickable through Codex's native route bridge. Each issue can bind either one Git branch or one worktree; the options are scanned from the selected Codex project's repository instead of being typed by hand. The integration uses Codex's existing project, composer, and route markers; it does not patch React, replace `fetch`, load private chunks, or edit Codex data files.
 
 To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the user script runs.
 
@@ -249,13 +152,12 @@ To use a different UI origin, set `window.__CODEX_TASKBOARD_URL__` before the us
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `TASKBOARD_HOST` | `0.0.0.0` | HTTP bind address; use `127.0.0.1` to disable LAN access |
-| `TASKBOARD_PORT` | `47823` | Local HTTP port; the Vite dev proxy targets it too |
-| `TASKBOARD_WEB_PORT` | `5173` | Vite dev server port |
-| `TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
-| `TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
+| `CODEX_TASKBOARD_HOST` | `0.0.0.0` | HTTP bind address; use `127.0.0.1` to disable LAN access |
+| `CODEX_TASKBOARD_PORT` | `47823` | Local HTTP port |
+| `CODEX_TASKBOARD_DATA_DIR` | `.data` | SQLite data directory |
+| `CODEX_TASKBOARD_URL` | `http://127.0.0.1:47823` | CLI API origin |
 
-`npm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `TASKBOARD_URL=http://<host-ip>:47823`.
+`npm start` prints both the local URL and the available LAN URLs. Teammates on the same trusted network can open one of those LAN URLs and use the same taskboard service. Task, comment, and attachment changes are broadcast to every open client through server-sent events; reconnecting clients perform a full refresh so changes made while disconnected are not missed. A teammate using `taskctl` can point it at the shared service with `CODEX_TASKBOARD_URL=http://<host-ip>:47823`.
 
 LAN mode has no account authentication: anyone on the trusted local network who can reach the URL can read and write the taskboard. Public internet and cloud deployment require an authenticated deployment boundary.
 
@@ -273,4 +175,8 @@ See [Cloud collaboration](docs/cloud-collaboration.md) for owner deployment, exi
 npm run check
 ```
 
-This runs TypeScript checking, a production frontend build, and the server/CLI/injection test suite.
+This runs TypeScript checking, a production frontend build, the component tests, and the server/CLI/injection test suite.
+
+## Task Markdown
+
+Task descriptions and comments support GFM, including tables and task lists. Fenced `mermaid` blocks are rendered as read-only diagrams after the viewer loads; the diagram source remains available when rendering fails. Markdown HTML comments, such as `<!-- trace-analysis:v1 ... -->`, are hidden from the rendered document. Raw HTML is not enabled.

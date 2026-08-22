@@ -43,34 +43,6 @@ async function createTask(projectId, title, actorName = alice, extra = {}) {
   });
 }
 
-test("cloud tasks preserve a stable target branch across development context changes", async () => {
-  await createProject("target-branch-cloud");
-  const created = await createTask("target-branch-cloud", "Stable delivery target", alice, {
-    developmentContext: { type: "branch", branch: "release/next" },
-  });
-  assert.equal(created.response.status, 201);
-  assert.equal(created.body.task.targetBranch, "release/next");
-
-  const moved = await cloud.request(`/api/tasks/${created.body.task.id}`, {
-    method: "PATCH",
-    actorName: alice,
-    json: {
-      version: created.body.task.version,
-      developmentContext: { type: "worktree", branch: "codex/cloud-task" },
-    },
-  });
-  assert.equal(moved.response.status, 200);
-  assert.equal(moved.body.task.targetBranch, "release/next");
-
-  const retargeted = await cloud.request(`/api/tasks/${created.body.task.id}`, {
-    method: "PATCH",
-    actorName: alice,
-    json: { version: moved.body.task.version, targetBranch: "release/later" },
-  });
-  assert.equal(retargeted.response.status, 200);
-  assert.equal(retargeted.body.task.targetBranch, "release/later");
-});
-
 test("Basic authentication protects static assets, APIs, and attachment content", async () => {
   for (const pathname of ["/", "/api/projects", "/api/attachments/missing/content"]) {
     const missing = await cloud.request(pathname);
@@ -128,11 +100,11 @@ test("the Basic username becomes the trusted actor while the shared password gra
   });
   assert.equal(agentTask.response.status, 201);
   assert.equal(agentTask.body.task.creatorType, "agent");
-  assert.match(agentTask.body.task.creatorName, /Claude Agent/);
+  assert.match(agentTask.body.task.creatorName, /Codex Agent/);
   assert.match(agentTask.body.task.creatorName, /Bob/);
 });
 
-test("projects, tasks, comments, relations, and workflows preserve the current API contract", async () => {
+test("projects, tasks, comments, and relations preserve the current API contract", async () => {
   const parent = await createTask("alpha", "Parent");
   const child = await createTask("alpha", "Child");
   const relation = await cloud.request(
@@ -153,26 +125,6 @@ test("projects, tasks, comments, relations, and workflows preserve the current A
   });
   assert.equal(comment.response.status, 201);
   assert.equal(comment.body.comment.authorName, bob);
-
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "delivery", name: "Delivery" }],
-    activeWorkflowId: "delivery",
-    snapshots: {
-      delivery: {
-        nodes: [],
-        flow: { version: 2, root: { items: [] } },
-        selectedNodeId: null,
-      },
-    },
-  };
-  const saved = await cloud.request("/api/projects/alpha/workflow-workspace", {
-    method: "PUT",
-    actorName: alice,
-    json: { version: 0, workspace },
-  });
-  assert.equal(saved.response.status, 200);
-  assert.equal(saved.body.workflow.version, 1);
 
   const listed = await cloud.request("/api/tasks?projectId=alpha&archived=false", {
     actorName: alice,
@@ -286,6 +238,73 @@ test("PATCH moves an issue to an existing project and records the change", async
   });
   assert.equal(stale.response.status, 409);
   assert.equal(stale.body.error.code, "VERSION_CONFLICT");
+});
+
+test("remote thread identity survives controller moves and clears after create failure", async () => {
+  await createProject("remote-binding");
+  const legacy = await createTask("remote-binding", "Legacy local binding", alice, {
+    threadId: "legacy-local-thread",
+  });
+  assert.equal(legacy.body.task.threadBinding, null);
+  assert.equal(legacy.body.task.legacyLocalThreadId, "legacy-local-thread");
+  assert.equal(legacy.body.task.conversationRefs[0].legacyLocal, true);
+  const binding = {
+    threadId: "remote-thread-a",
+    codexProjectId: "remote-project-a",
+    codexProjectKind: "remote",
+    codexHostId: "ssh-a",
+    workspacePath: "/same/remote/path",
+  };
+  const created = await createTask("remote-binding", "Remote binding", alice, {
+    status: "todo",
+    threadId: binding.threadId,
+    threadBinding: binding,
+  });
+  assert.equal(created.response.status, 201, JSON.stringify(created.body));
+  assert.deepEqual(created.body.task.threadBinding, binding);
+
+  const comment = await cloud.request(`/api/tasks/${created.body.task.id}/comments`, {
+    method: "POST",
+    actorName: bob,
+    headers: { "x-taskboard-client": "taskctl" },
+    json: { body: "Controller note", threadId: "controller-thread" },
+  });
+  assert.equal(comment.body.comment.threadBinding, null);
+  assert.equal(comment.body.comment.legacyLocalThreadId, "controller-thread");
+
+  const blocked = await cloud.request(`/api/tasks/${created.body.task.id}/move`, {
+    method: "POST",
+    actorName: bob,
+    headers: { "x-taskboard-client": "taskctl" },
+    json: {
+      version: created.body.task.version,
+      status: "blocked",
+      threadId: "controller-thread",
+      threadBinding: binding,
+    },
+  });
+  assert.equal(blocked.response.status, 200, JSON.stringify(blocked.body));
+  assert.deepEqual(blocked.body.task.threadBinding, binding);
+  assert.deepEqual(blocked.body.task.conversationRefs.map((ref) => ref.threadId), [
+    binding.threadId,
+    "controller-thread",
+  ]);
+
+  const todo = await cloud.request(`/api/tasks/${created.body.task.id}/move`, {
+    method: "POST",
+    actorName: bob,
+    headers: { "x-taskboard-client": "taskctl" },
+    json: {
+      version: blocked.body.task.version,
+      status: "todo",
+      threadId: "controller-thread",
+      threadBinding: null,
+    },
+  });
+  assert.equal(todo.response.status, 200, JSON.stringify(todo.body));
+  assert.equal(todo.body.task.threadId, null);
+  assert.equal(todo.body.task.threadBinding, null);
+  assert.deepEqual(todo.body.task.conversationRefs.map((ref) => ref.threadId), ["controller-thread"]);
 });
 
 test("PATCH rejects moving an issue that still has relations", async () => {
@@ -410,7 +429,7 @@ test("a failed task insert rolls back its reserved project identifier", async ()
 
   const succeeded = await createTask("atomic-counter", "First real issue");
   assert.equal(succeeded.response.status, 201);
-  assert.equal(succeeded.body.task.identifier, "ATOMICCOUNTE-1");
+  assert.equal(succeeded.body.task.identifier, "ATO-1");
 });
 
 test("archived tasks are excluded from project issue counts", async () => {
@@ -444,6 +463,7 @@ test("R2 attachment upload, download, delete, and D1 failure compensation form o
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": encodeURIComponent("evidence.txt"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "attachment body",
   });
@@ -472,6 +492,7 @@ test("R2 attachment upload, download, delete, and D1 failure compensation form o
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": encodeURIComponent("fail.txt"),
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "must be compensated",
   });
@@ -490,6 +511,7 @@ test("permanent task deletion requires archiving and cleans D1 and R2", async ()
     headers: {
       "content-type": "text/plain",
       "x-taskboard-filename": "evidence.txt",
+      "x-taskboard-attachment-kind": "attachment",
     },
     body: "attachment",
   });
@@ -508,6 +530,7 @@ test("permanent task deletion requires archiving and cleans D1 and R2", async ()
       headers: {
         "content-type": "text/plain",
         "x-taskboard-filename": "comment-evidence.txt",
+        "x-taskboard-attachment-kind": "attachment",
       },
       body: "comment attachment",
     },
@@ -591,7 +614,6 @@ test("cloud-only local capability routes return an explicit companion requiremen
 
   for (const pathname of [
     "/api/device-workspaces",
-    "/api/workflow-capabilities",
     "/api/projects/alpha/development-contexts",
   ]) {
     const result = await cloud.request(pathname, { actorName: alice });
@@ -751,43 +773,8 @@ test("concurrent inverse parent writes cannot create a cycle", async () => {
   assert.equal(inserted.filter((result) => result.status === "fulfilled").length, 1);
 });
 
-test("workflow conflicts and comment attachment cleanup preserve shared-state boundaries", async () => {
+test("comment attachment cleanup preserves shared-state boundaries", async () => {
   await createProject("shared-boundaries");
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "delivery", name: "Delivery" }],
-    activeWorkflowId: "delivery",
-    snapshots: {
-      delivery: {
-        nodes: [],
-        flow: { version: 2, root: { items: [] } },
-        selectedNodeId: null,
-      },
-    },
-  };
-  const saved = await cloud.request(
-    "/api/projects/shared-boundaries/workflow-workspace",
-    {
-      method: "PUT",
-      actorName: alice,
-      json: { version: 0, workspace },
-    },
-  );
-  assert.equal(saved.response.status, 200);
-  const stale = await cloud.request(
-    "/api/projects/shared-boundaries/workflow-workspace",
-    {
-      method: "PUT",
-      actorName: bob,
-      json: { version: 0, workspace },
-    },
-  );
-  assert.equal(stale.response.status, 409);
-  assert.deepEqual(stale.body.error.details, {
-    expectedVersion: 0,
-    actualVersion: 1,
-  });
-
   const task = await createTask("shared-boundaries", "Comment owner");
   const created = await cloud.request(`/api/tasks/${task.body.task.id}/comments`, {
     method: "POST",
@@ -802,6 +789,7 @@ test("workflow conflicts and comment attachment cleanup preserve shared-state bo
       headers: {
         "content-type": "text/plain",
         "x-taskboard-filename": encodeURIComponent("comment.txt"),
+        "x-taskboard-attachment-kind": "attachment",
       },
       body: "comment attachment",
     },
@@ -823,85 +811,4 @@ test("workflow conflicts and comment attachment cleanup preserve shared-state bo
   });
   assert.equal(deleted.response.status, 204);
   assert.deepEqual(await cloud.listAttachmentKeys(), []);
-});
-
-test("workflow saves never persist or return a local Git worktree path", async () => {
-  await createProject("workflow-runtime-boundary");
-  const localPath = "/Users/alice/source/workflow-runtime-boundary-worktree";
-  const nestedLocalPath = "/Users/alice/source/nested-plan-worktree";
-  const workspace = {
-    version: 1,
-    tabs: [{ id: "delivery", name: "Delivery" }],
-    activeWorkflowId: "delivery",
-    snapshots: {
-      delivery: {
-        nodes: [
-          {
-            id: "trigger",
-            position: { x: 0, y: 0 },
-            data: { kind: "issue-trigger" },
-          },
-          {
-            id: "git",
-            position: { x: 0, y: 120 },
-            data: {
-              kind: "git",
-              gitOperation: "create-worktree",
-              gitBranchName: "feature/shared-workflow",
-              gitWorktreePath: localPath,
-              additionalInstructions: `Do not rewrite this note: ${localPath}`,
-              planItem: {
-                gitWorktreePath: nestedLocalPath,
-                path: nestedLocalPath,
-                branch: "feature/nested-plan",
-                notes: `Keep this nested note: ${nestedLocalPath}`,
-              },
-            },
-          },
-        ],
-        flow: {
-          version: 2,
-          root: {
-            items: [
-              { type: "step", nodeId: "trigger" },
-              { type: "step", nodeId: "git" },
-            ],
-          },
-        },
-        selectedNodeId: "git",
-      },
-    },
-  };
-
-  const saved = await cloud.request(
-    "/api/projects/workflow-runtime-boundary/workflow-workspace",
-    {
-      method: "PUT",
-      actorName: alice,
-      json: { version: 0, workspace },
-    },
-  );
-  assert.equal(saved.response.status, 200);
-  const savedData = saved.body.workflow.workspace.snapshots.delivery.nodes[1].data;
-  assert.equal(savedData.gitWorktreePath, undefined);
-  assert.equal(savedData.gitBranchName, "feature/shared-workflow");
-  assert.equal(savedData.additionalInstructions, `Do not rewrite this note: ${localPath}`);
-  assert.equal(savedData.planItem.gitWorktreePath, undefined);
-  assert.equal(savedData.planItem.path, nestedLocalPath);
-  assert.equal(savedData.planItem.branch, "feature/nested-plan");
-  assert.equal(savedData.planItem.notes, `Keep this nested note: ${nestedLocalPath}`);
-
-  const row = await cloud.db.prepare(`
-    SELECT workspace FROM workflow_workspaces WHERE project_id = ?
-  `).bind("workflow-runtime-boundary").first();
-  assert.doesNotMatch(row.workspace, /"gitWorktreePath"/);
-  assert.match(row.workspace, new RegExp(localPath));
-  const persistedData = JSON.parse(row.workspace).snapshots.delivery.nodes[1].data;
-  assert.equal(persistedData.gitWorktreePath, undefined);
-  assert.equal(persistedData.gitBranchName, "feature/shared-workflow");
-  assert.equal(persistedData.additionalInstructions, `Do not rewrite this note: ${localPath}`);
-  assert.equal(persistedData.planItem.gitWorktreePath, undefined);
-  assert.equal(persistedData.planItem.path, nestedLocalPath);
-  assert.equal(persistedData.planItem.branch, "feature/nested-plan");
-  assert.equal(persistedData.planItem.notes, `Keep this nested note: ${nestedLocalPath}`);
 });

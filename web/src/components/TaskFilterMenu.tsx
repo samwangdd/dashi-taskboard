@@ -31,10 +31,11 @@ import {
   type TaskPriority,
   type TaskStatus,
 } from "../types";
-import { LinearIcon, LinearPriorityIcon, LinearStatusIcon } from "./LinearIcon";
+import { LinearIcon } from "./LinearIcon";
+import { LabelIcon, PriorityIcon, StatusIcon } from "./SemanticIcons";
 import { TaskboardIcon } from "./TaskboardIcon";
 
-type SubmenuName = TaskFilterKey;
+type SubmenuName = "statuses" | "priorities" | "labels";
 
 interface TaskFilterMenuProps {
   tasks: Task[];
@@ -78,15 +79,10 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
   const [submenu, setSubmenu] = useState<SubmenuName | null>(null);
   const [rootQuery, setRootQuery] = useState("");
   const [submenuQuery, setSubmenuQuery] = useState("");
-  const [contentDraft, setContentDraft] = useState("");
   const [position, setPosition] = useState({ left: 0, top: 0, ready: false });
   const [submenuSide, setSubmenuSide] = useState<"left" | "right" | "overlay">("left");
   const [submenuShift, setSubmenuShift] = useState(0);
   const activeCount = taskFilterCount(filters);
-  const linkLabels = {
-    linked: text("Claude 已处理", "Handled by Claude"),
-    unlinked: text("尚未由 Claude 处理", "Not handled by Claude"),
-  } as const;
 
   function closeMenu() {
     if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
@@ -107,7 +103,6 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     if (hoverTimerRef.current !== null) window.clearTimeout(hoverTimerRef.current);
     setSubmenu(name);
     setSubmenuQuery("");
-    if (name === "content") setContentDraft(filters.content);
     if (focus) {
       requestAnimationFrame(() => submenuRef.current?.querySelector<HTMLInputElement>("input")?.focus());
     }
@@ -147,10 +142,6 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     onChange({ ...filters, labels: labels.filter((value) => selected.has(value)) });
   }
 
-  function toggleLink(link: "linked" | "unlinked") {
-    onChange({ ...filters, link: filters.link === link ? "all" : link });
-  }
-
   const statusOptions = useMemo<FilterOption[]>(() => TASK_STATUSES.map((status) => ({
     id: `status-${status}`,
     label: taskStatusLabel(language, status),
@@ -158,7 +149,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     keywords: status,
     count: countFor("statuses", (task) => task.status === status),
     selected: filters.statuses.includes(status),
-    icon: <span className={`filter-status-icon status-${status}`}><LinearStatusIcon status={status} /></span>,
+    icon: <span className="filter-status-icon"><StatusIcon status={status} color="currentColor" /></span>,
     toggle: () => toggleStatus(status),
   })), [filters, language, search, tasks, text]);
 
@@ -169,7 +160,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     keywords: priority,
     count: countFor("priorities", (task) => task.priority === priority),
     selected: filters.priorities.includes(priority),
-    icon: <LinearPriorityIcon priority={priority} />,
+    icon: <PriorityIcon priority={priority} />,
     toggle: () => togglePriority(priority),
   })), [filters, language, search, tasks, text]);
 
@@ -183,42 +174,18 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     toggle: () => toggleLabel(label),
   })), [filters, labels, language, search, tasks, text]);
 
-  const linkOptions = useMemo<FilterOption[]>(() => ([
-    {
-      id: "link-linked",
-      label: linkLabels.linked,
-      category: text("Claude 会话", "Claude conversations"),
-      keywords: "claude session thread task 已处理",
-      count: countFor("link", (task) => task.conversationRefs.length > 0),
-      selected: filters.link === "linked",
-      icon: <LinearIcon name="link" />,
-      toggle: () => toggleLink("linked"),
-    },
-    {
-      id: "link-unlinked",
-      label: linkLabels.unlinked,
-      category: text("Claude 会话", "Claude conversations"),
-      keywords: "claude session thread task 未处理",
-      count: countFor("link", (task) => task.conversationRefs.length === 0),
-      selected: filters.link === "unlinked",
-      icon: <LinearIcon name="linkOff" />,
-      toggle: () => toggleLink("unlinked"),
-    },
-  ]), [filters, language, search, tasks, text]);
-
   const optionsBySubmenu: Partial<Record<SubmenuName, FilterOption[]>> = {
     statuses: statusOptions,
     priorities: priorityOptions,
     labels: labelOptions,
-    link: linkOptions,
   };
 
   const categories = [
     {
       id: "statuses" as const,
       label: text("状态", "Status"),
-      keywords: "status workflow",
-      icon: <LinearStatusIcon status="todo" />,
+      keywords: "status state",
+      icon: <StatusIcon status="todo" color="currentColor" />,
       summary: joinSummary(
         filters.statuses.map((status) => taskStatusLabel(language, status)),
         text("状态", "statuses"),
@@ -229,7 +196,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
       id: "priorities" as const,
       label: text("优先级", "Priority"),
       keywords: "priority urgent high medium low",
-      icon: <LinearIcon name="priority" />,
+      icon: <PriorityIcon color="currentColor" />,
       summary: joinSummary(
         filters.priorities.map((priority) => taskPriorityLabel(language, priority)),
         text("优先级", "priorities"),
@@ -240,26 +207,12 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
       id: "labels" as const,
       label: text("标签", "Labels"),
       keywords: "label tag",
-      icon: <LinearIcon name="label" style={{ color: "inherit" }} />,
+      icon: <LabelIcon color="currentColor" />,
       summary: joinSummary(
         filters.labels.map((label) => labelDisplayName(label, language)),
         text("标签", "labels"),
         language,
       ),
-    },
-    {
-      id: "link" as const,
-      label: text("Claude 关联", "Claude link"),
-      keywords: "link linked thread task claude session 关联",
-      icon: <LinearIcon name="link" />,
-      summary: filters.link === "all" ? null : linkLabels[filters.link],
-    },
-    {
-      id: "content" as const,
-      label: text("内容", "Content"),
-      keywords: "content title description text 内容 标题 描述",
-      icon: <LinearIcon name="write" />,
-      summary: filters.content.trim() || null,
     },
   ];
 
@@ -269,7 +222,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     return `${category.label} ${category.keywords}`.toLowerCase().includes(normalizedRootQuery);
   });
   const quickOptions = normalizedRootQuery
-    ? [...statusOptions, ...priorityOptions, ...labelOptions, ...linkOptions].filter((option) =>
+    ? [...statusOptions, ...priorityOptions, ...labelOptions].filter((option) =>
       `${option.label} ${option.keywords ?? ""}`.toLowerCase().includes(normalizedRootQuery),
     )
     : [];
@@ -439,7 +392,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
     );
   }
 
-  function renderValueSubmenu(name: Exclude<SubmenuName, "content">) {
+  function renderValueSubmenu(name: SubmenuName) {
     const options = optionsBySubmenu[name] ?? [];
     const needle = submenuQuery.trim().toLowerCase();
     const visible = options.filter((option) => `${option.label} ${option.keywords ?? ""}`.toLowerCase().includes(needle));
@@ -466,66 +419,6 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
             </>
           )}
           {visible.length === 0 && <div className="task-filter-no-results">{text("没有匹配的筛选值", "No matching filter values")}</div>}
-        </div>
-      </>
-    );
-  }
-
-  function renderContentSubmenu() {
-    const value = contentDraft.trim();
-    function applyContent() {
-      if (!value) return;
-      onChange({ ...filters, content: value });
-      closeMenu();
-    }
-
-    return (
-      <>
-        <label className="task-filter-search submenu-filter-search">
-          <span className="sr-only">{text("按内容筛选", "Filter by content")}</span>
-          <input
-            data-filter-level="submenu"
-            value={contentDraft}
-            onChange={(event) => setContentDraft(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && value) {
-                event.preventDefault();
-                applyContent();
-              }
-            }}
-            placeholder={text("输入标题或描述…", "Enter a title or description…")}
-          />
-        </label>
-        <div className="task-filter-scroll" role="menu">
-          <button
-            type="button"
-            className="task-filter-item filter-content-apply"
-            data-filter-level="submenu"
-            disabled={!value}
-            onClick={applyContent}
-          >
-            <span className="task-filter-item-icon"><LinearIcon name="write" /></span>
-            <span className="task-filter-item-label">
-              {value
-                ? text(`包含“${value}”`, `Contains “${value}”`)
-                : text("输入内容以创建筛选", "Enter content to create a filter")}
-            </span>
-            <kbd>↵</kbd>
-          </button>
-          {filters.content && (
-            <button
-              type="button"
-              className="task-filter-item filter-content-clear"
-              data-filter-level="submenu"
-              onClick={() => {
-                onChange({ ...filters, content: "" });
-                setContentDraft("");
-              }}
-            >
-              <span className="task-filter-item-icon"><LinearIcon name="close" /></span>
-              <span className="task-filter-item-label">{text("移除内容筛选", "Remove content filter")}</span>
-            </button>
-          )}
         </div>
       </>
     );
@@ -581,9 +474,7 @@ export function TaskFilterMenu({ tasks, search, labels, filters, onChange }: Tas
                 role="presentation"
                 style={{ "--submenu-shift": `${submenuShift}px` } as CSSProperties}
               >
-                {category.id === "content"
-                  ? renderContentSubmenu()
-                  : renderValueSubmenu(category.id)}
+                {renderValueSubmenu(category.id)}
               </div>
             )}
           </div>

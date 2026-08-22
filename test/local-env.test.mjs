@@ -34,7 +34,7 @@ test("settings in .env.local reach the process", async () => {
   assert.equal(process.env.TASKBOARD_TEST_FROM_FILE, "ou_from_file");
 });
 
-test("a value already in the environment wins over the file", async () => {
+test("an explicit environment value wins over .env.local", async () => {
   const root = await projectRoot("TASKBOARD_TEST_FROM_SHELL=from_file\n");
   process.env.TASKBOARD_TEST_FROM_SHELL = "from_shell";
 
