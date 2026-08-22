@@ -1204,7 +1204,8 @@ kbd {
   -webkit-app-region: no-drag;
 }
 
-.project-automation-trigger {
+.project-automation-trigger,
+.copy-loop-prompt-trigger {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -1221,18 +1222,27 @@ kbd {
 }
 
 .project-automation-trigger:hover,
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:hover:not(:disabled),
+.copy-loop-prompt-trigger:focus-visible {
   background: var(--surface-hover);
 }
 
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
-.project-automation-trigger > svg {
+.project-automation-trigger > svg,
+.copy-loop-prompt-trigger > svg {
   width: 16px;
   height: 16px;
+}
+
+.copy-loop-prompt-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .project-automation-trigger.is-active,
@@ -8144,7 +8154,8 @@ kbd {
   gap: 8px;
 }
 
-.project-automation-trigger {
+.project-automation-trigger,
+.copy-loop-prompt-trigger {
   height: 29px;
   gap: 5px;
   padding: 0 11px;
@@ -8158,7 +8169,9 @@ kbd {
 }
 
 .project-automation-trigger:hover,
-.project-automation-trigger:focus-visible {
+.project-automation-trigger:focus-visible,
+.copy-loop-prompt-trigger:hover:not(:disabled),
+.copy-loop-prompt-trigger:focus-visible {
   border-color: var(--border-strong);
   background: var(--surface-hover);
 }
@@ -8173,7 +8186,8 @@ kbd {
   color: var(--text-secondary);
 }
 
-.project-automation-trigger > svg {
+.project-automation-trigger > svg,
+.copy-loop-prompt-trigger > svg {
   width: 13px;
   height: 13px;
 }
@@ -9425,13 +9439,15 @@ kbd {
     padding-left: calc(10px + var(--codex-titlebar-left-inset, 0px));
   }
 
-  .project-automation-trigger {
+  .project-automation-trigger,
+  .copy-loop-prompt-trigger {
     width: 28px;
     padding: 0;
     justify-content: center;
   }
 
-  .project-automation-trigger > span {
+  .project-automation-trigger > span,
+  .copy-loop-prompt-trigger > span {
     display: none;
   }
 

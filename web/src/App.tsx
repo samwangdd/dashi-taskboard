@@ -278,6 +278,7 @@ interface AutomationHostItem {
 interface AutomationHostResponse {
   requestId: string;
   ok: boolean;
+  prompt?: string;
   item?: AutomationHostItem;
   items?: AutomationHostItem[];
   quota?: AutomationQuotaStatus;
@@ -795,6 +796,7 @@ export function App() {
   const [projectAutomations, setProjectAutomations] = useState(readProjectAutomations);
   const [automationPending, setAutomationPending] = useState(false);
   const [automationError, setAutomationError] = useState<string | null>(null);
+  const [loopPromptPending, setLoopPromptPending] = useState(false);
   const [announcement, setAnnouncementValue] = useState("");
   const [undoNotice, setUndoNotice] = useState<UndoNotice | null>(null);
   const projectsRequestRef = useRef(0);
@@ -1188,7 +1190,7 @@ export function App() {
   }, []);
 
   const sendAutomationRequest = useCallback((
-    operation: "ensure-active" | "pause" | "list" | "apply-policy",
+    operation: "ensure-active" | "pause" | "list" | "apply-policy" | "copy-prompt",
     options: ProjectAutomationOptions,
     context: AutomationRequestContext,
     automationId?: string,
@@ -2675,6 +2677,28 @@ export function App() {
     }
   }
 
+  async function copyLoopPrompt() {
+    if (!automationRequestContext || loopPromptPending) return;
+    setLoopPromptPending(true);
+    setActionError(null);
+    try {
+      const response = await sendAutomationRequest(
+        "copy-prompt",
+        selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS,
+        automationRequestContext,
+        selectedProjectAutomation?.automationId,
+      );
+      if (typeof response.prompt !== "string" || response.prompt.length === 0) {
+        throw new Error("Codex did not return a loop prompt.");
+      }
+      await copyText(response.prompt, "Loop prompt copied.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Could not copy the loop prompt.");
+    } finally {
+      setLoopPromptPending(false);
+    }
+  }
+
   function copyTaskPrompt(task: Task) {
     void copyText(
       buildTaskPrompt(task.identifier),
@@ -3521,6 +3545,20 @@ export function App() {
                 onOpen={() => void reconcileProjectAutomation()}
                 onChange={(options) => void saveProjectAutomation(options)}
               />
+            )}
+            {selectedProject && (
+              <button
+                className="copy-loop-prompt-trigger no-drag"
+                type="button"
+                disabled={!automationRequestContext || loopPromptPending}
+                aria-busy={loopPromptPending}
+                onClick={() => void copyLoopPrompt()}
+                aria-label="Copy loop prompt"
+                title={automationProjectContext.unavailableReason ?? "Copy loop prompt"}
+              >
+                <LinearIcon name="copy" />
+                <span>loop prompt</span>
+              </button>
             )}
             {isJiraProject && (
               <button

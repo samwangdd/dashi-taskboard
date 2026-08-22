@@ -1221,6 +1221,7 @@
               items: response.items,
               quota: response.quota,
               policy: response.policy,
+              prompt: response.prompt,
             },
       });
     } catch (error) {
