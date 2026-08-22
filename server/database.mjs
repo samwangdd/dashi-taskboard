@@ -1545,9 +1545,21 @@ export class TaskboardDatabase {
   addCodingArtifact(runId, input) {
     const run = this.getCodingRun(runId);
     if (!run) throw new ApiError(404, "CODING_RUN_NOT_FOUND", `Coding run '${runId}' does not exist`);
+    if (input.kind === "handoff") {
+      const reviewRoles = ["reviewer", "verifier", "ui-verifier"];
+      const validPhase = input.targetRole === "orchestrator"
+        ? run.phase === "ready_to_commit"
+        : reviewRoles.includes(input.targetRole)
+          ? ["implementing", "verifying"].includes(run.phase)
+          : run.phase === "implementing";
+      if (!validPhase) {
+        throw new ApiError(409, "INVALID_CODING_PHASE", "Coding handoff is invalid during the current phase");
+      }
+    }
     const id = randomUUID();
     const transitionsToVerifier = input.kind === "handoff"
-      && ["verifier", "ui-verifier"].includes(input.targetRole);
+      && ["reviewer", "verifier", "ui-verifier"].includes(input.targetRole)
+      && run.phase === "implementing";
     if (transitionsToVerifier) this.database.exec("BEGIN IMMEDIATE");
     try {
       this.database.prepare(`
@@ -1626,12 +1638,24 @@ export class TaskboardDatabase {
     }
     const artifact = this.addCodingArtifact(run.id, {
       kind: "verification",
-      sourceRole: input.ui ? "ui-verifier" : "verifier",
+      sourceRole: input.role,
       targetRole: input.result === "pass" ? "orchestrator" : "implementer",
       body: input.body,
-      metadata: { result: input.result, ui: input.ui },
+      metadata: { result: input.result, ui: input.role === "ui-verifier", role: input.role },
     });
     if (input.result === "pass") {
+      const roundArtifacts = this.listCodingArtifacts(run.id)
+        .filter((entry) => entry.round === run.round);
+      const requiredRoles = new Set(roundArtifacts
+        .filter((entry) => entry.kind === "handoff")
+        .map((entry) => entry.targetRole)
+        .filter((role) => ["reviewer", "verifier", "ui-verifier"].includes(role)));
+      const passedRoles = new Set(roundArtifacts
+        .filter((entry) => entry.kind === "verification" && entry.metadata?.result === "pass")
+        .map((entry) => entry.sourceRole));
+      if (![...requiredRoles].every((role) => passedRoles.has(role))) {
+        return { run: this.getCodingRun(run.id), artifact, blocked: false };
+      }
       this.database.prepare(`
         UPDATE coding_runs
         SET phase = 'ready_to_commit', result = 'pass', version = version + 1, updated_at = ?

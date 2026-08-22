@@ -59,6 +59,44 @@ test("parseArgs supports equals syntax and boolean --json", () => {
   });
 });
 
+test("coding verdict sends the explicit workflow role", async () => {
+  let requestBody;
+  const result = await run(
+    [
+      "coding",
+      "verdict",
+      "RUN-1",
+      "--role",
+      "reviewer",
+      "--result",
+      "pass",
+      "--body",
+      "review passed",
+    ],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ run: { id: "RUN-1", phase: "verifying" } });
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    role: "reviewer",
+    result: "pass",
+    body: "review passed",
+  });
+
+  const legacy = await run(
+    ["coding", "verdict", "RUN-1", "--ui", "--result", "pass", "--body", "UI passed"],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ run: { id: "RUN-1", phase: "ready_to_commit" } });
+    },
+  );
+  assert.equal(legacy.exitCode, 0);
+  assert.deepEqual(requestBody, { ui: true, result: "pass", body: "UI passed" });
+});
+
 test("project list uses the default local service and adds schemaVersion", async () => {
   const calls = [];
   const result = await run(["project", "list"], async (url, init) => {
@@ -746,6 +784,11 @@ test("--help --json emits a structured help object with schemaVersion", async ()
     "worktree-branch",
     "worktree-path",
   ]);
+
+  const verdict = payload.help.commands.find((entry) => entry.command === "coding verdict");
+  assert.equal(verdict.options.find((option) => option.name === "role").value, "reviewer|verifier|ui-verifier");
+  assert.equal(verdict.options.find((option) => option.name === "result").value, "pass|fail|inconclusive");
+  assert.match(verdict.summary, /reviewer or verifier verdict/);
 });
 
 test("every option advertised by help is actually accepted by that command", async () => {

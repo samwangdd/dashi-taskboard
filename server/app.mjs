@@ -500,13 +500,16 @@ function parseCodingCheck(body) {
 
 function parseCodingVerdict(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["result", "ui", "body"]));
-  if (typeof body.ui !== "boolean") {
+  assertAllowedKeys(body, new Set(["role", "result", "ui", "body"]));
+  if (body.ui !== undefined && typeof body.ui !== "boolean") {
     throw new ApiError(400, "INVALID_FIELD", "'ui' must be a boolean");
   }
+  const legacyRole = body.ui === true ? "ui-verifier" : "verifier";
   return {
+    role: body.role === undefined
+      ? legacyRole
+      : stringField(body.role, "role", { required: true, maxLength: 64 }),
     result: stringField(body.result, "result", { required: true, maxLength: 32 }),
-    ui: body.ui,
     body: stringField(body.body, "body", { required: true, maxLength: 100_000 }),
   };
 }

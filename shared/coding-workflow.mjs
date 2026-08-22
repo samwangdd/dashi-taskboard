@@ -69,7 +69,7 @@ const CODING_PROTOCOL_HEADING = "当 todo 议题的 workflowId 为 coding 时，
 const CODING_PROTOCOL_STEP_2 = "2. 在实现前冻结 verification contract。contract 只能包含任务验收、工作流配置和仓库已有的局部检查；变更 contract 必须产生新版本。";
 const CODING_PROTOCOL_STEP_4 = "4. implementer 必须通过 taskctl coding check 运行 unit、integration 和 contract 明确要求的 typecheck；命令必须使用 {files}，禁止全量测试、全量 typecheck 和全量 build。";
 const CODING_PROTOCOL_TAIL = [
-  "6. 每次角色切换前用 taskctl coding handoff 写入 handoff；正文遵循 handoff skill 的 objective、references、next action、suggested skills 结构。失败 verdict 由引擎持久化并返回下一 implementer 模型；不要额外调用 orchestrator 充当传话人。",
+  "6. 每次角色切换前用 taskctl coding handoff 写入 handoff；正文遵循 handoff skill 的 objective、references、next action、suggested skills 结构。已 handoff 的 reviewer、verifier 与 UI verifier 必须分别写 verdict；全部通过后才可 commit。失败 verdict 由引擎持久化并返回下一 implementer 模型；不要额外调用 orchestrator 充当传话人。",
   "7. 所有验证项通过后调用 taskctl coding commit。Taskboard 只提交本轮记录文件并自动将议题移到 in_review；不要再次询问是否 commit，不 push，不创建 PR。",
   "8. 达到最大轮次仍失败时，Taskboard 自动将议题移到 blocked。零改动通过时不创建空 commit，直接进入 in_review。",
   "9. 中间轮次只写 coding run artifact；仅进入 in_review 或 blocked 时添加用户可见总结。用户打回后恢复同一 run 并追加新 commit。",
@@ -83,7 +83,7 @@ export function codingWorkflowAutomationInstructions(configValue) {
     CODING_PROTOCOL_STEP_2,
     `3. 按 run.configSnapshot 派发 implementer；默认前 ${config.standardRounds} 轮使用 ${config.implementerModel}，仍失败时最多再派发 ${config.escalationRounds} 轮 ${config.escalationImplementerModel}。`,
     CODING_PROTOCOL_STEP_4,
-    `5. verifier 模型取 run.configSnapshot；默认非 UI 使用 ${config.verifierModel}，UI 使用 ${config.uiVerifierModel}。verifier 读取引擎证据，不重复运行 implementer 已跑的命令。`,
+    `5. reviewer 使用 orchestrator 模型 ${config.orchestratorModel}；非 UI verifier 使用标准 verifier 模型 ${config.verifierModel}，UI 使用 UI verifier 模型 ${config.uiVerifierModel}。verifier 读取引擎证据，不重复运行 implementer 已跑的命令。`,
     ...CODING_PROTOCOL_TAIL,
   ].join("\n");
 }
@@ -102,7 +102,7 @@ export function codingWorkflowLoopInstructions(configValue) {
     CODING_PROTOCOL_STEP_2,
     `3. 按 run.configSnapshot 派发 implementer；默认前 ${config.standardRounds} 轮使用标准模型，仍失败时最多再派发 ${config.escalationRounds} 轮升级模型。`,
     CODING_PROTOCOL_STEP_4,
-    "5. verifier 模型取 run.configSnapshot；默认非 UI 使用标准 verifier 模型，UI 使用 UI verifier 模型。verifier 读取引擎证据，不重复运行 implementer 已跑的命令。",
+    "5. reviewer 使用 orchestrator 模型；非 UI verifier 使用标准 verifier 模型，UI 使用 UI verifier 模型。verifier 读取引擎证据，不重复运行 implementer 已跑的命令。",
     ...CODING_PROTOCOL_TAIL,
   ].join("\n");
 }
