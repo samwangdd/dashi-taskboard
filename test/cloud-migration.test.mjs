@@ -801,24 +801,26 @@ test("real D1 batch atomically imports a bundle containing local and maps develo
     );
     assert.deepEqual(
       await cloud.db.prepare(`
-        SELECT development_context_type, development_branch
+        SELECT development_context_type, development_branch, target_branch
         FROM tasks
         WHERE id = 'task-a1'
       `).first(),
       {
         development_context_type: "worktree",
         development_branch: "feature/cloud-share",
+        target_branch: null,
       },
     );
     assert.deepEqual(
       await cloud.db.prepare(`
-        SELECT development_context_type, development_branch
+        SELECT development_context_type, development_branch, target_branch
         FROM tasks
         WHERE id = 'task-a2'
       `).first(),
       {
         development_context_type: "branch",
         development_branch: "feature/plain-branch",
+        target_branch: "feature/plain-branch",
       },
     );
     const taskColumns = await cloud.db.prepare("PRAGMA table_info(tasks)").all();

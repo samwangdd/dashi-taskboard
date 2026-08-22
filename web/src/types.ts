@@ -260,6 +260,7 @@ export interface Task {
   assignee: ActorIdentity;
   workflowId: string | null;
   developmentContext: DevelopmentContext | null;
+  targetBranch: string | null;
   startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
@@ -353,6 +354,7 @@ export interface TaskDraft {
   workflowId?: string | null;
   assigneeTarget?: AssigneeTarget;
   developmentContext: DevelopmentContext | null;
+  targetBranch?: string;
   startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;
