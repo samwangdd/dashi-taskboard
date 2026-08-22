@@ -125,7 +125,7 @@ export class CodingWorkflowService {
     if (task.status !== "todo") {
       throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
     }
-    if (task.workflowId !== null) {
+    if (task.workflowId !== null && task.workflowId !== CODING_WORKFLOW_ID) {
       throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
     }
     const developmentContext = input.developmentContext ?? task.developmentContext;

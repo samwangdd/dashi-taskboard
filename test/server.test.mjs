@@ -1394,6 +1394,51 @@ test("bind coding and claim atomically creates one frozen coding run", async () 
   assert.equal(resumed.body.run.id, claimed.body.codingRun.id);
 });
 
+test("coding claim accepts a todo issue already assigned to the coding workflow", async () => {
+  let repository;
+  const baseUrl = await startServer(async (directory) => {
+    repository = path.join(directory, "repository");
+    await mkdir(repository);
+    await run("git", ["init", "-q", "-b", "codex/claim-prebound-test", repository]);
+    await run("git", ["-C", repository, "config", "user.name", "Claim Test"]);
+    await run("git", ["-C", repository, "config", "user.email", "claim@example.invalid"]);
+    await writeFile(path.join(repository, "example.mjs"), "export const value = 1;\n");
+    await run("git", ["-C", repository, "add", "--", "example.mjs"]);
+    await run("git", ["-C", repository, "commit", "-q", "-m", "fixture"]);
+    return {};
+  });
+
+  const created = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Prebound coding issue",
+      status: "todo",
+      workflowId: "coding",
+      developmentContext: {
+        type: "worktree",
+        path: repository,
+        branch: "codex/claim-prebound-test",
+      },
+    },
+  });
+  const claimed = await request(
+    baseUrl,
+    `/api/local/coding/tasks/${created.body.task.id}/claim`,
+    {
+      method: "POST",
+      body: {
+        version: created.body.task.version,
+        threadId: "thread-prebound-claim",
+      },
+    },
+  );
+
+  assert.equal(claimed.response.status, 200);
+  assert.equal(claimed.body.task.status, "in_progress");
+  assert.equal(claimed.body.task.workflowId, "coding");
+  assert.equal(claimed.body.codingRun.taskId, created.body.task.id);
+});
+
 test("issues support parent, sub-issue, blocking, and related issue relationships", async () => {
   const baseUrl = await startServer();
   const createIssue = async (title, status = "todo", projectId = "local") => {

@@ -2354,7 +2354,7 @@ export class TaskboardDatabase {
       if (current.status !== "todo") {
         throw new ApiError(409, "TASK_NOT_TODO", "Bind Coding & Claim requires a todo task");
       }
-      if (current.workflowId !== null) {
+      if (current.workflowId !== null && current.workflowId !== CODING_WORKFLOW_ID) {
         throw new ApiError(409, "WORKFLOW_ALREADY_BOUND", "Task already has a workflow");
       }
       const row = this.database.prepare(`
