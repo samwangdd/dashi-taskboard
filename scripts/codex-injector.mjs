@@ -11,7 +11,7 @@ import { resolvePort } from "../server/app.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import {
-  buildTaskboardAutomationPrompt,
+  buildTaskboardLoopPrompt,
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
   taskboardAutomationPolicyOperation,
@@ -1655,7 +1655,7 @@ function installTaskboardHostBinding(cdp, supervisor, startupToken) {
       runAutomation: (request) => (
         (async () => {
           if (request.operation === "copy-prompt") {
-            return { prompt: buildTaskboardAutomationPrompt(request) };
+            return { prompt: buildTaskboardLoopPrompt(request) };
           }
           const rpc = (method, body) => requestCodexAutomationViaCdp(
             cdp,

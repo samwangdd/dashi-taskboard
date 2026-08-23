@@ -73,6 +73,7 @@ import {
   type PendingInlineImage,
 } from "./components/InlineMediaComposer";
 import { LinearIcon } from "./components/LinearIcon";
+import { LoopPromptMenu, type LoopPromptKind } from "./components/LoopPromptMenu";
 import {
   DeleteIcon,
   MoreIcon,
@@ -1194,6 +1195,7 @@ export function App() {
     options: ProjectAutomationOptions,
     context: AutomationRequestContext,
     automationId?: string,
+    promptKind?: LoopPromptKind,
   ) => {
     const requestId = window.crypto.randomUUID();
     const response = new Promise<AutomationHostResponse>((resolve, reject) => {
@@ -1225,6 +1227,7 @@ export function App() {
         intervalMinutes: options.intervalMinutes,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
+        ...(promptKind ? { promptKind } : {}),
       },
     });
     return response;
@@ -2677,7 +2680,7 @@ export function App() {
     }
   }
 
-  async function copyLoopPrompt() {
+  async function copyLoopPrompt(promptKind: LoopPromptKind) {
     if (!automationRequestContext || loopPromptPending) return;
     setLoopPromptPending(true);
     setActionError(null);
@@ -2687,6 +2690,7 @@ export function App() {
         selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS,
         automationRequestContext,
         selectedProjectAutomation?.automationId,
+        promptKind,
       );
       if (typeof response.prompt !== "string" || response.prompt.length === 0) {
         throw new Error("Codex did not return a loop prompt.");
@@ -3547,18 +3551,12 @@ export function App() {
               />
             )}
             {selectedProject && (
-              <button
-                className="copy-loop-prompt-trigger no-drag"
-                type="button"
+              <LoopPromptMenu
                 disabled={!automationRequestContext || loopPromptPending}
-                aria-busy={loopPromptPending}
-                onClick={() => void copyLoopPrompt()}
-                aria-label="Copy loop prompt"
-                title={automationProjectContext.unavailableReason ?? "Copy loop prompt"}
-              >
-                <LinearIcon name="copy" />
-                <span>loop prompt</span>
-              </button>
+                pending={loopPromptPending}
+                unavailableReason={automationProjectContext.unavailableReason}
+                onCopy={(promptKind) => void copyLoopPrompt(promptKind)}
+              />
             )}
             {isJiraProject && (
               <button
