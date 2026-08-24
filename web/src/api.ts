@@ -210,6 +210,7 @@ export async function copyTaskboardAutomationPrompt(input: {
     workspacePath: string;
   }>;
   skillPath: string;
+  promptKind: "automation" | "delivery" | "triage";
   enabledByUser: boolean;
   quotaAware: boolean;
   intervalMinutes: 5 | 10 | 15 | 30 | 60;

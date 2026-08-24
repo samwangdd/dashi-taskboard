@@ -74,6 +74,7 @@ import {
   type PendingInlineImage,
 } from "./components/InlineMediaComposer";
 import { LinearIcon } from "./components/LinearIcon";
+import { LoopPromptMenu, type LoopPromptKind } from "./components/LoopPromptMenu";
 import {
   DeleteIcon,
   MoreIcon,
@@ -94,6 +95,7 @@ import {
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
 import { taskboardStorage } from "./storage";
 import { buildTaskPrompt } from "./taskPrompt";
+import { writeClipboardTextFromPromise } from "./clipboard";
 import {
   installEmbeddedExternalLinkHandler,
   postEmbeddedHostMessage,
@@ -1211,6 +1213,7 @@ export function App() {
     options: ProjectAutomationOptions,
     context: AutomationRequestContext,
     automationId?: string,
+    promptKind?: LoopPromptKind,
   ) => {
     const requestId = window.crypto.randomUUID();
     const response = new Promise<AutomationHostResponse>((resolve, reject) => {
@@ -1242,6 +1245,7 @@ export function App() {
         intervalMinutes: options.intervalMinutes,
         model: options.model,
         reasoningEffort: options.reasoningEffort,
+        ...(promptKind ? { promptKind } : {}),
       },
     });
     return response;
@@ -2694,11 +2698,11 @@ export function App() {
     }
   }
 
-  async function copyLoopPrompt() {
+  function copyLoopPrompt(promptKind: LoopPromptKind) {
     if (!loopPromptRequestContext || loopPromptPending) return;
     setLoopPromptPending(true);
     setActionError(null);
-    try {
+    const promptRequest = (async () => {
       const options = selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS;
       const prompt = automationRequestContext
         ? (await sendAutomationRequest(
@@ -2706,10 +2710,12 @@ export function App() {
             options,
             automationRequestContext,
             selectedProjectAutomation?.automationId,
+            promptKind,
           )).prompt
         : await copyTaskboardAutomationPrompt({
             requestId: window.crypto.randomUUID(),
             ...loopPromptRequestContext,
+            promptKind,
             enabledByUser: options.enabledByUser,
             quotaAware: options.quotaAware,
             intervalMinutes: options.intervalMinutes,
@@ -2719,12 +2725,25 @@ export function App() {
       if (typeof prompt !== "string" || prompt.length === 0) {
         throw new Error("Codex did not return a loop prompt.");
       }
-      await copyText(prompt, "Loop prompt copied.");
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not copy the loop prompt.");
-    } finally {
-      setLoopPromptPending(false);
-    }
+      return prompt;
+    })();
+
+    void writeClipboardTextFromPromise(promptRequest)
+      .then(() => setAnnouncement("Loop prompt copied."))
+      .catch(async (error) => {
+        try {
+          await promptRequest;
+        } catch (promptError) {
+          setActionError(promptError instanceof Error
+            ? promptError.message
+            : "Could not copy the loop prompt.");
+          return;
+        }
+        setActionError(error instanceof Error
+          ? error.message
+          : text("无法写入剪贴板。", "Could not write to the clipboard."));
+      })
+      .finally(() => setLoopPromptPending(false));
   }
 
   function copyTaskPrompt(task: Task) {
@@ -3575,22 +3594,16 @@ export function App() {
               />
             )}
             {selectedProject && (
-              <button
-                className="copy-loop-prompt-trigger no-drag"
-                type="button"
+              <LoopPromptMenu
                 disabled={!loopPromptRequestContext || loopPromptPending}
-                aria-busy={loopPromptPending}
-                onClick={() => void copyLoopPrompt()}
-                aria-label="Copy loop prompt"
-                title={loopPromptRequestContext
-                  ? "Copy loop prompt"
+                pending={loopPromptPending}
+                unavailableReason={loopPromptRequestContext
+                  ? null
                   : !embedded && manageTaskboardSkillPath
                     ? "Map a local workspace to copy a loop prompt"
-                  : automationProjectContext.unavailableReason ?? "Copy loop prompt"}
-              >
-                <LinearIcon name="copy" />
-                <span>loop prompt</span>
-              </button>
+                    : automationProjectContext.unavailableReason}
+                onCopy={(promptKind) => void copyLoopPrompt(promptKind)}
+              />
             )}
             {isJiraProject && (
               <button

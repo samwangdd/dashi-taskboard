@@ -244,6 +244,38 @@ test("complete App automation payloads cross the injected forwarder into the cur
       `${operation} must retain model and reasoningEffort`,
     );
   }
+
+  for (const promptKind of ["automation", "delivery", "triage"]) {
+    const forwarded = {
+      id: `host-copy-${promptKind}`,
+      action: "automation",
+      ...buildAutomationHostPayload({
+        ...basePayload,
+        operation: "copy-prompt",
+        promptKind,
+      }),
+    };
+    assert.deepEqual(
+      parseTaskboardAutomationHostRequest(forwarded),
+      forwarded,
+      `copy-prompt must retain ${promptKind} across the injected forwarder`,
+    );
+  }
+
+  const invalidForwarded = {
+    id: "host-ensure-active-with-prompt-kind",
+    action: "automation",
+    ...buildAutomationHostPayload({
+      ...basePayload,
+      operation: "ensure-active",
+      promptKind: "delivery",
+    }),
+  };
+  assert.equal(
+    parseTaskboardAutomationHostRequest(invalidForwarded),
+    null,
+    "non-copy operations must reject promptKind",
+  );
 });
 
 test("only a loopback Taskboard iframe can request native automation", () => {

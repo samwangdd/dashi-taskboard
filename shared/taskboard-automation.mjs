@@ -9,6 +9,7 @@ const AUTOMATION_OPERATIONS = new Set([
   "copy-prompt",
 ]);
 const INTERVAL_MINUTES = new Set([5, 10, 15, 30, 60]);
+const LOOP_PROMPT_KINDS = new Set(["automation", "delivery", "triage"]);
 const HOST_REQUEST_FIELDS = new Set([
   "id",
   "action",
@@ -28,6 +29,7 @@ const HOST_REQUEST_FIELDS = new Set([
   "intervalMinutes",
   "model",
   "reasoningEffort",
+  "promptKind",
 ]);
 
 export function parseTaskboardAutomationHostRequest(value) {
@@ -67,6 +69,10 @@ export function parseTaskboardAutomationHostRequest(value) {
   ) return null;
   if (!INTERVAL_MINUTES.has(value.intervalMinutes)) return null;
   if (!isSupportedModelEffort(value.model, value.reasoningEffort)) return null;
+  if (
+    value.promptKind !== undefined
+    && (value.operation !== "copy-prompt" || !LOOP_PROMPT_KINDS.has(value.promptKind))
+  ) return null;
   if (value.automationId !== undefined && !validText(value.automationId, 256)) return null;
   if (typeof value.enabledByUser !== "boolean" || typeof value.quotaAware !== "boolean") return null;
 
@@ -89,6 +95,7 @@ export function parseTaskboardAutomationHostRequest(value) {
     intervalMinutes: value.intervalMinutes,
     model: value.model,
     reasoningEffort: value.reasoningEffort,
+    ...(value.promptKind === undefined ? {} : { promptKind: value.promptKind }),
   };
 }
 
@@ -134,6 +141,47 @@ export function buildTaskboardAutomationPrompt(request) {
     ...executionInstructions,
     `本次处理或交接后，再次运行 ${taskctlCommand} issue list --project ${request.taskboardProjectId} --status todo --json。若没有 todo，使用 Codex automation_update 将名为「${automationName}」的当前自动化设为 PAUSED，保留其他字段，避免后续创建空会话。`,
   ].join("\n");
+}
+
+export function buildTaskboardLoopPrompt(request) {
+  if (request.promptKind === "delivery") return buildTaskboardDeliveryLoopPrompt(request);
+  if (request.promptKind === "triage") return buildTaskboardTriagePrompt(request);
+  return buildTaskboardAutomationPrompt(request);
+}
+
+function buildTaskboardDeliveryLoopPrompt(request) {
+  const taskctlCommand = buildTaskctlCommand(request);
+  return [
+    `[$manage-taskboard](${request.skillPath}) Run one high-frequency delivery cycle for Taskboard project ${JSON.stringify(request.projectName)}.`,
+    projectIdentityInstruction(request),
+    `Use this exact taskctl command prefix for every tracker operation: ${taskctlCommand}. Never use a taskctl binary from PATH.`,
+    "Use $issue-to-mr for each issue's delivery lifecycle and obey its current evidence, approval, merge, and completion gates.",
+    "First inspect in_review issues. Continue Ship for at most one issue only when a user-authored standalone LGTM is bound to its current commit SHA, contract version, and local evidence comment. That LGTM authorizes push, MR creation or update, and remote evidence copy only; it does not authorize merge or done. If the artifact changed, keep the issue in_review and report that approval is stale.",
+    "If no Ship action is eligible, count real active implementation units in this project. The maximum is two. Do not treat age alone as proof that an in_progress issue is stale, and do not take over an issue bound to another active conversation. Leave stale-state and relation repair to the low-frequency triage schedule.",
+    "When fewer than two implementation units are active, inspect todo issues and select at most one whose dependencies are complete and whose description and latest comments allow execution. Read the full issue, attachments, and all comments before claiming it. Re-read its version and relations immediately before the versioned claim.",
+    "A newly claimed code issue must use its own feature branch and worktree created from the verified current target branch. Never reuse a dirty, occupied, or unrelated worktree. Record the issue, conversation, branch, worktree, and the real operation path in Taskboard before editing.",
+    "Stop at the first gate required by $issue-to-mr. Do not run project-wide triage, batch-claim todo issues, take over another conversation's in_progress work, merge without separate authorization, or move an issue to done without target-branch SHA evidence and separate user acceptance.",
+    "Finish with a concise report containing the run type, issue identifier, initial and final status, active implementation count, branch, worktree, commit SHA, evidence comment, MR state, exact pause gate, and reasons other candidates were skipped.",
+  ].join("\n");
+}
+
+function buildTaskboardTriagePrompt(request) {
+  const taskctlCommand = buildTaskctlCommand(request);
+  return [
+    `[$manage-taskboard](${request.skillPath}) Use $triaging-blocked-issues to run one unattended project audit for Taskboard project ${JSON.stringify(request.projectName)}. This prompt is intended for a five-hour schedule.`,
+    projectIdentityInstruction(request),
+    `Use this exact taskctl command prefix for every tracker operation: ${taskctlCommand}. Never use a taskctl binary from PATH.`,
+    "Read the complete project board across every status. Audit every in_progress and blocked issue, and inspect other statuses for deduplication and relation hygiene. For each candidate, read its full description, comments, relations, version, timestamps, lease, thread binding, coding-run checkpoint, branch, and worktree evidence.",
+    "This run is board repair, never execution. Do not claim work, implement or debug code, invoke $issue-to-mr or $mexc-coding-loop, create or resume an execution binding, create a conversation, branch, or worktree, push, open an MR, merge, release, or mark work done.",
+    "Apply only repairs whose end state follows mechanically from current tracker evidence and is allowed by the unattended mutation boundary in $triaging-blocked-issues. Preserve durable checkpoints and worktree evidence. Report high-judgment cases without mutating them, including semantic splits, ambiguous survivors, done rollbacks, uncertain owners, and Git or Taskboard contradictions.",
+    "Before every write, re-read the current version. Use a stable triage marker to avoid duplicate comments. After a partial failure, re-read the affected scope and apply only the missing delta; never replay the original batch.",
+    "Independently verify the final board snapshot as required by $triaging-blocked-issues. If no independent read channel is available, report changed but not independently verified.",
+    "Finish with the number of issues scanned, automatic repairs and their evidence, report-only findings, every remaining in_progress executor and next action, every remaining blocked external exit condition and request evidence, relation anomalies, and confirmation that no execution binding, conversation, branch, or worktree was created.",
+  ].join("\n");
+}
+
+function projectIdentityInstruction(request) {
+  return `Project identity: taskboardProjectId=${JSON.stringify(request.taskboardProjectId)}, workspacePath=${JSON.stringify(request.workspacePath)}, codexProjectId=${JSON.stringify(request.codexProjectId)}, codexProjectKind=${JSON.stringify(request.codexProjectKind)}, codexHostId=${JSON.stringify(request.codexHostId)}.`;
 }
 
 function buildTaskctlCommand(request) {

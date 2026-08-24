@@ -1183,6 +1183,7 @@
       ...(payload.remoteProjects === undefined ? {} : { remoteProjects: payload.remoteProjects }),
       skillPath: payload.skillPath,
       ...(payload.automationId === undefined ? {} : { automationId: payload.automationId }),
+      ...(payload.promptKind === undefined ? {} : { promptKind: payload.promptKind }),
       enabledByUser: payload.enabledByUser,
       quotaAware: payload.quotaAware,
       intervalMinutes: payload.intervalMinutes,

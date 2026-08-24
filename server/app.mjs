@@ -19,7 +19,7 @@ import {
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
 import {
-  buildTaskboardAutomationPrompt,
+  buildTaskboardLoopPrompt,
   parseTaskboardAutomationHostRequest,
 } from "../shared/taskboard-automation.mjs";
 import { AiChatService } from "./ai-chat.mjs";
@@ -2210,7 +2210,7 @@ export function createTaskboardServer(options = {}) {
           throw new ApiError(400, "INVALID_AUTOMATION_REQUEST", "Automation prompt request is invalid");
         }
         return sendJson(response, 200, {
-          prompt: buildTaskboardAutomationPrompt(automationRequest),
+          prompt: buildTaskboardLoopPrompt(automationRequest),
         });
       }
 
