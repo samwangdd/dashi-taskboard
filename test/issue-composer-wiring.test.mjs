@@ -89,7 +89,10 @@ test("task composer document converts only durable references and keeps slash an
 test("open in new conversation uses local AI chat in the browser and keeps embedded host creation", () => {
   assert.match(apiSource, /"\/api\/local\/ai\/composer\/rebind"/);
   assert.doesNotMatch(appSource, /rebindAiChatComposerReferences/);
-  assert.match(appSource, /if \(localAiChatAvailable\) \{[\s\S]*?setAiOpenThreadRequest/);
+  assert.match(
+    appSource,
+    /if \(localAiChatAvailable\) \{\s*if \(isAllProjects\) openTaskDetail\(task\);[\s\S]*?setAiOpenThreadRequest/,
+  );
   assert.match(appSource, /projectId: task\.projectId,[\s\S]*?issueId: task\.id,[\s\S]*?composerText: instruction/);
   assert.match(appSource, /type: "taskboard:create-thread"/);
   assert.match(chatSource, /await rebindAiChatComposerReferences\(\{/);

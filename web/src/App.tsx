@@ -3119,6 +3119,7 @@ export function App() {
 
     if (!embedded || window.parent === window) {
       if (localAiChatAvailable) {
+        if (isAllProjects) openTaskDetail(task);
         setActionError(null);
         setAiOpenThreadRequest((current) => ({
           projectId: task.projectId,
