@@ -398,14 +398,14 @@ test("host navigation follows Codex's renderer message bus", () => {
   assert.doesNotMatch(source, /new CustomEvent\("codex-message-from-view"/);
 });
 
-test("the standalone web page reports that new Codex conversations require the embedded Taskboard", () => {
+test("the standalone web page opens new Codex conversations through local AI chat", () => {
   assert.match(
     webApp,
-    /setActionError\(\[\s*"在新对话打开仅可在 Codex 内嵌任务面板中使用。请从 Codex 侧栏打开任务面板后重试。",/,
+    /if \(localAiChatAvailable\) \{[\s\S]*?setAiOpenThreadRequest/,
   );
   assert.match(
     webApp,
-    /"Open in new conversation is available only in the embedded Codex Taskboard\. Open Taskboard from the Codex sidebar and try again\.",/,
+    /projectId: task\.projectId,[\s\S]*?issueId: task\.id,[\s\S]*?composerText: instruction/,
   );
   assert.doesNotMatch(webApp, /codex:\/\/new/);
 });
