@@ -128,12 +128,14 @@ interface TaskDetailProps {
   ) => Promise<RelationMutationResult>;
   onOpenThread: (binding: CodexThreadBinding) => void;
   onOpenLegacyLocalThread: (threadId: string) => void;
-  onOpenInThread: (task: Task) => void;
+  onOpenInHarness: (task: Task, harness: AgentHarness) => void;
   onCopy: (text: string, announcement: string) => void;
   onCopyPrompt: (task: Task) => void;
   openingThread: boolean;
   onError: (message: TaskDetailError | null) => void;
 }
+
+export type AgentHarness = "codex-desktop" | "claude-desktop" | "kiro-cli-orca";
 
 function messageFor(error: unknown): TaskDetailError {
   if (error instanceof ApiError) return error.message;
@@ -380,7 +382,7 @@ export function TaskDetail({
   onRemoveRelation,
   onOpenThread,
   onOpenLegacyLocalThread,
-  onOpenInThread,
+  onOpenInHarness,
   onCopy,
   onCopyPrompt,
   openingThread,
@@ -417,6 +419,7 @@ export function TaskDetail({
   const [changeStatusToTodo, setChangeStatusToTodo] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [harnessMenuOpen, setHarnessMenuOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSegments, setEditingSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(),
@@ -431,6 +434,7 @@ export function TaskDetail({
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
   const editCommentAttachmentInputRef = useRef<HTMLInputElement>(null);
+  const harnessMenuRef = useRef<HTMLDivElement>(null);
   const editingUploadedAttachmentsRef = useRef<Map<string, Attachment>>(new Map());
   const draft = serializeInlineMedia(commentSegments);
   const commentInlineImages = inlineMediaImages(commentSegments);
@@ -536,6 +540,22 @@ export function TaskDetail({
     window.addEventListener("keydown", handleShortcut);
     return () => window.removeEventListener("keydown", handleShortcut);
   }, []);
+
+  useEffect(() => {
+    if (!harnessMenuOpen) return;
+    function closeHarnessMenu(event: PointerEvent) {
+      if (!harnessMenuRef.current?.contains(event.target as Node)) setHarnessMenuOpen(false);
+    }
+    function closeHarnessMenuWithEscape(event: globalThis.KeyboardEvent) {
+      if (event.key === "Escape") setHarnessMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", closeHarnessMenu);
+    window.addEventListener("keydown", closeHarnessMenuWithEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeHarnessMenu);
+      window.removeEventListener("keydown", closeHarnessMenuWithEscape);
+    };
+  }, [harnessMenuOpen]);
 
   useEffect(() => {
     if (!activeMenuId) return;
@@ -1604,17 +1624,42 @@ export function TaskDetail({
 
           <aside className="issue-properties" aria-label={text("议题属性", "Issue properties")}>
             <div className="detail-primary-actions">
-              <button
-                className="detail-open-thread-action"
-                type="button"
-                disabled={openingThread}
-                onClick={() => onOpenInThread(currentTask)}
-              >
-                <ActorAvatar actor={CODEX_AGENT_ACTOR} className="detail-thread-avatar" />
-                <span>{openingThread
-                  ? text("正在打开…", "Opening…")
-                  : text("在新对话打开", "Open in new conversation")}</span>
-              </button>
+              <div className="detail-harness-menu" ref={harnessMenuRef}>
+                <button
+                  className="detail-open-thread-action"
+                  type="button"
+                  disabled={openingThread}
+                  aria-haspopup="menu"
+                  aria-expanded={harnessMenuOpen}
+                  onClick={() => setHarnessMenuOpen((current) => !current)}
+                >
+                  <ConversationIcon />
+                  <span>{openingThread ? "Opening…" : "Open in new conversation"}</span>
+                  <span className="detail-harness-menu-chevron" aria-hidden="true">⌄</span>
+                </button>
+                {harnessMenuOpen && (
+                  <div className="detail-harness-options" role="menu">
+                    {([
+                      ["codex-desktop", "Codex Desktop"],
+                      ["claude-desktop", "Claude Desktop"],
+                      ["kiro-cli-orca", "Kiro CLI in Orca"],
+                    ] as const).map(([harness, label]) => (
+                      <button
+                        key={harness}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          setHarnessMenuOpen(false);
+                          onOpenInHarness(currentTask, harness);
+                        }}
+                      >
+                        <ConversationIcon />
+                        <span>{label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <button
                 className="detail-copy-action"
                 type="button"

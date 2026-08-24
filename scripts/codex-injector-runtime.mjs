@@ -36,6 +36,30 @@ function parseHostRequest(payload, parseAutomationRequest) {
     } catch {}
   }
   if (
+    request.action === "open-agent-harness"
+    && (request.harness === "claude-desktop" || request.harness === "kiro-cli-orca")
+    && typeof request.taskId === "string"
+    && request.taskId.length > 0
+    && request.taskId.length <= 128
+    && !/[\u0000-\u001f\u007f]/.test(request.taskId)
+    && typeof request.title === "string"
+    && request.title.length > 0
+    && request.title.length <= 240
+    && !/[\u0000-\u001f\u007f]/.test(request.title)
+    && typeof request.instruction === "string"
+    && request.instruction.length > 0
+    && request.instruction.length <= 14_000
+    && (
+      request.workspacePath === undefined
+      || (
+        typeof request.workspacePath === "string"
+        && request.workspacePath.length > 0
+        && request.workspacePath.length <= 4_096
+        && !/[\u0000-\u001f\u007f]/.test(request.workspacePath)
+      )
+    )
+  ) return { id, request, error: null };
+  if (
     request.action === "open-attachment"
     && typeof request.attachmentId === "string"
     && /^[a-f0-9-]{36}$/i.test(request.attachmentId)
@@ -118,6 +142,8 @@ export async function handleHostBindingPayload(params, handlers) {
       result = await handlers.loadFrame(parsed.request);
     } else if (parsed.request.action === "open-external") {
       result = await handlers.openExternal(parsed.request);
+    } else if (parsed.request.action === "open-agent-harness") {
+      result = await handlers.openAgentHarness(parsed.request);
     } else if (parsed.request.action === "open-attachment") {
       result = await handlers.openAttachment(parsed.request);
     } else if (parsed.request.action === "automation") {
