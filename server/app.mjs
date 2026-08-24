@@ -18,6 +18,10 @@ import {
 } from "../shared/domain.mjs";
 import { resolveCodexExecutable } from "../shared/codex-executable.mjs";
 import { withoutTaskboardLauncherEnvironment } from "../shared/codex-environment.mjs";
+import {
+  buildTaskboardLoopPrompt,
+  parseTaskboardAutomationHostRequest,
+} from "../shared/taskboard-automation.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
 import { decodeComposerReferenceKey } from "./composer-reference.mjs";
@@ -2193,6 +2197,20 @@ export function createTaskboardServer(options = {}) {
               localCapabilities: { available: true },
             }
             : {}),
+        });
+      }
+
+      if (pathname === "/api/local/automation/prompt") {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        if ([...url.searchParams.keys()].length > 0) {
+          throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Automation prompt routes do not accept query parameters");
+        }
+        const automationRequest = parseTaskboardAutomationHostRequest(await readJson(request));
+        if (!automationRequest || automationRequest.operation !== "copy-prompt") {
+          throw new ApiError(400, "INVALID_AUTOMATION_REQUEST", "Automation prompt request is invalid");
+        }
+        return sendJson(response, 200, {
+          prompt: buildTaskboardLoopPrompt(automationRequest),
         });
       }
 

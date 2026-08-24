@@ -195,6 +195,40 @@ export async function getTaskboardMetadata(signal?: AbortSignal): Promise<Taskbo
   return request<TaskboardMetadata>("/api/meta", { signal });
 }
 
+export async function copyTaskboardAutomationPrompt(input: {
+  requestId: string;
+  taskboardProjectId: string;
+  codexProjectId: string;
+  codexProjectKind: "local" | "remote";
+  codexHostId: string;
+  projectName: string;
+  workspacePath: string;
+  remoteProjects: Array<{
+    codexProjectId: string;
+    codexProjectKind: "local" | "remote";
+    codexHostId: string;
+    workspacePath: string;
+  }>;
+  skillPath: string;
+  promptKind: "automation" | "delivery" | "triage";
+  enabledByUser: boolean;
+  quotaAware: boolean;
+  intervalMinutes: 5 | 10 | 15 | 30 | 60;
+  model: string;
+  reasoningEffort: string;
+}): Promise<string> {
+  const data = await request<{ prompt: string }>("/api/local/automation/prompt", {
+    method: "POST",
+    body: JSON.stringify({
+      id: "taskboard-automation",
+      action: "automation",
+      operation: "copy-prompt",
+      ...input,
+    }),
+  });
+  return data.prompt;
+}
+
 export async function getTaskboardRevision(
   since: number,
   signal?: AbortSignal,

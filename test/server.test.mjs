@@ -8,6 +8,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 
 import { createTaskboardServer } from "../server/index.mjs";
+import { buildTaskboardAutomationPrompt } from "../shared/taskboard-automation.mjs";
 
 const runningApps = [];
 
@@ -88,6 +89,44 @@ test("health and the default local project are available", async () => {
   assert.equal(result.body.projects[0].name, "全局");
   assert.equal(result.body.projects[0].workspacePath, null);
   assert.equal(result.body.projects[0].issueCount, 0);
+});
+
+test("the browser automation prompt endpoint preserves the selected loop prompt kind", async () => {
+  const baseUrl = await startServer();
+  const baseRequest = {
+    id: "taskboard-automation",
+    action: "automation",
+    operation: "copy-prompt",
+    requestId: "browser-loop-prompt",
+    taskboardProjectId: "local",
+    codexProjectId: "local",
+    codexProjectKind: "local",
+    codexHostId: "local",
+    projectName: "Local",
+    workspacePath: "/tmp/local-project",
+    remoteProjects: [],
+    skillPath: "/tmp/manage-taskboard/SKILL.md",
+    enabledByUser: true,
+    quotaAware: false,
+    intervalMinutes: 5,
+    model: "gpt-5.5",
+    reasoningEffort: "high",
+  };
+
+  const prompts = {};
+  for (const promptKind of ["automation", "delivery", "triage"]) {
+    const result = await request(baseUrl, "/api/local/automation/prompt", {
+      method: "POST",
+      body: { ...baseRequest, promptKind },
+    });
+    assert.equal(result.response.status, 200);
+    prompts[promptKind] = result.body.prompt;
+  }
+
+  assert.equal(prompts.automation, buildTaskboardAutomationPrompt(baseRequest));
+  assert.notEqual(prompts.delivery, prompts.automation);
+  assert.notEqual(prompts.triage, prompts.automation);
+  assert.notEqual(prompts.delivery, prompts.triage);
 });
 
 test("launcher mode proves service identity and hides every route behind its instance token", async () => {
