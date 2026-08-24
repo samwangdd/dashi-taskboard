@@ -95,6 +95,7 @@ import {
 import { TaskFilterMenu } from "./components/TaskFilterMenu";
 import { taskboardStorage } from "./storage";
 import { buildTaskPrompt } from "./taskPrompt";
+import { writeClipboardTextFromPromise } from "./clipboard";
 import {
   installEmbeddedExternalLinkHandler,
   postEmbeddedHostMessage,
@@ -2697,11 +2698,11 @@ export function App() {
     }
   }
 
-  async function copyLoopPrompt(promptKind: LoopPromptKind) {
+  function copyLoopPrompt(promptKind: LoopPromptKind) {
     if (!loopPromptRequestContext || loopPromptPending) return;
     setLoopPromptPending(true);
     setActionError(null);
-    try {
+    const promptRequest = (async () => {
       const options = selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS;
       const prompt = automationRequestContext
         ? (await sendAutomationRequest(
@@ -2724,12 +2725,25 @@ export function App() {
       if (typeof prompt !== "string" || prompt.length === 0) {
         throw new Error("Codex did not return a loop prompt.");
       }
-      await copyText(prompt, "Loop prompt copied.");
-    } catch (error) {
-      setActionError(error instanceof Error ? error.message : "Could not copy the loop prompt.");
-    } finally {
-      setLoopPromptPending(false);
-    }
+      return prompt;
+    })();
+
+    void writeClipboardTextFromPromise(promptRequest)
+      .then(() => setAnnouncement("Loop prompt copied."))
+      .catch(async (error) => {
+        try {
+          await promptRequest;
+        } catch (promptError) {
+          setActionError(promptError instanceof Error
+            ? promptError.message
+            : "Could not copy the loop prompt.");
+          return;
+        }
+        setActionError(error instanceof Error
+          ? error.message
+          : text("无法写入剪贴板。", "Could not write to the clipboard."));
+      })
+      .finally(() => setLoopPromptPending(false));
   }
 
   function copyTaskPrompt(task: Task) {
