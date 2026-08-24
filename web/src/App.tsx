@@ -28,6 +28,7 @@ import {
   createComment,
   createTask as createTaskRequest,
   configureJiraConnection,
+  copyTaskboardAutomationPrompt,
   deleteArchivedTask as deleteArchivedTaskRequest,
   deleteProjectLabel as deleteProjectLabelRequest,
   deleteProject as deleteProjectRequest,
@@ -1031,6 +1032,22 @@ export function App() {
       skillPath: manageTaskboardSkillPath,
     };
   }, [automationProjectContext, hostContext, manageTaskboardSkillPath, selectedProject]);
+  const browserLoopPromptContext = useMemo<AutomationRequestContext | null>(() => {
+    if (embedded || !selectedProject || !manageTaskboardSkillPath) return null;
+    const workspacePath = deviceWorkspacePaths[selectedProject.id] ?? selectedProject.workspacePath;
+    if (!workspacePath) return null;
+    return {
+      taskboardProjectId: selectedProject.id,
+      codexProjectId: selectedProject.id,
+      codexProjectKind: "local",
+      codexHostId: "local",
+      projectName: selectedProject.name,
+      workspacePath,
+      remoteProjects: [],
+      skillPath: manageTaskboardSkillPath,
+    };
+  }, [deviceWorkspacePaths, embedded, manageTaskboardSkillPath, selectedProject]);
+  const loopPromptRequestContext = automationRequestContext ?? browserLoopPromptContext;
   const referenceTasks = useMemo(() => [...tasks, ...archivedTasks], [archivedTasks, tasks]);
   const detailTask = detailTaskIdentifier
     ? referenceTasks.find((task) => task.identifier === detailTaskIdentifier) ?? null
@@ -2678,20 +2695,31 @@ export function App() {
   }
 
   async function copyLoopPrompt() {
-    if (!automationRequestContext || loopPromptPending) return;
+    if (!loopPromptRequestContext || loopPromptPending) return;
     setLoopPromptPending(true);
     setActionError(null);
     try {
-      const response = await sendAutomationRequest(
-        "copy-prompt",
-        selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS,
-        automationRequestContext,
-        selectedProjectAutomation?.automationId,
-      );
-      if (typeof response.prompt !== "string" || response.prompt.length === 0) {
+      const options = selectedProjectAutomation ?? DEFAULT_AUTOMATION_OPTIONS;
+      const prompt = automationRequestContext
+        ? (await sendAutomationRequest(
+            "copy-prompt",
+            options,
+            automationRequestContext,
+            selectedProjectAutomation?.automationId,
+          )).prompt
+        : await copyTaskboardAutomationPrompt({
+            requestId: window.crypto.randomUUID(),
+            ...loopPromptRequestContext,
+            enabledByUser: options.enabledByUser,
+            quotaAware: options.quotaAware,
+            intervalMinutes: options.intervalMinutes,
+            model: options.model,
+            reasoningEffort: options.reasoningEffort,
+          });
+      if (typeof prompt !== "string" || prompt.length === 0) {
         throw new Error("Codex did not return a loop prompt.");
       }
-      await copyText(response.prompt, "Loop prompt copied.");
+      await copyText(prompt, "Loop prompt copied.");
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Could not copy the loop prompt.");
     } finally {
@@ -3550,11 +3578,15 @@ export function App() {
               <button
                 className="copy-loop-prompt-trigger no-drag"
                 type="button"
-                disabled={!automationRequestContext || loopPromptPending}
+                disabled={!loopPromptRequestContext || loopPromptPending}
                 aria-busy={loopPromptPending}
                 onClick={() => void copyLoopPrompt()}
                 aria-label="Copy loop prompt"
-                title={automationProjectContext.unavailableReason ?? "Copy loop prompt"}
+                title={loopPromptRequestContext
+                  ? "Copy loop prompt"
+                  : !embedded && manageTaskboardSkillPath
+                    ? "Map a local workspace to copy a loop prompt"
+                  : automationProjectContext.unavailableReason ?? "Copy loop prompt"}
               >
                 <LinearIcon name="copy" />
                 <span>loop prompt</span>
