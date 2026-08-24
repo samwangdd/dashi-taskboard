@@ -3584,6 +3584,8 @@ export function App() {
                 aria-label="Copy loop prompt"
                 title={loopPromptRequestContext
                   ? "Copy loop prompt"
+                  : !embedded && manageTaskboardSkillPath
+                    ? "Map a local workspace to copy a loop prompt"
                   : automationProjectContext.unavailableReason ?? "Copy loop prompt"}
               >
                 <LinearIcon name="copy" />
