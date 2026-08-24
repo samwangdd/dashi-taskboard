@@ -3118,6 +3118,17 @@ export function App() {
     const instruction = buildTaskPrompt(task.identifier);
 
     if (!embedded || window.parent === window) {
+      if (localAiChatAvailable) {
+        if (isAllProjects) openTaskDetail(task);
+        setActionError(null);
+        setAiOpenThreadRequest((current) => ({
+          projectId: task.projectId,
+          issueId: task.id,
+          composerText: instruction,
+          requestId: (current?.requestId ?? 0) + 1,
+        }));
+        return;
+      }
       setActionError([
         "在新对话打开仅可在 Codex 内嵌任务面板中使用。请从 Codex 侧栏打开任务面板后重试。",
         "Open in new conversation is available only in the embedded Codex Taskboard. Open Taskboard from the Codex sidebar and try again.",
