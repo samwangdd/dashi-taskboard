@@ -372,7 +372,6 @@ async function openLocalKiroHarness(body, harnessRuntime = {}) {
     title,
     "--command",
     `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(instruction)}`,
-    "--focus",
   ]);
   return { opened: true, label: "Kiro CLI in Orca" };
 }

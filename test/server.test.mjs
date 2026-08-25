@@ -196,7 +196,6 @@ test("the local Kiro harness endpoint checks its workspace before handing orca a
         "Agent harness launcher",
         "--command",
         `kiro-cli chat --trust-all-tools --v3 'Handle C03E81167BD2-6 on today'"'"'s board'`,
-        "--focus",
       ],
     ]]);
   } finally {

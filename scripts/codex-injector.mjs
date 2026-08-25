@@ -971,7 +971,6 @@ async function openAgentHarness(request) {
     request.title,
     "--command",
     `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(request.instruction)}`,
-    "--focus",
     "--json",
   ]);
   return { opened: true, label: "Kiro CLI in Orca" };
