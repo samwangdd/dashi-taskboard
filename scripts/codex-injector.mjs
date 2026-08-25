@@ -689,7 +689,10 @@ function startResidentInjector(
   startupToken = null,
 ) {
   const [existingPid] = residentInjectorPids(port);
-  if (existingPid) return { pid: existingPid, started: false };
+  if (existingPid) {
+    if (shouldOpen) process.kill(existingPid, "SIGUSR2");
+    return { pid: existingPid, started: false };
+  }
   const args = [injectorPath, "--watch", "--port", String(port)];
   if (shouldOpen) args.push("--open");
   if (attachExisting) args.push("--attach-existing");
