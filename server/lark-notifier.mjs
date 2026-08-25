@@ -2,8 +2,8 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 
 const NOTIFIED_STATUSES = new Map([
-  ["in_review", "Ready for review"],
-  ["blocked", "Blocked"],
+  ["in_review", "🟢Ready for review"],
+  ["blocked", "🚨Blocked"],
 ]);
 
 function buildIssueLink(boardUrl, task) {
