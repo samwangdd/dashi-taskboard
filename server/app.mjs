@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { isIP } from "node:net";
@@ -291,6 +291,50 @@ function pathField(value, name) {
     throw new ApiError(400, "INVALID_FIELD", `'${name}' cannot contain null bytes`);
   }
   return normalized;
+}
+
+function shellSingleQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+async function openLocalKiroHarness(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["harness", "taskId", "title", "instruction", "workspacePath"]));
+  if (body.harness !== "kiro-cli-orca") {
+    throw new ApiError(400, "INVALID_FIELD", "'harness' must be kiro-cli-orca");
+  }
+  stringField(body.taskId, "taskId", { required: true, maxLength: 256 });
+  const title = stringField(body.title, "title", { required: true, maxLength: 512 });
+  const instruction = stringField(body.instruction, "instruction", { required: true, maxLength: 16_384 });
+  const workspacePath = stringField(body.workspacePath, "workspacePath", { required: true, maxLength: 4096 });
+  if (process.platform !== "darwin" || !path.isAbsolute(workspacePath)) {
+    throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an absolute macOS workspace path");
+  }
+  const workspaceStats = await stat(workspacePath).catch(() => null);
+  if (!workspaceStats?.isDirectory()) {
+    throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an existing workspace directory");
+  }
+  const child = spawn("/usr/local/bin/orca", [
+    "terminal",
+    "create",
+    "--worktree",
+    `path:${workspacePath}`,
+    "--title",
+    title,
+    "--command",
+    `kiro-cli chat ${shellSingleQuote(instruction)}`,
+    "--focus",
+  ], {
+    env: withoutTaskboardLauncherEnvironment(process.env),
+    detached: true,
+    stdio: "ignore",
+  });
+  await new Promise((resolve, reject) => {
+    child.once("spawn", resolve);
+    child.once("error", reject);
+  });
+  child.unref();
+  return { opened: true, label: "Kiro CLI in Orca" };
 }
 
 function parseDueDate(value, name = "dueDate") {
@@ -2058,6 +2102,11 @@ export function createTaskboardServer(options = {}) {
           return sendJson(response, 200, { runtime: hostRuntime });
         }
         return methodNotAllowed(response, ["GET", "PUT"]);
+      }
+
+      if (pathname === "/api/local/agent-harness") {
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        return sendJson(response, 200, await openLocalKiroHarness(await readJson(request)));
       }
 
       if (pathname === "/api/local/cloud-session") {

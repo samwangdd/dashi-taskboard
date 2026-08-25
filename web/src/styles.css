@@ -4345,6 +4345,24 @@ kbd {
   height: 16px;
 }
 
+.agent-harness-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.agent-harness-icon.is-codex {
+  color: var(--text-primary);
+}
+
+.agent-harness-icon.is-claude {
+  color: #d97757;
+}
+
+.agent-harness-icon.is-kiro {
+  color: #7c5cff;
+}
+
 .detail-open-thread-action:hover:not(:disabled),
 .detail-copy-action:hover {
   border-color: var(--border-strong);

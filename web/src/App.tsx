@@ -46,6 +46,7 @@ import {
   listComments,
   listTasks,
   moveTask as moveTaskRequest,
+  openLocalAgentHarness,
   publishHostRuntime,
   removeTaskRelation,
   resolveTaskboardUrl,
@@ -3224,7 +3225,7 @@ export function App() {
     });
   }
 
-  function openTaskInHarness(task: Task, harness: AgentHarness) {
+  async function openTaskInHarness(task: Task, harness: AgentHarness) {
     if (harness === "codex-desktop") {
       void openTaskInThread(task);
       return;
@@ -3246,7 +3247,22 @@ export function App() {
         window.location.assign(deepLink.toString());
         return;
       }
-      setActionError("Kiro CLI in Orca is available only in the embedded Taskboard.");
+      if (!workspacePath) {
+        setActionError("Kiro CLI in Orca requires a local project workspace.");
+        return;
+      }
+      setActionError(null);
+      try {
+        await openLocalAgentHarness({
+          harness,
+          taskId: task.id,
+          title: task.title,
+          instruction,
+          workspacePath,
+        });
+      } catch (error) {
+        setActionError(errorMessage(error));
+      }
       return;
     }
 

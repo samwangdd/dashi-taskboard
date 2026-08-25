@@ -137,6 +137,36 @@ interface TaskDetailProps {
 
 export type AgentHarness = "codex-desktop" | "claude-desktop" | "kiro-cli-orca";
 
+function AgentHarnessIcon({ harness }: { harness: AgentHarness }) {
+  if (harness === "codex-desktop") {
+    return (
+      <svg className="agent-harness-icon is-codex" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M9 2.1a3.7 3.7 0 0 1 3.6 2.7 3.7 3.7 0 0 1 1.5 6.2 3.7 3.7 0 0 1-5.1 4.5A3.7 3.7 0 0 1 3.9 11a3.7 3.7 0 0 1 1.5-6.2A3.7 3.7 0 0 1 9 2.1Z" fill="none" stroke="currentColor" strokeWidth="1.45" />
+        <path d="m5.4 4.8 5.8 3.3v6.5M12.6 13.2 6.8 9.9V3.4M3.9 7.3 9.7 4l4.4 2.5M14.1 10.7 8.3 14l-4.4-2.5M6.8 9.9l5.8-3.3" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+  if (harness === "claude-desktop") {
+    return (
+      <svg className="agent-harness-icon is-claude" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M9 1.8v5.1m0 4.2v5.1M1.8 9h5.1m4.2 0h5.1M3.9 3.9l3.6 3.6m3 3 3.6 3.6m0-10.2-3.6 3.6m-3 3-3.6 3.6" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
+      </svg>
+    );
+  }
+  return (
+    <svg className="agent-harness-icon is-kiro" viewBox="0 0 18 18" aria-hidden="true">
+      <path d="M3 4.2 9 1.5l6 2.7v9.6L9 16.5l-6-2.7Z" fill="currentColor" opacity=".18" />
+      <path d="m5.2 5.2 3.7-1.7 3.9 1.7-3.9 2.1Zm0 1.8 3.7 2.1 3.9-2.1v4l-3.9 2.1L5.2 11Z" fill="currentColor" />
+    </svg>
+  );
+}
+
+const AGENT_HARNESSES: ReadonlyArray<{ harness: AgentHarness; label: string }> = [
+  { harness: "codex-desktop", label: "Codex" },
+  { harness: "claude-desktop", label: "Claude" },
+  { harness: "kiro-cli-orca", label: "Kiro" },
+];
+
 function messageFor(error: unknown): TaskDetailError {
   if (error instanceof ApiError) return error.message;
   if (error instanceof Error) return error.message;
@@ -420,6 +450,7 @@ export function TaskDetail({
   const [submitting, setSubmitting] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [harnessMenuOpen, setHarnessMenuOpen] = useState(false);
+  const [selectedHarness, setSelectedHarness] = useState<AgentHarness>("codex-desktop");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSegments, setEditingSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(),
@@ -1633,27 +1664,24 @@ export function TaskDetail({
                   aria-expanded={harnessMenuOpen}
                   onClick={() => setHarnessMenuOpen((current) => !current)}
                 >
-                  <ConversationIcon />
-                  <span>{openingThread ? "Opening…" : "Open in new conversation"}</span>
+                  <AgentHarnessIcon harness={selectedHarness} />
+                  <span>{openingThread ? "Opening…" : AGENT_HARNESSES.find(({ harness }) => harness === selectedHarness)?.label}</span>
                   <span className="detail-harness-menu-chevron" aria-hidden="true">⌄</span>
                 </button>
                 {harnessMenuOpen && (
                   <div className="detail-harness-options" role="menu">
-                    {([
-                      ["codex-desktop", "Codex Desktop"],
-                      ["claude-desktop", "Claude Desktop"],
-                      ["kiro-cli-orca", "Kiro CLI in Orca"],
-                    ] as const).map(([harness, label]) => (
+                    {AGENT_HARNESSES.map(({ harness, label }) => (
                       <button
                         key={harness}
                         type="button"
                         role="menuitem"
                         onClick={() => {
+                          setSelectedHarness(harness);
                           setHarnessMenuOpen(false);
                           onOpenInHarness(currentTask, harness);
                         }}
                       >
-                        <ConversationIcon />
+                        <AgentHarnessIcon harness={harness} />
                         <span>{label}</span>
                       </button>
                     ))}
