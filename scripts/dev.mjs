@@ -3,17 +3,23 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadLocalEnv } from "../shared/local-env.mjs";
+import { isLauncherRuntimeReachable, readLauncherRuntime } from "../shared/launcher-runtime.mjs";
 
-loadLocalEnv(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadLocalEnv(projectRoot);
 
+const launcherRuntime = await readLauncherRuntime(projectRoot);
 const children = [
-  spawn(process.execPath, ["--watch", "server/index.mjs", "--dev"], {
-    stdio: "inherit",
-  }),
   spawn(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "dev:web"], {
     stdio: "inherit",
   }),
 ];
+
+if (!await isLauncherRuntimeReachable(launcherRuntime)) {
+  children.unshift(spawn(process.execPath, ["--watch", "server/index.mjs", "--dev"], {
+    stdio: "inherit",
+  }));
+}
 
 let shuttingDown = false;
 
