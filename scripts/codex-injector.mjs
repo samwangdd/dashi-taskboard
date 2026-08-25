@@ -970,7 +970,7 @@ async function openAgentHarness(request) {
     "--title",
     request.title,
     "--command",
-    `kiro-cli chat ${shellSingleQuote(request.instruction)}`,
+    `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(request.instruction)}`,
     "--focus",
     "--json",
   ]);

@@ -322,7 +322,7 @@ async function openLocalKiroHarness(body) {
     "--title",
     title,
     "--command",
-    `kiro-cli chat ${shellSingleQuote(instruction)}`,
+    `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(instruction)}`,
     "--focus",
   ], {
     env: withoutTaskboardLauncherEnvironment(process.env),
