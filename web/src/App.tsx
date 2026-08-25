@@ -3253,13 +3253,14 @@ export function App() {
       }
       setActionError(null);
       try {
-        await openLocalAgentHarness({
+        const opened = await openLocalAgentHarness({
           harness,
           taskId: task.id,
           title: task.title,
           instruction,
           workspacePath,
         });
+        setAnnouncement(opened.label ? `${opened.label} opened.` : "Agent harness opened.");
       } catch (error) {
         setActionError(errorMessage(error));
       }

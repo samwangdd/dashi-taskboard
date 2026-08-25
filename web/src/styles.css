@@ -4385,13 +4385,6 @@ kbd {
   height: 16px;
 }
 
-.detail-thread-avatar {
-  width: 16px;
-  height: 16px;
-  border: 0;
-  font-size: 7px;
-}
-
 .detail-copy-action {
   min-width: 0;
   text-decoration: none;

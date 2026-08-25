@@ -7,7 +7,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, test } from "node:test";
 
-import { createTaskboardServer } from "../server/index.mjs";
+import { createTaskboardServer, runAgentHarnessCommand } from "../server/index.mjs";
 import { buildTaskboardAutomationPrompt } from "../shared/taskboard-automation.mjs";
 
 const runningApps = [];
@@ -127,6 +127,162 @@ test("the browser automation prompt endpoint preserves the selected loop prompt 
   assert.notEqual(prompts.delivery, prompts.automation);
   assert.notEqual(prompts.triage, prompts.automation);
   assert.notEqual(prompts.delivery, prompts.triage);
+});
+
+test("the local Kiro harness endpoint checks its workspace before handing orca a shell-safe kiro-cli command", async () => {
+  const commands = [];
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-kiro-"));
+  const baseUrl = await startServer(() => ({
+    agentHarnessPlatform: "darwin",
+    agentHarnessRunner: async (executable, args) => {
+      commands.push([executable, args]);
+    },
+  }));
+  const payload = {
+    harness: "kiro-cli-orca",
+    taskId: "task-1",
+    title: "Agent harness launcher",
+    instruction: "Handle C03E81167BD2-6 on today's board",
+    workspacePath: workspace,
+  };
+
+  try {
+    const relative = await request(baseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: { ...payload, workspacePath: "relative/workspace" },
+    });
+    assert.equal(relative.response.status, 400);
+    assert.equal(relative.body.error.code, "INVALID_FIELD");
+
+    const absent = await request(baseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: { ...payload, workspacePath: path.join(workspace, "absent") },
+    });
+    assert.equal(absent.response.status, 400);
+    assert.equal(absent.body.error.code, "INVALID_FIELD");
+
+    const otherHarness = await request(baseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: { ...payload, harness: "claude-desktop" },
+    });
+    assert.equal(otherHarness.response.status, 400);
+    assert.equal(otherHarness.body.error.code, "INVALID_FIELD");
+
+    const notMacOs = await request(
+      await startServer(() => ({
+        agentHarnessPlatform: "linux",
+        agentHarnessRunner: async (executable, args) => commands.push([executable, args]),
+      })),
+      "/api/local/agent-harness",
+      { method: "POST", body: payload },
+    );
+    assert.equal(notMacOs.response.status, 400);
+    assert.deepEqual(commands, []);
+
+    const opened = await request(baseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: payload,
+    });
+    assert.equal(opened.response.status, 200);
+    assert.deepEqual(opened.body, { opened: true, label: "Kiro CLI in Orca" });
+    assert.deepEqual(commands, [[
+      "/usr/local/bin/orca",
+      [
+        "terminal",
+        "create",
+        "--worktree",
+        `path:${workspace}`,
+        "--title",
+        "Agent harness launcher",
+        "--command",
+        `kiro-cli chat --trust-all-tools --v3 'Handle C03E81167BD2-6 on today'"'"'s board'`,
+        "--focus",
+      ],
+    ]]);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("an agent harness launch that fails is surfaced instead of being reported as opened", async () => {
+  await assert.rejects(
+    runAgentHarnessCommand(process.execPath, [
+      "-e",
+      "process.stderr.write('orca: no running session'); process.exit(3)",
+    ]),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "AGENT_HARNESS_FAILED");
+      assert.equal(error.message, "orca: no running session");
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    runAgentHarnessCommand(process.execPath, ["-e", "process.exit(4)"]),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.message, "Agent harness exited with code 4");
+      return true;
+    },
+  );
+
+  await assert.rejects(
+    runAgentHarnessCommand(path.join(os.tmpdir(), "codex-taskboard-absent-orca"), ["terminal"]),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "AGENT_HARNESS_FAILED");
+      return true;
+    },
+  );
+
+  await runAgentHarnessCommand(process.execPath, ["-e", "process.exit(0)"]);
+});
+
+test("the local Kiro harness endpoint is unreachable from the LAN", async (t) => {
+  const lanAddress = Object.values(os.networkInterfaces())
+    .flat()
+    .find((entry) => entry?.family === "IPv4" && !entry.internal)?.address ?? null;
+  if (!lanAddress) {
+    t.skip("No non-loopback IPv4 interface is available");
+    return;
+  }
+  const commands = [];
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codex-taskboard-kiro-lan-"));
+  const loopbackBaseUrl = await startServer(
+    () => ({
+      agentHarnessPlatform: "darwin",
+      agentHarnessRunner: async (executable, args) => commands.push([executable, args]),
+    }),
+    { host: "0.0.0.0" },
+  );
+  const lanBaseUrl = `http://${lanAddress}:${new URL(loopbackBaseUrl).port}`;
+  const payload = {
+    harness: "kiro-cli-orca",
+    taskId: "task-1",
+    title: "Agent harness launcher",
+    instruction: "Handle C03E81167BD2-6",
+    workspacePath: workspace,
+  };
+
+  try {
+    const denied = await request(lanBaseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: payload,
+    });
+    assert.equal(denied.response.status, 403);
+    assert.equal(denied.body.error.code, "LOCAL_ONLY");
+    assert.deepEqual(commands, []);
+
+    const allowed = await request(loopbackBaseUrl, "/api/local/agent-harness", {
+      method: "POST",
+      body: payload,
+    });
+    assert.equal(allowed.response.status, 200);
+    assert.equal(commands.length, 1);
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test("launcher mode proves service identity and hides every route behind its instance token", async () => {

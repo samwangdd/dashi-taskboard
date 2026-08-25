@@ -7,7 +7,13 @@ import { createTaskboardServer, resolveHost, resolvePort } from "./app.mjs";
 
 const PROJECT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-export { createTaskboardServer, resolveHost, resolvePort, resolveServerOptions } from "./app.mjs";
+export {
+  createTaskboardServer,
+  resolveHost,
+  resolvePort,
+  resolveServerOptions,
+  runAgentHarnessCommand,
+} from "./app.mjs";
 
 async function main() {
   loadLocalEnv(PROJECT_ROOT);
