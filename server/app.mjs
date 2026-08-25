@@ -297,29 +297,49 @@ function shellSingleQuote(value) {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
 }
 
-export async function runAgentHarnessCommand(executable, args) {
+export async function runAgentHarnessCommand(executable, args, { timeoutMs = 15_000 } = {}) {
   await new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
       env: withoutTaskboardLauncherEnvironment(process.env),
       stdio: ["ignore", "ignore", "pipe"],
     });
     let stderr = "";
+    let settled = false;
+    const timeout = setTimeout(() => {
+      settle(() => {
+        child.kill("SIGKILL");
+        reject(new ApiError(
+          502,
+          "AGENT_HARNESS_FAILED",
+          `${executable} did not finish within ${timeoutMs}ms`,
+        ));
+      });
+    }, timeoutMs);
+    timeout.unref();
+    function settle(callback) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      callback();
+    }
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (chunk) => {
       stderr = `${stderr}${chunk}`.slice(-4_096);
     });
-    child.once("error", (error) => reject(
+    child.once("error", (error) => settle(() => reject(
       new ApiError(502, "AGENT_HARNESS_FAILED", `Could not start ${executable}: ${error.message}`),
-    ));
+    )));
     child.once("close", (code) => {
-      if (code === 0) resolve();
-      else {
-        reject(new ApiError(
-          502,
-          "AGENT_HARNESS_FAILED",
-          stderr.trim() || `Agent harness exited with code ${code}`,
-        ));
-      }
+      settle(() => {
+        if (code === 0) resolve();
+        else {
+          reject(new ApiError(
+            502,
+            "AGENT_HARNESS_FAILED",
+            stderr.trim() || `Agent harness exited with code ${code}`,
+          ));
+        }
+      });
     });
   });
 }

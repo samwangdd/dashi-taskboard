@@ -239,6 +239,22 @@ test("an agent harness launch that fails is surfaced instead of being reported a
   await runAgentHarnessCommand(process.execPath, ["-e", "process.exit(0)"]);
 });
 
+test("a stalled agent harness launch is terminated after its deadline", async () => {
+  await assert.rejects(
+    runAgentHarnessCommand(
+      process.execPath,
+      ["-e", "setTimeout(() => process.exit(0), 250)"],
+      { timeoutMs: 20 },
+    ),
+    (error) => {
+      assert.equal(error.status, 502);
+      assert.equal(error.code, "AGENT_HARNESS_FAILED");
+      assert.match(error.message, /did not finish within 20ms/);
+      return true;
+    },
+  );
+});
+
 test("the local Kiro harness endpoint is unreachable from the LAN", async (t) => {
   const lanAddress = Object.values(os.networkInterfaces())
     .flat()
