@@ -4291,8 +4291,76 @@ kbd {
   text-align: left;
 }
 
-.detail-open-thread-action {
+.detail-harness-menu {
+  position: relative;
   grid-column: 1 / -1;
+}
+
+.detail-harness-menu-chevron {
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1;
+}
+
+.detail-harness-options {
+  position: absolute;
+  z-index: 40;
+  top: 40px;
+  left: 0;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  border: var(--border-hairline) solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.14), 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.detail-harness-options button {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-height: 32px;
+  gap: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 11px;
+  text-align: left;
+}
+
+.detail-harness-options button:hover,
+.detail-harness-options button:focus-visible {
+  outline: 0;
+  background: var(--surface-hover);
+}
+
+.detail-harness-options svg {
+  width: 16px;
+  height: 16px;
+}
+
+.agent-harness-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
+.agent-harness-icon.is-codex {
+  color: var(--text-primary);
+}
+
+.agent-harness-icon.is-claude {
+  color: #d97757;
+}
+
+.agent-harness-icon.is-kiro {
+  color: #7c5cff;
 }
 
 .detail-open-thread-action:hover:not(:disabled),
@@ -4315,13 +4383,6 @@ kbd {
 .detail-open-thread-action svg {
   width: 16px;
   height: 16px;
-}
-
-.detail-thread-avatar {
-  width: 16px;
-  height: 16px;
-  border: 0;
-  font-size: 7px;
 }
 
 .detail-copy-action {

@@ -302,6 +302,19 @@ export async function publishHostRuntime(context: HostContext): Promise<void> {
   });
 }
 
+export async function openLocalAgentHarness(input: {
+  harness: "kiro-cli-orca";
+  taskId: string;
+  title: string;
+  instruction: string;
+  workspacePath: string;
+}): Promise<{ opened: boolean; label: string }> {
+  return request<{ opened: boolean; label: string }>("/api/local/agent-harness", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
 export async function getAiChatCatalog(
   projectId: string,
   signal?: AbortSignal,

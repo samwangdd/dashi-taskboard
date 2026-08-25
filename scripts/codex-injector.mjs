@@ -924,6 +924,58 @@ async function openExternalUrl(request) {
   return { opened: true };
 }
 
+function shellSingleQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+async function runAgentHarnessCommand(executable, args) {
+  await new Promise((resolve, reject) => {
+    const child = spawn(executable, args, {
+      env: withoutTaskboardLauncherEnvironment(process.env),
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    let stderr = "";
+    child.stderr?.setEncoding("utf8");
+    child.stderr?.on("data", (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-4_096);
+    });
+    child.once("error", reject);
+    child.once("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(stderr.trim() || `Agent harness exited with code ${code}`));
+    });
+  });
+}
+
+async function openAgentHarness(request) {
+  if (request.harness === "claude-desktop") {
+    const deepLink = new URL("claude://code/new");
+    deepLink.searchParams.set("q", request.instruction);
+    if (request.workspacePath) deepLink.searchParams.set("folder", request.workspacePath);
+    await openWithDefaultApplication(deepLink.toString());
+    return { opened: true, label: "Claude Desktop" };
+  }
+
+  if (process.platform !== "darwin") {
+    throw new Error("Kiro CLI in Orca is currently available only on macOS.");
+  }
+  if (!request.workspacePath) {
+    throw new Error("Kiro CLI in Orca requires a local project workspace.");
+  }
+  await runAgentHarnessCommand("/usr/local/bin/orca", [
+    "terminal",
+    "create",
+    "--worktree",
+    `path:${request.workspacePath}`,
+    "--title",
+    request.title,
+    "--command",
+    `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(request.instruction)}`,
+    "--json",
+  ]);
+  return { opened: true, label: "Kiro CLI in Orca" };
+}
+
 async function openAttachment(request) {
   const response = await fetch(
     `${taskboardBaseUrl}/api/attachments/${encodeURIComponent(request.attachmentId)}/content`,
@@ -1651,6 +1703,7 @@ function installTaskboardHostBinding(cdp, supervisor, startupToken) {
         request.frameCapability,
       ),
       openExternal: openExternalUrl,
+      openAgentHarness,
       openAttachment,
       runAutomation: (request) => (
         (async () => {

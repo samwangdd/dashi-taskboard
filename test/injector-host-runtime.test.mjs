@@ -103,6 +103,54 @@ test("frame loading and external links require bounded authenticated values", as
   ]);
 });
 
+test("agent harness launches only reach the host for a known harness and bounded values", async () => {
+  const calls = [];
+  const handlers = {
+    parseAutomationRequest: () => null,
+    ensure: async () => assert.fail("ensure must not run"),
+    openAgentHarness: async (request) => {
+      calls.push(["harness", request.harness, request.workspacePath ?? null]);
+      return { opened: true, label: "Kiro CLI in Orca" };
+    },
+    runAutomation: async () => assert.fail("automation must not run"),
+    prefill: async () => assert.fail("prefill must not run"),
+    sendResponse: async (_executionContextId, response) => calls.push(["response", response.ok]),
+  };
+  const send = (overrides) => handleHostBindingPayload({
+    payload: JSON.stringify({
+      id: "harness-request-1",
+      action: "open-agent-harness",
+      harness: "kiro-cli-orca",
+      taskId: "task-1",
+      title: "Agent harness launcher",
+      instruction: "Handle C03E81167BD2-6",
+      workspacePath: "/tmp/project",
+      ...overrides,
+    }),
+    executionContextId: 12,
+  }, handlers);
+
+  await send({ harness: "cursor-desktop" });
+  await send({ title: "Agent harness\u0000launcher" });
+  await send({ workspacePath: "/tmp/pro\u001bject" });
+  await send({ instruction: "x".repeat(14_001) });
+  await send({ instruction: "" });
+  await send({ workspacePath: undefined });
+  await send({ harness: "claude-desktop" });
+
+  assert.deepEqual(calls, [
+    ["response", false],
+    ["response", false],
+    ["response", false],
+    ["response", false],
+    ["response", false],
+    ["harness", "kiro-cli-orca", null],
+    ["response", true],
+    ["harness", "claude-desktop", "/tmp/project"],
+    ["response", true],
+  ]);
+});
+
 test("a stale automation parser receives an immediate host error instead of timing out", async () => {
   const responses = [];
   const staleParser = () => null;

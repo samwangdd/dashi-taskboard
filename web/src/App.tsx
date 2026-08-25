@@ -46,6 +46,7 @@ import {
   listComments,
   listTasks,
   moveTask as moveTaskRequest,
+  openLocalAgentHarness,
   publishHostRuntime,
   removeTaskRelation,
   resolveTaskboardUrl,
@@ -86,7 +87,7 @@ import {
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
-import { TaskDetail } from "./components/TaskDetail";
+import { TaskDetail, type AgentHarness } from "./components/TaskDetail";
 import {
   TaskEditor,
   type NewTaskCreateOptions,
@@ -1697,6 +1698,22 @@ export function App() {
         return;
       }
 
+      if (message.type === "taskboard:agent-harness-opened" && message.payload) {
+        const payload = message.payload as { label?: unknown };
+        setAnnouncement(typeof payload.label === "string"
+          ? `${payload.label} opened.`
+          : "Agent harness opened.");
+        return;
+      }
+
+      if (message.type === "taskboard:agent-harness-open-error" && message.payload) {
+        const payload = message.payload as { error?: unknown };
+        setActionError(typeof payload.error === "string"
+          ? payload.error
+          : "Could not open the agent harness.");
+        return;
+      }
+
       if (message.type !== "taskboard:host-context" || !message.payload) return;
       const payload = message.payload as HostContext;
       setHostContext(payload);
@@ -3208,6 +3225,61 @@ export function App() {
     });
   }
 
+  async function openTaskInHarness(task: Task, harness: AgentHarness) {
+    if (harness === "codex-desktop") {
+      void openTaskInThread(task);
+      return;
+    }
+
+    const taskboardProject = projects.find((project) => project.id === task.projectId);
+    const workspacePath = task.projectId === GLOBAL_PROJECT_ID
+      ? undefined
+      : task.developmentContext?.type === "worktree"
+        ? task.developmentContext.path
+        : deviceWorkspacePaths[task.projectId] ?? taskboardProject?.workspacePath ?? undefined;
+    const instruction = buildTaskPrompt(task.identifier);
+
+    if (!embedded || window.parent === window) {
+      if (harness === "claude-desktop") {
+        const deepLink = new URL("claude://code/new");
+        deepLink.searchParams.set("q", instruction);
+        if (workspacePath) deepLink.searchParams.set("folder", workspacePath);
+        window.location.assign(deepLink.toString());
+        return;
+      }
+      if (!workspacePath) {
+        setActionError("Kiro CLI in Orca requires a local project workspace.");
+        return;
+      }
+      setActionError(null);
+      try {
+        const opened = await openLocalAgentHarness({
+          harness,
+          taskId: task.id,
+          title: task.title,
+          instruction,
+          workspacePath,
+        });
+        setAnnouncement(opened.label ? `${opened.label} opened.` : "Agent harness opened.");
+      } catch (error) {
+        setActionError(errorMessage(error));
+      }
+      return;
+    }
+
+    setActionError(null);
+    postEmbeddedHostMessage({
+      type: "taskboard:open-agent-harness",
+      payload: {
+        harness,
+        taskId: task.id,
+        title: task.title,
+        instruction,
+        workspacePath,
+      },
+    });
+  }
+
   function changeProject(projectId: string) {
     closeContextMenu();
     setProjectContextMenu(null);
@@ -3818,7 +3890,7 @@ export function App() {
             )}
             onOpenThread={openThread}
             onOpenLegacyLocalThread={openLegacyLocalThread}
-            onOpenInThread={openTaskInThread}
+            onOpenInHarness={openTaskInHarness}
             onCopy={(text, message) => void copyText(text, message)}
             onCopyPrompt={copyTaskPrompt}
             openingThread={openingThreadTaskId === detailTask.id}

@@ -1247,6 +1247,36 @@
     } catch (_) {}
   }
 
+  async function handleAgentHarnessOpen(payload) {
+    if (!isLocalTaskboardOrigin(taskboardOrigin)) {
+      postToFrame({
+        type: "taskboard:agent-harness-open-error",
+        payload: { error: "Agent harness launch is available only in the local Taskboard." },
+      });
+      return;
+    }
+    try {
+      const result = await requestHost("open-agent-harness", {
+        harness: payload?.harness,
+        taskId: payload?.taskId,
+        title: payload?.title,
+        instruction: payload?.instruction,
+        workspacePath: payload?.workspacePath,
+      });
+      postToFrame({
+        type: "taskboard:agent-harness-opened",
+        payload: { label: result.label },
+      });
+    } catch (error) {
+      postToFrame({
+        type: "taskboard:agent-harness-open-error",
+        payload: {
+          error: error instanceof Error ? error.message : "Could not open the agent harness.",
+        },
+      });
+    }
+  }
+
   async function handleAttachmentOpen(payload) {
     try {
       await requestHost("open-attachment", {
@@ -1318,6 +1348,10 @@
     }
     if (message.type === "taskboard:open-external") {
       handleExternalOpen(message.payload);
+      return;
+    }
+    if (message.type === "taskboard:open-agent-harness") {
+      void handleAgentHarnessOpen(message.payload);
       return;
     }
     if (message.type === "taskboard:open-attachment") {
