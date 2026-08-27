@@ -1584,7 +1584,9 @@ async function scanDevelopmentContexts(workspacePath, processEnv = process.env) 
 }
 
 export function resolveServerOptions(options = {}) {
-  const configuredDataDirectory = options.dataDirectory ?? process.env.CODEX_TASKBOARD_DATA_DIR;
+  const configuredDataDirectory = options.dataDirectory
+    ?? process.env.CODEX_TASKBOARD_DATA_DIR
+    ?? process.env.TASKBOARD_DATA_DIR;
   const dataDirectory = configuredDataDirectory
     ? path.resolve(configuredDataDirectory)
     : path.join(PROJECT_ROOT, ".data");

@@ -39,8 +39,10 @@ const sourceCodexProfilePath = process.env.CODEX_TASKBOARD_CODEX_SOURCE_PROFILE
   ? path.resolve(process.env.CODEX_TASKBOARD_CODEX_SOURCE_PROFILE)
   : null;
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
-const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
-  ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
+const configuredTaskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
+  ?? process.env.TASKBOARD_DATA_DIR;
+const taskboardDataDirectory = configuredTaskboardDataDirectory
+  ? path.resolve(configuredTaskboardDataDirectory)
   : path.join(projectRoot, ".data");
 const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
   ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
