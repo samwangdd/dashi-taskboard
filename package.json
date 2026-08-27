@@ -24,7 +24,7 @@
     "tauri": "tauri",
     "dev": "node scripts/dev.mjs",
     "dev:server": "node --watch server/index.mjs --dev",
-    "dev:web": "vite --config web/vite.config.ts --open",
+    "dev:web": "vite --config web/vite.config.ts",
     "dev:cloud": "npm run build:web && wrangler dev --local",
     "build": "vite build --config web/vite.config.ts && node scripts/codex-injector.mjs --refresh-if-running",
     "build:web": "vite build --config web/vite.config.ts",
