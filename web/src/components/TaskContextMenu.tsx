@@ -22,8 +22,8 @@ import {
   DeleteIcon,
   EditIcon,
   LabelIcon,
+  NewConversationIcon,
   PriorityIcon,
-  RelationIcon,
   StatusIcon,
 } from "./SemanticIcons";
 
@@ -40,6 +40,7 @@ interface TaskContextMenuProps {
   onLabelsChange: (task: Task, labels: string[]) => void;
   onDuplicate: (task: Task) => void;
   onCopy: (text: string, announcement: string) => void;
+  openInThreadDisabled?: boolean;
   onOpenInThread: (task: Task) => void;
   onArchive: (task: Task) => void;
 }
@@ -111,6 +112,7 @@ export function TaskContextMenu({
   onLabelsChange,
   onDuplicate,
   onCopy,
+  openInThreadDisabled = false,
   onOpenInThread,
   onArchive,
 }: TaskContextMenuProps) {
@@ -424,7 +426,8 @@ export function TaskContextMenu({
         </MenuItem>
         <MenuItem
           label={text("在新对话打开", "Open in new conversation")}
-          icon={<RelationIcon color="currentColor" size={16} />}
+          icon={<NewConversationIcon color="currentColor" size={16} />}
+          disabled={openInThreadDisabled}
           onPointerEnter={closeSubmenu}
           onClick={() => closeThen(() => onOpenInThread(task))}
         />

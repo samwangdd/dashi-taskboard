@@ -151,9 +151,7 @@ export function BoardColumn({
             <StatusIcon status={status} color="var(--column-status-color)" size={14} />
           </span>
           <h2 id={`column-${status}`}>
-            {label}{tasks.length > 0 && (
-              status === "todo" || status === "in_progress" || status === "in_review"
-            ) ? ` ${tasks.length}` : ""}
+            {label}{tasks.length > 0 ? ` ${tasks.length}` : ""}
           </h2>
         </div>
         {createEnabled && (

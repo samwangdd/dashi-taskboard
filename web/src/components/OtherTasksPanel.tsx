@@ -1,12 +1,9 @@
 import { useEffect, useState } from "react";
-import type { DragEvent } from "react";
+import type { CSSProperties, DragEvent } from "react";
 import type { ActorIdentity, Task, TaskDraft, TaskStatus } from "../types";
 import type { TaskCardPresentation, TaskConversationItem } from "../taskConversations";
 import { taskStatusLabel, useTaskboardI18n } from "../i18n";
-import {
-  OTHER_TASK_TABS,
-  type OtherTaskTab,
-} from "../issueBoardStatuses";
+import type { OtherTaskTab } from "../issueBoardStatuses";
 import { LinearIcon } from "./LinearIcon";
 import { DeleteIcon, PlusIcon, RefreshIcon, StatusIcon } from "./SemanticIcons";
 import { TaskCard } from "./TaskCard";
@@ -79,9 +76,63 @@ function ArchivedTaskCard({
   );
 }
 
+interface ArchivedTasksColumnProps {
+  tasks: Task[];
+  hasActiveFilters: boolean;
+  restoringTaskId: string | null;
+  deletingTaskId: string | null;
+  onRestore: (task: Task) => void;
+  onDelete: (task: Task) => void;
+}
+
+export function ArchivedTasksColumn({
+  tasks,
+  hasActiveFilters,
+  restoringTaskId,
+  deletingTaskId,
+  onRestore,
+  onDelete,
+}: ArchivedTasksColumnProps) {
+  const { text } = useTaskboardI18n();
+  return (
+    <section className="board-column status-archived" aria-labelledby="column-archived">
+      <header className="column-header">
+        <div className="column-heading">
+          <span className="column-status-icon">
+            <DeleteIcon color="var(--column-status-color)" size={14} />
+          </span>
+          <h2 id="column-archived">
+            {text("已归档", "Archived")}{tasks.length > 0 ? ` ${tasks.length}` : ""}
+          </h2>
+        </div>
+      </header>
+      <div className="column-list">
+        {tasks.map((task) => (
+          <ArchivedTaskCard
+            key={task.id}
+            task={task}
+            busy={restoringTaskId !== null || deletingTaskId !== null}
+            restoring={restoringTaskId === task.id}
+            onRestore={onRestore}
+            onDelete={onDelete}
+          />
+        ))}
+        {tasks.length === 0 && (
+          <div className="column-empty">
+            {hasActiveFilters
+              ? text("当前筛选下无匹配议题", "No issues match the current filters")
+              : text("没有已归档议题。", "There are no archived issues.")}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 interface OtherTasksPanelProps {
   open: boolean;
   activeTab: OtherTaskTab;
+  tabs: readonly OtherTaskTab[];
   tasksByStatus: Record<TaskStatus, Task[]>;
   archivedTasks: Task[];
   presentations: Record<string, TaskCardPresentation>;
@@ -118,6 +169,7 @@ interface OtherTasksPanelProps {
 export function OtherTasksPanel({
   open,
   activeTab,
+  tabs,
   tasksByStatus,
   archivedTasks,
   presentations,
@@ -206,8 +258,13 @@ export function OtherTasksPanel({
       aria-label={text("其他任务", "Other issues")}
       aria-hidden={!open}
     >
-      <div className="other-tasks-tabs" role="tablist" aria-label={text("其他任务状态", "Other issue statuses")}>
-        {OTHER_TASK_TABS.map((tab) => {
+      <div
+        className="other-tasks-tabs"
+        role="tablist"
+        aria-label={text("其他任务状态", "Other issue statuses")}
+        style={{ "--other-task-tab-count": tabs.length } as CSSProperties}
+      >
+        {tabs.map((tab) => {
           const label = tab === "archived"
             ? text("已归档", "Archived")
             : taskStatusLabel(language, tab);

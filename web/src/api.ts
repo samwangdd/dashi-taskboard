@@ -74,6 +74,12 @@ export function resolveTaskboardUrl(path: string): string {
   return new URL(path.replace(/^\//, ""), document.baseURI).href;
 }
 
+export function resolveTaskboardWebSocketUrl(path: string): string {
+  const url = new URL(resolveTaskboardUrl(path));
+  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
+  return url.href;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
@@ -144,7 +150,11 @@ export async function getJiraConnection(signal?: AbortSignal): Promise<JiraConne
   } catch (error) {
     if (
       error instanceof ApiError
-      && (error.code === "LOCAL_COMPANION_REQUIRED" || error.status === 404)
+      && (
+        error.code === "LOCAL_COMPANION_REQUIRED"
+        || (error.status === 403 && error.code === "LOCAL_ONLY")
+        || error.status === 404
+      )
     ) {
       return {
         configured: false,

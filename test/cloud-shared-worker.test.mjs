@@ -605,11 +605,59 @@ test("the global revision is monotonic and lets clients poll only when data chan
   assert.equal(current.body.changed, false);
 });
 
+test("authenticated WebSockets receive a revision only after business data changes", async () => {
+  const unauthorized = await cloud.connectWebSocket();
+  assert.equal(unauthorized.response.status, 401);
+  assert.equal(unauthorized.socket, null);
+
+  const { response, socket } = await cloud.connectWebSocket("/api/events", {
+    actorName: alice,
+  });
+  assert.equal(response.status, 101);
+  assert.ok(socket);
+
+  const message = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error("Timed out waiting for revision push")), 1_000);
+    socket.addEventListener("message", (event) => {
+      clearTimeout(timeout);
+      resolve(JSON.parse(event.data));
+    }, { once: true });
+  });
+  const created = await createTask("alpha", "WebSocket revision mutation", bob);
+  assert.equal(created.response.status, 201);
+  const payload = await message;
+  assert.equal(payload.type, "revision");
+  assert.ok(Number.isSafeInteger(payload.revision));
+  socket.close(1000, "test complete");
+});
+
+test("browser session cookie authenticates API reads and WebSocket reconnects", async () => {
+  const login = await cloud.request("/api/meta", { actorName: alice });
+  assert.equal(login.response.status, 200);
+  const setCookie = login.response.headers.get("set-cookie");
+  assert.match(setCookie, /^__Host-taskboard_session=/);
+  assert.match(setCookie, /; HttpOnly; Secure; SameSite=Strict$/);
+  const cookie = setCookie.split(";", 1)[0];
+
+  const projects = await cloud.request("/api/projects", {
+    headers: { cookie },
+  });
+  assert.equal(projects.response.status, 200);
+
+  const { response, socket } = await cloud.connectWebSocket("/api/events", { cookie });
+  assert.equal(response.status, 101);
+  assert.ok(socket);
+  socket.close(1000, "cookie authentication test complete");
+});
+
 test("cloud-only local capability routes return an explicit companion requirement", async () => {
   const meta = await cloud.request("/api/meta", { actorName: alice });
   assert.equal(meta.response.status, 200);
   assert.equal(meta.body.mode, "cloud");
-  assert.deepEqual(meta.body.realtime, { transport: "poll", intervalMs: 2000 });
+  assert.deepEqual(meta.body.realtime, {
+    transport: "websocket",
+    endpoint: "/api/events",
+  });
   assert.equal(meta.body.localCapabilities.available, false);
 
   for (const pathname of [
@@ -709,6 +757,183 @@ test("relation direction, deletion, and parent-cycle checks match the local cont
   );
   assert.equal(cycle.response.status, 409);
   assert.equal(cycle.body.error.code, "RELATION_CYCLE");
+});
+
+test("tree queries keep direct and nested ancestor/descendant traversal in cloud parity", async () => {
+  const projectId = "tree-cloud-parity";
+  await createProject(projectId);
+  const root = await createTask(projectId, "Tree root");
+  const child = await createTask(projectId, "Tree child");
+  const sibling = await createTask(projectId, "Tree sibling");
+  const grandchild = await createTask(projectId, "Tree grandchild");
+  const addParent = async (childTask, parentTask) => cloud.request(
+    `/api/tasks/${childTask.id}/relations/parent/${parentTask.id}`,
+    { method: "POST", actorName: alice, json: { version: childTask.version } },
+  );
+  for (const [childTask, parentTask] of [
+    [child.body.task, root.body.task],
+    [sibling.body.task, root.body.task],
+    [grandchild.body.task, child.body.task],
+  ]) {
+    assert.equal((await addParent(childTask, parentTask)).response.status, 200);
+  }
+
+  const direct = await cloud.request(
+    `/api/tasks/${root.body.task.id}/tree?direction=descendants&depth=1`,
+    { actorName: alice },
+  );
+  assert.equal(direct.response.status, 200);
+  assert.deepEqual(direct.body.tree.nodes.map((node) => [node.id, node.parentId, node.depth]), [
+    [root.body.task.id, null, 0],
+    [child.body.task.id, root.body.task.id, 1],
+    [sibling.body.task.id, root.body.task.id, 1],
+  ]);
+
+  const descendants = await cloud.request(
+    `/api/tasks/${root.body.task.id}/tree?direction=descendants&depth=2`,
+    { actorName: alice },
+  );
+  assert.equal(descendants.body.tree.nodeCount, 4);
+  assert.deepEqual(descendants.body.tree.nodes.at(-1).path, [
+    root.body.task.id,
+    child.body.task.id,
+    grandchild.body.task.id,
+  ]);
+
+  const ancestors = await cloud.request(
+    `/api/tasks/${grandchild.body.task.id}/tree?direction=ancestors&depth=2`,
+    { actorName: alice },
+  );
+  assert.equal(ancestors.response.status, 200);
+  assert.deepEqual(ancestors.body.tree.nodes.map((node) => [node.id, node.parentId, node.depth]), [
+    [grandchild.body.task.id, null, 0],
+    [child.body.task.id, grandchild.body.task.id, 1],
+    [root.body.task.id, child.body.task.id, 2],
+  ]);
+
+  const invalid = await cloud.request(
+    `/api/tasks/${root.body.task.id}/tree?direction=descendants&depth=0`,
+    { actorName: alice },
+  );
+  assert.equal(invalid.response.status, 400);
+  assert.equal(invalid.body.error.code, "INVALID_TREE_QUERY");
+});
+
+test("cloud tree handles a 101-node frontier at depth 2", async () => {
+  const projectId = "tree-cloud-frontier";
+  await createProject(projectId);
+  const root = await createTask(projectId, "Tree frontier root");
+  const timestamp = new Date().toISOString();
+
+  await cloud.db.prepare(`
+    WITH RECURSIVE sequence(value) AS (
+      SELECT 1
+      UNION ALL
+      SELECT value + 1 FROM sequence WHERE value < 101
+    )
+    INSERT INTO tasks (
+      id, identifier, project_id, title, description, status, priority, labels, sort_order,
+      creator_type, creator_id, creator_name,
+      assignee_type, assignee_id, assignee_name,
+      version, created_at, updated_at
+    )
+    SELECT
+      'tree-frontier-child-' || value,
+      'TREEFRONTIER-' || value,
+      ?,
+      'Tree frontier child',
+      '',
+      'backlog',
+      'none',
+      '[]',
+      value,
+      'user',
+      'tree-frontier-fixture',
+      'Tree frontier fixture',
+      'user',
+      'tree-frontier-fixture',
+      'Tree frontier fixture',
+      1,
+      ?,
+      ?
+    FROM sequence
+  `).bind(projectId, timestamp, timestamp).run();
+  await cloud.db.prepare(`
+    WITH RECURSIVE sequence(value) AS (
+      SELECT 1
+      UNION ALL
+      SELECT value + 1 FROM sequence WHERE value < 101
+    )
+    INSERT INTO task_relations (relation_type, source_task_id, target_task_id, created_at)
+    SELECT 'parent', ?, 'tree-frontier-child-' || value, ?
+    FROM sequence
+  `).bind(root.body.task.id, timestamp).run();
+
+  const result = await cloud.request(
+    `/api/tasks/${root.body.task.id}/tree?direction=descendants&depth=2`,
+    { actorName: alice },
+  );
+  assert.equal(result.response.status, 200);
+  assert.equal(result.body.tree.nodeCount, 102);
+});
+
+test("cloud tree rejects a breadth that exceeds the 1,000-node cap", async () => {
+  const projectId = "tree-cloud-cap";
+  await createProject(projectId);
+  const root = await createTask(projectId, "Tree cap root");
+  const timestamp = new Date().toISOString();
+
+  // A recursive CTE keeps this cap fixture to two D1 writes instead of 1,000 API mutations.
+  await cloud.db.prepare(`
+    WITH RECURSIVE sequence(value) AS (
+      SELECT 1
+      UNION ALL
+      SELECT value + 1 FROM sequence WHERE value < 1000
+    )
+    INSERT INTO tasks (
+      id, identifier, project_id, title, description, status, priority, labels, sort_order,
+      creator_type, creator_id, creator_name,
+      assignee_type, assignee_id, assignee_name,
+      version, created_at, updated_at
+    )
+    SELECT
+      'tree-cap-child-' || value,
+      'TREECAP-' || value,
+      ?,
+      'Tree cap child',
+      '',
+      'backlog',
+      'none',
+      '[]',
+      value,
+      'user',
+      'tree-cap-fixture',
+      'Tree cap fixture',
+      'user',
+      'tree-cap-fixture',
+      'Tree cap fixture',
+      1,
+      ?,
+      ?
+    FROM sequence
+  `).bind(projectId, timestamp, timestamp).run();
+  await cloud.db.prepare(`
+    WITH RECURSIVE sequence(value) AS (
+      SELECT 1
+      UNION ALL
+      SELECT value + 1 FROM sequence WHERE value < 1000
+    )
+    INSERT INTO task_relations (relation_type, source_task_id, target_task_id, created_at)
+    SELECT 'parent', ?, 'tree-cap-child-' || value, ?
+    FROM sequence
+  `).bind(root.body.task.id, timestamp).run();
+
+  const result = await cloud.request(
+    `/api/tasks/${root.body.task.id}/tree?direction=descendants&depth=1`,
+    { actorName: alice },
+  );
+  assert.equal(result.response.status, 413);
+  assert.equal(result.body.error.code, "TREE_TOO_LARGE");
 });
 
 test("concurrent inverse parent writes cannot create a cycle", async () => {
