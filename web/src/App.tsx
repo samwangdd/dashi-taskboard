@@ -3055,7 +3055,6 @@ export function App() {
         : codexProjectContext?.workspacePath
           ?? deviceWorkspacePaths[task.projectId]
           ?? taskboardProject?.workspacePath;
-    const instruction = buildTaskPrompt(task.identifier);
     const embeddedInstruction = text(
       `[$manage-taskboard](${manageTaskboardSkillPath}) 议题 ID：${task.identifier}`,
       `[$manage-taskboard](${manageTaskboardSkillPath}) Issue ID: ${task.identifier}`,
@@ -3092,20 +3091,6 @@ export function App() {
           setActionError(errorMessage(error));
           return;
         }
-      }
-    }
-
-    if (standalone) {
-      if (localAiChatAvailable) {
-        if (isAllProjects) openTaskDetail(task);
-        setActionError(null);
-        setAiOpenThreadRequest((current) => ({
-          projectId: task.projectId,
-          issueId: task.id,
-          composerText: instruction,
-          requestId: (current?.requestId ?? 0) + 1,
-        }));
-        return;
       }
     }
 
