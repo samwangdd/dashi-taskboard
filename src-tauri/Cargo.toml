@@ -1,7 +1,7 @@
 [package]
 name = "codex-taskboard-launcher"
-version = "1.1.3"
-description = "Codex Taskboard macOS launcher"
+version = "1.1.9"
+description = "Codex Taskboard launcher"
 edition = "2021"
 rust-version = "1.88"
 
@@ -26,5 +26,8 @@ uuid = { version = "1", features = ["v4"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 dispatch2 = "0.3.1"
 objc2 = "0.6.4"
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSProgressIndicator", "NSResponder", "NSView", "NSWindow"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "libc", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSProgressIndicator", "NSResponder", "NSRunningApplication", "NSView", "NSWindow"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_RestartManager", "Win32_System_Threading"] }

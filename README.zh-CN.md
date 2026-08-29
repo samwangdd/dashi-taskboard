@@ -115,6 +115,32 @@ npm run app:build
 
 本地构建使用 ad-hoc 代码签名进行直接验证。公开的 macOS 下载仍需要 Developer ID 签名和 Apple 公证。
 
+### Linux App：Ubuntu 24.04 x64 软件包
+
+Linux 桌面版第一版仅支持 Ubuntu 24.04 LTS x64。请先安装官方 ChatGPT 桌面版 `.deb`，并确认运行 `chatgpt` 可以打开它。然后从 [GitHub Releases](https://github.com/chuspeeism/dashi-taskboard/releases/latest) 下载 Codex Taskboard `.deb` 或 `.AppImage`。请将以下命令中的 `<file>` 替换为下载的文件名。
+
+安装 `.deb` 软件包：
+
+```bash
+sudo apt install ./<file>.deb
+```
+
+或者运行 AppImage：
+
+```bash
+chmod +x ./<file>.AppImage
+./<file>.AppImage
+```
+
+如需在 Ubuntu 24.04 x64 上构建这两种软件包，请运行：
+
+```bash
+npm ci
+npm run app:build:linux:x64
+```
+
+第一版不支持 ARM64、Fedora、RPM 软件包或其他 Linux 发行版。
+
 ### Windows App：托盘启动器与内置 Taskboard
 
 先从 Microsoft Store 安装官方 Codex App。在 Windows x64 上运行以下命令构建当前用户级 NSIS 安装包：
