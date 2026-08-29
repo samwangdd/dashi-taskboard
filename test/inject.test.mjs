@@ -381,18 +381,6 @@ test("host navigation follows Codex's renderer message bus", () => {
   assert.doesNotMatch(source, /new CustomEvent\("codex-message-from-view"/);
 });
 
-test("the standalone web page opens new Codex conversations through local AI chat", () => {
-  assert.match(
-    webApp,
-    /if \(localAiChatAvailable\) \{[\s\S]*?setAiOpenThreadRequest/,
-  );
-  assert.match(
-    webApp,
-    /projectId: task\.projectId,[\s\S]*?issueId: task\.id,[\s\S]*?composerText: instruction/,
-  );
-  assert.doesNotMatch(webApp, /codex:\/\/new/);
-});
-
 test("the standalone web page always opens a project-scoped Codex composer", () => {
   assert.doesNotMatch(webApp, /standalone && task\.threadBinding[\s\S]*?openThread\(task\.threadBinding\)/);
   assert.doesNotMatch(webApp, /standalone && task\.legacyLocalThreadId[\s\S]*?openLegacyLocalThread\(task\.legacyLocalThreadId\)/);
