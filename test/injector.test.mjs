@@ -240,6 +240,18 @@ test("a completed web build refreshes an already-open Codex iframe", () => {
   assert.match(source, /await restartResidentInjectorForRefresh\(port\)/);
 });
 
+// 内嵌页由服务端从 `dist/web` 提供，而 `dist/` 不入版本库；启动 injector 时若不先构建，
+// 内嵌页会一直是磁盘上残留的旧 bundle，与开发页的 UI 产生漂移（DAS-16）。
+test("every injector launch script builds the embedded web bundle first", () => {
+  for (const name of ["codex", "codex:inject", "codex:daemon"]) {
+    assert.match(
+      packageJson.scripts[name],
+      /^npm run build:web && /,
+      `${name} must refresh dist/web before serving the embedded page`,
+    );
+  }
+});
+
 test("the injected iframe follows the configured local service port", () => {
   assert.match(source, /const taskboardBaseUrl = `\$\{taskboardOrigin\}\/\$\{encodeURIComponent\(taskboardInstanceToken\)\}`/);
   assert.match(source, /const taskboardPageUrl = `\$\{taskboardBaseUrl\}\/\?host=codex`/);

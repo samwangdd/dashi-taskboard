@@ -15,6 +15,8 @@ export async function readLauncherRuntime(projectRoot) {
     const url = new URL(descriptor.url);
     const token = url.pathname.match(/^\/([a-z0-9-]{16,128})\/?$/i)?.[1];
     if (url.protocol !== "http:" || !LOOPBACK_HOSTS.has(url.hostname) || !token) return null;
+    // 统一带尾斜杠，`new URL(relative, url)` 才会保留实例 token 前缀而不是把它当作路径段替换掉。
+    url.pathname = `/${token}/`;
     return { url, token };
   } catch {
     return null;
@@ -24,7 +26,7 @@ export async function readLauncherRuntime(projectRoot) {
 export async function isLauncherRuntimeReachable(runtime) {
   if (!runtime) return false;
   try {
-    const response = await fetch(new URL("health", `${runtime.url.href}/`), {
+    const response = await fetch(new URL("health", runtime.url), {
       signal: AbortSignal.timeout(1_000),
     });
     return response.status === 401;
