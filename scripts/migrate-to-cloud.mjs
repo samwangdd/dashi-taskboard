@@ -374,10 +374,13 @@ const CLOUD_COLUMNS = {
     "id", "task_id", "body", "thread_id", "thread_codex_project_id",
     "thread_codex_project_kind", "thread_codex_host_id", "thread_workspace_path",
     "author_type", "author_id", "author_name",
-    "author_avatar_url", "version", "created_at", "updated_at",
+    "author_avatar_url", "version", "created_at", "updated_at", "change_revision",
   ],
   task_relations: ["relation_type", "source_task_id", "target_task_id", "created_at"],
-  attachments: ["id", "task_id", "comment_id", "kind", "filename", "content_type", "size", "created_at"],
+  attachments: [
+    "id", "task_id", "comment_id", "kind", "filename", "content_type", "size", "created_at",
+    "change_revision",
+  ],
 };
 
 function cloudTaskRow(task) {
@@ -410,7 +413,10 @@ export function createCloudD1ImportPlan(tables) {
   return TABLE_ORDER.map((table) => {
     const columns = CLOUD_COLUMNS[table];
     const values = cloudRows(table, tables).map((row) => (
-      Object.fromEntries(columns.map((column) => [column, row[column] ?? null]))
+      Object.fromEntries(columns.map((column) => [
+        column,
+        column === "change_revision" ? row[column] ?? 0 : row[column] ?? null,
+      ]))
     ));
     return { table, sql: insertTableSql(table), json: JSON.stringify(values) };
   });

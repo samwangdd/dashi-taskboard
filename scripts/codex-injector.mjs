@@ -2,8 +2,11 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash, createHmac, randomBytes, randomUUID } from "node:crypto";
-import { chmod, mkdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { chmod, mkdir, readFile, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { createInterface } from "node:readline";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
@@ -34,13 +37,16 @@ const projectRoot = path.resolve(path.dirname(injectorPath), "..");
 const defaultCodexDebuggingPort = 9229;
 const independentCodexProfilePath = process.env.CODEX_TASKBOARD_CODEX_PROFILE
   ? path.resolve(process.env.CODEX_TASKBOARD_CODEX_PROFILE)
-  : "/private/tmp/codex-taskboard-independent-profile-v2";
+  : process.platform === "linux"
+    ? path.join(os.tmpdir(), "codex-taskboard-independent-profile-v2")
+    : "/private/tmp/codex-taskboard-independent-profile-v2";
 const sourceCodexProfilePath = process.env.CODEX_TASKBOARD_CODEX_SOURCE_PROFILE
   ? path.resolve(process.env.CODEX_TASKBOARD_CODEX_SOURCE_PROFILE)
   : null;
 const injectionPath = path.join(projectRoot, "inject", "codex-taskboard.user.js");
-const taskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR
-  ? path.resolve(process.env.CODEX_TASKBOARD_DATA_DIR)
+const configuredTaskboardDataDirectory = process.env.CODEX_TASKBOARD_DATA_DIR;
+const taskboardDataDirectory = configuredTaskboardDataDirectory
+  ? path.resolve(configuredTaskboardDataDirectory)
   : path.join(projectRoot, ".data");
 const taskboardRuntimeFile = process.env.CODEX_TASKBOARD_RUNTIME_FILE
   ? path.resolve(process.env.CODEX_TASKBOARD_RUNTIME_FILE)
@@ -114,7 +120,7 @@ function parseArgs(argv) {
     startupToken: null,
     daemon: false,
     screenshot: null,
-    appPath: "/Applications/ChatGPT.app",
+    appPath: process.platform === "linux" ? "/usr/bin/chatgpt" : "/Applications/ChatGPT.app",
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -141,6 +147,8 @@ function parseArgs(argv) {
     else if (arg === "--app-path") options.appPath = path.resolve(argv[++index]);
     else throw new Error(`Unknown option: ${arg}`);
   }
+
+  if (process.platform === "linux" && options.launch) options.cdpPipe = true;
 
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
     throw new Error("--port must be an integer between 1 and 65535");
@@ -294,7 +302,10 @@ async function importCodexBrowserProfile() {
 }
 
 function codexExecutablePath(appPath) {
-  if (process.platform === "win32") return appPath;
+  if (process.platform === "linux") {
+    return appPath === "/usr/bin/chatgpt" ? "/usr/lib/chatgpt/ChatGPT" : appPath;
+  }
+  if (process.platform !== "darwin") return appPath;
   return path.join(
     appPath,
     "Contents",
@@ -374,7 +385,6 @@ async function launchCodexWithLaunchServices(appPath, port, shouldStop = () => f
   const launcher = spawn(
     "/usr/bin/open",
     [
-      "-n",
       "-a",
       appPath,
       "--args",
@@ -888,7 +898,9 @@ async function loadTaskboardFrameViaCdp(cdp, frameName, frameCapability) {
 async function openWithDefaultApplication(target) {
   await new Promise((resolve, reject) => {
     const child = spawn(
-      process.platform === "win32" ? "explorer.exe" : "/usr/bin/open",
+      process.platform === "win32"
+        ? "explorer.exe"
+        : process.platform === "linux" ? "xdg-open" : "/usr/bin/open",
       [target],
       {
         detached: true,
@@ -905,6 +917,10 @@ async function openWithDefaultApplication(target) {
 }
 
 async function revealAttachmentInFinder(attachmentPath, directory) {
+  if (process.platform === "linux") {
+    await openWithDefaultApplication(directory);
+    return;
+  }
   try {
     await new Promise((resolve, reject) => {
       const child = spawn("/usr/bin/open", ["-R", attachmentPath], {
@@ -1177,7 +1193,21 @@ async function applyTaskboardAutomationPolicy(
   stillCurrent = () => true,
   { explicit = false, previousQuotaState } = {},
 ) {
-  const quota = request.quotaAware
+  const todoResponse = request.enabledByUser
+    ? await fetch(
+      `${taskboardBaseUrl}/api/tasks?projectId=${encodeURIComponent(request.taskboardProjectId)}&status=todo`,
+      { cache: "no-store" },
+    )
+    : null;
+  if (todoResponse && !todoResponse.ok) {
+    throw new Error(`Taskboard todo check returned HTTP ${todoResponse.status}`);
+  }
+  const todoPayload = todoResponse ? await todoResponse.json() : null;
+  if (todoPayload && !Array.isArray(todoPayload.tasks)) {
+    throw new Error("Taskboard todo check returned invalid JSON");
+  }
+  const hasTodo = todoPayload ? todoPayload.tasks.length > 0 : null;
+  const quota = request.quotaAware && hasTodo !== false
     ? await readCodexQuotaStatus(request.model)
     : null;
   if (!stillCurrent()) return { quota, stale: true };
@@ -1194,6 +1224,7 @@ async function applyTaskboardAutomationPolicy(
   }
   const operation = taskboardAutomationPolicyOperation(request, {
     explicit,
+    hasTodo,
     previousQuotaState,
     quotaState: quota?.state,
     currentStatus: currentItem?.status,
@@ -1202,9 +1233,9 @@ async function applyTaskboardAutomationPolicy(
     ? { item: currentItem, items: listed.items }
     : await reconcileTaskboardAutomation({ ...request, operation }, rpc);
   if (result?.error === "not-found") {
-    return { operation, ...(quota ? { quota } : {}) };
+    return { operation, hasTodo, ...(quota ? { quota } : {}) };
   }
-  return { ...result, operation, ...(quota ? { quota } : {}) };
+  return { ...result, operation, hasTodo, ...(quota ? { quota } : {}) };
 }
 
 function storedAutomationPolicy(request) {
@@ -1306,7 +1337,7 @@ function scheduleQuotaPolicyCheck(record, result) {
   const previous = quotaPolicyTimers.get(key);
   if (previous) clearTimeout(previous);
   quotaPolicyTimers.delete(key);
-  if (!request.enabledByUser || !request.quotaAware) return;
+  if (!request.enabledByUser) return;
 
   const nextRunAt = Number(result.item?.nextRunAt);
   const nextRunDelay = Number.isFinite(nextRunAt) && nextRunAt > Date.now()
@@ -1350,7 +1381,10 @@ function enqueueQuotaPolicyMutation(record, rpc, { explicit = false } = {}) {
         },
       );
       if (result.stale) return result;
-      if (!explicit && result.operation === "list" && result.item?.status === "PAUSED") {
+      if (result.hasTodo === false && result.operation === "pause") {
+        current.version += 1;
+        current.request = { ...current.request, enabledByUser: false };
+      } else if (!explicit && result.operation === "list" && result.item?.status === "PAUSED") {
         current.version += 1;
         current.request = { ...current.request, enabledByUser: false };
       }
@@ -1358,7 +1392,7 @@ function enqueueQuotaPolicyMutation(record, rpc, { explicit = false } = {}) {
         current.request = { ...current.request, automationId: result.item.id };
       }
       if (current.request.quotaAware && result.quota) current.quota = result.quota;
-      else delete current.quota;
+      else if (!current.request.quotaAware) delete current.quota;
       await persistQuotaPolicies();
       scheduleQuotaPolicyCheck(current, result);
       return result;
@@ -1452,7 +1486,7 @@ async function restoreQuotaPolicies(cdp) {
   const restoring = (async () => {
     await ensureQuotaPoliciesLoaded();
     for (const [projectId, record] of quotaPolicyRecords) {
-      if (record.request.enabledByUser && record.request.quotaAware) {
+      if (record.request.enabledByUser) {
         await enqueueCurrentQuotaPolicy(projectId);
       }
     }
@@ -2059,10 +2093,32 @@ ${runtimeSource}`,
   };
 }
 
+async function resolveRunnableCodexExecutable(appPath) {
+  const executable = resolveCodexExecutable({ appPath });
+  if (process.platform !== "win32" || !executable.toLowerCase().includes("\\windowsapps\\")) {
+    return executable;
+  }
+
+  const source = await stat(executable);
+  const cacheDirectory = path.join(taskboardDataDirectory, "codex-runtime");
+  const cachedExecutable = path.join(cacheDirectory, "codex.exe");
+  try {
+    const cached = await stat(cachedExecutable);
+    if (cached.size === source.size && cached.mtimeMs === source.mtimeMs) {
+      return cachedExecutable;
+    }
+  } catch {}
+
+  await mkdir(cacheDirectory, { recursive: true });
+  await pipeline(createReadStream(executable), createWriteStream(cachedExecutable));
+  await utimes(cachedExecutable, source.atime, source.mtime);
+  return cachedExecutable;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   options.startupToken ??= taskboardInstanceToken;
-  process.env.CODEX_EXECUTABLE = resolveCodexExecutable({ appPath: options.appPath });
+  process.env.CODEX_EXECUTABLE = await resolveRunnableCodexExecutable(options.appPath);
   const cdpVersionUrl = `http://127.0.0.1:${options.port}/json/version`;
 
   if (options.daemon) {

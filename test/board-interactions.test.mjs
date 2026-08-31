@@ -13,6 +13,7 @@ const contextMenuSource = await readFile(new URL("../web/src/components/TaskCont
 const cardSource = await readFile(new URL("../web/src/components/TaskCard.tsx", import.meta.url), "utf8");
 const filterSource = await readFile(new URL("../web/src/taskFilters.ts", import.meta.url), "utf8");
 const typesSource = await readFile(new URL("../web/src/types.ts", import.meta.url), "utf8");
+const composerSource = await readFile(new URL("../web/src/components/InlineMediaComposer.tsx", import.meta.url), "utf8");
 
 function taskStatuses() {
   const match = typesSource.match(/export const TASK_STATUSES = (\[[\s\S]*?\]) as const/);
@@ -129,15 +130,15 @@ test("common issue mutations enter a Linear-style undo queue", () => {
 });
 
 test("issues expose processing conversations without manual binding", () => {
-  assert.match(detailSource, /在新对话打开/);
-  assert.match(detailSource, /onOpenInThread\(currentTask\)/);
+  assert.match(detailSource, /onOpenInHarness\(currentTask, harness\)/);
+  assert.match(detailSource, /AGENT_HARNESSES\.map/);
   assert.doesNotMatch(appSource, /detail-thread-button/);
   assert.doesNotMatch(detailSource, /输入对话 ID|解除 Codex 对话绑定|>绑定</);
   assert.doesNotMatch(editorSource, /对话 ID|linkedThreadId/);
   assert.match(detailSource, /currentTask\.threadBinding \|\| currentTask\.legacyLocalThreadId/);
   assert.doesNotMatch(detailSource, /currentTask\.threadIds/);
   assert.match(detailSource, /<strong>\{text\("查看对话", "View conversation"\)\}<\/strong>/);
-  assert.match(detailSource, /className="conversation-thread-id">\{threadId\}/);
+  assert.doesNotMatch(detailSource, /className="conversation-thread-id">\{threadId\}/);
   assert.doesNotMatch(detailSource, /shortThreadId/);
   assert.doesNotMatch(detailSource, /detail-property-label">Codex/);
   assert.match(detailSource, /comment\.threadBinding \|\| comment\.legacyLocalThreadId/);
@@ -152,14 +153,16 @@ test("issues expose processing conversations without manual binding", () => {
   assert.match(contextMenuSource, /onOpenInThread/);
 });
 
-test("comments stage, upload, render and delete their own attachments", () => {
+test("comments upload and render their own attachments in the content flow", () => {
   assert.match(apiSource, /export async function uploadCommentAttachment/);
   assert.match(apiSource, /\/api\/comments\/\$\{encodeURIComponent\(commentId\)\}\/attachments/);
-  assert.match(detailSource, /pendingCommentFiles/);
-  assert.match(detailSource, /uploadCommentAttachment\(comment\.id, file, "attachment"\)/);
-  assert.match(detailSource, /comment\.attachments\.some\(\(attachment\) => attachment\.kind === "attachment"\)/);
-  assert.match(detailSource, /comment\.attachments[\s\S]*?\.filter\(\(attachment\) => attachment\.kind === "attachment"\)[\s\S]*?\.map\(\(attachment\) =>/);
-  assert.match(detailSource, /setPendingAttachmentDelete\(attachment\)/);
+  assert.match(detailSource, /commentInlineFiles/);
+  assert.match(detailSource, /uploadCommentAttachment\(comment\.id, file\.file, "attachment"\)/);
+  assert.match(detailSource, /resolveInlineAttachmentMarkdown/);
+  assert.match(detailSource, /createInlineMediaSegments\(comment\.body, referenceTasks, comment\.attachments\)/);
+  assert.match(detailSource, /attachments=\{comment\.attachments\}/);
+  assert.match(detailSource, /onOpenAttachment=\{handleAttachmentDownload\}/);
+  assert.match(composerSource, /className="inline-media-attachment"/);
 });
 
 test("issue creation and detail share one searchable, creatable label picker", () => {

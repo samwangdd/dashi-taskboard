@@ -41,7 +41,7 @@ test("imported Codex projects persist their exact device identity", () => {
 
 test("project selection starts from the route or recent projects and updates the route", () => {
   assert.match(appSource, /const RECENT_PROJECT_IDS_KEY = "taskboard\.recentProjectIds\.v1"/);
-  assert.match(appSource, /const initialProjectId = query\.get\("project"\) \?\? recentProjectIds\[0\] \?\? GLOBAL_PROJECT_ID/);
+  assert.match(appSource, /const initialProjectId = query\.get\("project"\) \?\? recentProjectIds\[0\] \?\? ALL_PROJECTS_ID/);
   assert.match(appSource, /const rememberProjectOpen = useCallback/);
   assert.match(appSource, /taskboardStorage\.setItem\(RECENT_PROJECT_IDS_KEY, JSON\.stringify\(next\)\)/);
   assert.match(appSource, /function changeProject\(projectId: string\)/);
@@ -114,8 +114,8 @@ test("the collapsed Codex sidebar can be expanded immediately left of the projec
   assert.match(styles, /\.codex-sidebar-expand-button \{[\s\S]*?width: 28px;[\s\S]*?height: 28px;/);
 });
 
-test("embedded mode omits the app navigation and keeps a draggable header region", () => {
-  assert.match(appSource, /!embedded && \([\s\S]*?<aside className="app-nav"/);
+test("the app omits the old navigation and keeps the embedded draggable header region", () => {
+  assert.doesNotMatch(appSource, /<aside className="app-nav"/);
   assert.match(appSource, /<header className="workspace-header">/);
   assert.match(appSource, /ref=\{dragRegionRef\} className="workspace-drag-region"/);
   assert.match(styles, /\.workspace-drag-region \{[\s\S]*?flex: 1;[\s\S]*?align-self: stretch/);
