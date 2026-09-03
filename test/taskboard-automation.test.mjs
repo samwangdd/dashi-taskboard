@@ -7,10 +7,16 @@ import {
   buildTaskboardAutomationName,
   buildTaskboardAutomationPrompt,
   buildTaskboardAutomationSpec,
+  buildTaskboardLoopPrompt,
+  HANDOFF_CARD_MARKER,
   parseTaskboardAutomationHostRequest,
   reconcileTaskboardAutomation,
   taskboardAutomationPolicyOperation,
 } from "../shared/taskboard-automation.mjs";
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 const baseRequest = {
   id: "host-request-1",
@@ -202,6 +208,68 @@ test("the remote automation prompt keeps taskctl local and delegates work to the
   assert.match(prompt, /worker 确认后的每一次 issue move 都必须显式传完整远程 binding/);
   assert.match(prompt, /不得扫描或接管其他 in_progress/);
   assert.match(prompt, /移动到 in_review/);
+});
+
+test("HANDOFF_CARD_MARKER is the shared handoff card contract marker", () => {
+  assert.equal(HANDOFF_CARD_MARKER, "<!-- handoff v1 -->");
+});
+
+test("the local automation prompt requires a handoff card before ending in_progress or moving to blocked", () => {
+  const prompt = buildTaskboardAutomationPrompt(baseRequest);
+  assert.match(prompt, /\$taskboard-handoff/);
+  assert.ok(prompt.includes(HANDOFF_CARD_MARKER));
+  assert.match(prompt, /Next action/);
+  assert.match(
+    prompt,
+    /本轮结束或暂停[\s\S]*in_progress[\s\S]*blocked[\s\S]*\$taskboard-handoff/,
+  );
+  assert.match(
+    prompt,
+    new RegExp(`评论[\\s\\S]*${escapeRegExp(HANDOFF_CARD_MARKER)}[\\s\\S]*Next action`),
+  );
+  assert.match(
+    prompt,
+    /继续处理[\s\S]*已绑定[\s\S]*in_progress[\s\S]*读取最新[\s\S]*Next action/,
+  );
+});
+
+test("the remote automation prompt also requires a handoff card before ending in_progress or moving to blocked", () => {
+  const prompt = buildTaskboardAutomationPrompt(remoteRequest);
+  assert.match(prompt, /\$taskboard-handoff/);
+  assert.ok(prompt.includes(HANDOFF_CARD_MARKER));
+  assert.match(prompt, /Next action/);
+  assert.match(
+    prompt,
+    /本轮结束或暂停[\s\S]*in_progress[\s\S]*blocked[\s\S]*\$taskboard-handoff/,
+  );
+  assert.match(
+    prompt,
+    /继续处理[\s\S]*已绑定[\s\S]*in_progress[\s\S]*读取最新[\s\S]*Next action/,
+  );
+});
+
+test("the delivery prompt requires a handoff card before ending in_progress or moving to blocked", () => {
+  const prompt = buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "delivery" });
+  assert.match(prompt, /\$taskboard-handoff/);
+  assert.ok(prompt.includes(HANDOFF_CARD_MARKER));
+  assert.match(prompt, /Next action/);
+  assert.match(
+    prompt,
+    /before the run ends or pauses[\s\S]*in_progress[\s\S]*blocked[\s\S]*\$taskboard-handoff/,
+  );
+  assert.match(
+    prompt,
+    /resuming a bound in_progress issue[\s\S]*read the latest[\s\S]*Next action/,
+  );
+});
+
+test("the triage prompt reports an in_progress issue with no handoff card as a report-only finding", () => {
+  const prompt = buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "triage" });
+  assert.ok(prompt.includes(HANDOFF_CARD_MARKER));
+  assert.match(prompt, /no handoff card/);
+  assert.match(prompt, /report-only/);
+  assert.match(prompt, /age of/);
+  assert.match(prompt, /in_progress/);
 });
 
 test("the generated automation command uses the packaged CLI and an argv runtime file", () => {

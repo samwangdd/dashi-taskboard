@@ -12,6 +12,9 @@ const AUTOMATION_OPERATIONS = new Set([
 ]);
 const INTERVAL_MINUTES = new Set([5, 10, 15, 30, 60]);
 const LOOP_PROMPT_KINDS = new Set(["automation", "delivery", "triage"]);
+// 交接卡标记是与 skill `taskboard-handoff`、`issue-to-mr`（DAS-18）共享的跨技能契约，
+// 三处必须同步变更，因此本文件的三种 loop prompt 一律引用这个常量而不各自硬编码字符串。
+export const HANDOFF_CARD_MARKER = "<!-- handoff v1 -->";
 const HOST_REQUEST_FIELDS = new Set([
   "id",
   "action",
@@ -124,6 +127,7 @@ export function buildTaskboardAutomationPrompt(request) {
         "仅当 send_message_to_thread 成功，或 create_thread 成功返回远程 threadId，才视为远程 worker 已确认。未绑定议题在 create_thread 失败时，使用 comment add 记录失败工具和错误；随后用 ownedVersion、显式 --if-version 和 --clear-binding-thread 将当前议题移回 todo 并结束。若发生 409，说明其他控制端已修改任务，立即停止且不得重读最新 version 后覆盖。此补偿只处理本轮当前已认领议题；不得扫描或接管其他 in_progress。",
         "新建远程任务成功后，使用 ownedVersion 和显式 --if-version 再次移动到 in_progress；必须用完整 binding 参数保存 create_thread 返回的 threadId，以及 actualTarget 的 projectId、kind=\"remote\"、hostId 和 workspacePath。成功后用响应 version 更新 ownedVersion 和本轮 binding。若请求响应丢失或结果不确定，只允许重新 issue get 一次；仅当 projectId 等于 ownedProjectId、未归档、状态仍为本轮 in_progress，且 threadBinding 为空或与本轮五字段 binding 完全相同时才可继续。读到相同 binding 视为前次保存成功；读到空 binding 时才可用本次核对后的 version 重试一次；读到不同 binding 或任一其他核对项变化时立即退出，不得写回。若确定绑定写入失败，使用 comment add 记录失败和远程 threadId，再用 ownedVersion、显式 --if-version 和同一完整 binding 将议题移动到 blocked；409 时停止且不得重复派发。",
         "使用 Codex wait_threads 等待远程会话时，目标必须使用任务保存的 threadBinding.threadId 和 threadBinding.codexHostId。wait_threads 失败、远程会话明确需要用户输入或无法继续时，使用 comment add 记录原因，再用 ownedVersion、显式 --if-version 和完整保存 binding 将议题移动到 blocked；409 时立即停止。远程会话完成后，使用 comment add 写入改动、验证结果、执行结果和剩余风险，再用 ownedVersion、显式 --if-version 和完整保存 binding 将议题移动到 in_review。worker 确认后的每一次 issue move 都必须显式传完整远程 binding；不要把未完成工作标记为 in_review。",
+        `若本轮结束或暂停时，本轮认领或继续处理的议题仍停留在 in_progress，或本轮把议题移动到 blocked，必须先调用 $taskboard-handoff 生成交接卡，并追加一条评论，评论正文以 ${HANDOFF_CARD_MARKER} 开头，其中 Next action 需写明下一步要满足的具体 gate 或动作。若本轮是继续处理一个已绑定的 in_progress 议题，必须先读取最新一条以 ${HANDOFF_CARD_MARKER} 开头的评论，并从其 Next action 继续执行。`,
       ]
     : [
         "从返回的 todo 中只选择依赖已完成的议题：relations.blockedBy 为空，或其中每个依赖的 status 都严格等于 done。无依赖的 todo 仍可并行处理。若有 todo 但全部被未完成依赖阻塞，本轮直接结束，不暂停自动化，也不创建或打开新的任务会话。",
@@ -134,6 +138,7 @@ export function buildTaskboardAutomationPrompt(request) {
         `若首次 issue get 返回完整 threadBinding，议题已绑定原会话：不要在当前自动化会话认领；只能使用保存的 threadId 和 codexHostId 调用 Codex send_message_to_thread。send 成功时保留 binding 并结束本轮；只有工具明确返回终态 NOT_FOUND 或 CLOSED 等会话不存在或已关闭结果时才确认 stale。timeout、network failure、Codex host 暂时不可达或 Taskboard service unavailable 都保留 binding 并结束本轮，不得猜测 stale。确认 stale 后，先用 comment add 同时传 --thread-id 和完整旧 binding 保存历史，再用同一次 issue get 的 version 执行 issue move --status todo --clear-binding-thread --if-version；然后只重新 issue get 一次，仍为未归档 todo 且 threadId、threadBinding 都为空时，才在当前自动化会话处理。若任务已是 in_progress、活跃、已归档、状态或 binding 已变化，或发生 409，立即停止，不得抢占。若返回 threadId 但没有完整 threadBinding，这是 legacy local 绑定：先调用 Codex list_threads（limit=50），合并 pinnedThreads 与 threads，并按完整 threadId 精确查找。只有恰好一项 kind="codex"、projectId=${JSON.stringify(request.codexProjectId)}、hostId=${JSON.stringify(request.codexHostId)}、cwd=${JSON.stringify(request.workspacePath)} 全部一致时，才把该项视为可核验旧会话；使用最新 issue version 执行 issue move --status todo --if-version，并显式传旧 threadId 及上述 projectId、kind="local"、hostId、workspacePath 五字段，将 legacy local 原位升级为完整 binding。升级成功后只向该旧 threadId 和 hostId 调用 send_message_to_thread，随后结束本轮，由旧会话按议题最新要求继续。若 list_threads 未找到、出现多项或任一字段不一致，不得迁移或发送；使用 comment add 记录实际不一致项，再用首次读取的 version 和 --if-version、--binding-thread-id 保留原 threadId 将议题移到 blocked。若升级发生 409，立即停止，不得用新 version 覆盖。若没有 threadId，则按未绑定议题处理。`,
         "若议题已绑定 branch 或 worktree，必须在该议题绑定的开发上下文执行，避免并行 Agent 修改同一工作目录。",
         "执行完成并验证后，先用 comment add 记录关键改动、验证结果、执行结果和剩余风险，再使用 ownedVersion、显式 --if-version 和认领时保存的完整 binding 将议题移动到 in_review；成功后更新 ownedVersion。不要省略 binding，避免把完整绑定降级为 legacy local；不要直接标记为 done。",
+        `若本轮结束或暂停时，本轮认领或继续处理的议题仍停留在 in_progress，或本轮把议题移动到 blocked，必须先调用 $taskboard-handoff 生成交接卡，并追加一条评论，评论正文以 ${HANDOFF_CARD_MARKER} 开头，其中 Next action 需写明下一步要满足的具体 gate 或动作。若本轮是继续处理一个已绑定的 in_progress 议题，必须先读取最新一条以 ${HANDOFF_CARD_MARKER} 开头的评论，并从其 Next action 继续执行。`,
       ];
   return [
     `[$manage-taskboard](${request.skillPath}) e-taskboard 每 ${request.intervalMinutes} 分钟检查任务面板中的「${request.projectName}」项目（项目 ID：${request.taskboardProjectId}，项目目录：${request.workspacePath}）。`,
@@ -162,6 +167,7 @@ function buildTaskboardDeliveryLoopPrompt(request) {
     "When fewer than two implementation units are active, inspect todo issues and select at most one whose dependencies are complete and whose description and latest comments allow execution. Read the full issue, attachments, and all comments before claiming it. Re-read its version and relations immediately before the versioned claim.",
     "A newly claimed code issue must use its own feature branch and worktree created from the verified current target branch. Never reuse a dirty, occupied, or unrelated worktree. Record the issue, conversation, branch, worktree, and the real operation path in Taskboard before editing.",
     "Stop at the first gate required by $issue-to-mr. Do not run project-wide triage, batch-claim todo issues, take over another conversation's in_progress work, merge without separate authorization, or move an issue to done without target-branch SHA evidence and separate user acceptance.",
+    `Handoff card: before the run ends or pauses while an issue this run claimed or continued stays in_progress, or whenever this run moves an issue to blocked, invoke $taskboard-handoff and append a handoff card comment whose body starts with the exact marker \`${HANDOFF_CARD_MARKER}\`, with Next action naming the exact gate or next step. When resuming a bound in_progress issue, read the latest comment starting with \`${HANDOFF_CARD_MARKER}\` first and resume from its Next action.`,
     "Finish with a concise report containing the run type, issue identifier, initial and final status, active implementation count, branch, worktree, commit SHA, evidence comment, MR state, exact pause gate, and reasons other candidates were skipped.",
   ].join("\n");
 }
@@ -176,6 +182,7 @@ function buildTaskboardTriagePrompt(request) {
     "This run is board repair, never execution. Do not claim work, implement or debug code, invoke $issue-to-mr or $mexc-coding-loop, create or resume an execution binding, create a conversation, branch, or worktree, push, open an MR, merge, release, or mark work done.",
     "Apply only repairs whose end state follows mechanically from current tracker evidence and is allowed by the unattended mutation boundary in $triaging-blocked-issues. Preserve durable checkpoints and worktree evidence. Report high-judgment cases without mutating them, including semantic splits, ambiguous survivors, done rollbacks, uncertain owners, and Git or Taskboard contradictions.",
     "Before every write, re-read the current version. Use a stable triage marker to avoid duplicate comments. After a partial failure, re-read the affected scope and apply only the missing delta; never replay the original batch.",
+    `For every in_progress issue, if its latest agent-authored comment does not start with the exact marker \`${HANDOFF_CARD_MARKER}\`, report it as a report-only finding of "no handoff card", listing the issue identifier and the age of that latest comment. This is a report-only finding, not an automatic status change.`,
     "Independently verify the final board snapshot as required by $triaging-blocked-issues. If no independent read channel is available, report changed but not independently verified.",
     "Finish with the number of issues scanned, automatic repairs and their evidence, report-only findings, every remaining in_progress executor and next action, every remaining blocked external exit condition and request evidence, relation anomalies, and confirmation that no execution binding, conversation, branch, or worktree was created.",
   ].join("\n");

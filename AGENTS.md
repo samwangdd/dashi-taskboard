@@ -98,7 +98,8 @@ Make the smallest root-cause change. Do not add unrelated refactors, abstraction
 ### Progress and context economy
 
 - Write one initial Taskboard comment for claim, grouping, and E3 path, and one final comment for implementation, verification, review, PR, CI, and limitations.
-- Add an intermediate comment only for a material blocker, scope correction, failed review, user-visible preview, or changed exact head. Do not write polling or unchanged waiting updates into the issue.
+- Add an intermediate comment only for a material blocker, scope correction, failed review, user-visible preview, changed exact head, or a handoff card. Do not write polling or unchanged waiting updates into the issue.
+- Before any pause, stop, or move to `blocked` that leaves an issue unfinished, write a handoff card via `taskboard-handoff` (body starts with `<!-- handoff v1 -->`); when resuming a bound `in_progress` issue, read the latest handoff card first.
 - A resumed conversation may reuse its recorded full issue snapshot. Read only comments and attachments added since that snapshot unless the issue version or requirement changed.
 - Return a concise structured handoff. Do not paste full command logs, full API JSON, base64 images, or repeated rule text when identifiers, exact SHA, results, and artifact links are enough.
 - The coordinator checks handoff evidence but does not repeat the execution conversation's full review or full validation matrix.
@@ -152,6 +153,7 @@ Use this review classification:
 - UI-surface work that does not meet the confirmation gate can proceed after the coordinator verifies the real path, visual impact, scope, and required review without a separate user UI pause.
 - After implementation and required review pass, move the issue to `in_review`.
 - Never move an issue to `done` unless the user explicitly accepts it or asks for completion.
+- Exception (approved 2026-09-03): an issue whose change is in the Agent review class defined above (documentation, README, copy, CSS, a local font/spacing/color change, a small direct UI behavior change, or a narrow logic fix with no process, persistence, migration, concurrency, security, or cross-project effect) may be moved to `done` by the agent without user acceptance when all three hold: (1) the change is merged into the configured target branch; (2) the accepted commit SHA is independently verified on the remote target branch; (3) the `done` comment links the PR/MR and the verification evidence. Any other class still requires explicit user acceptance.
 - If the user explicitly authorizes finishing and releasing the whole batch without another pause, that instruction authorizes the remaining review, merge, and release steps, but still does not authorize marking issues `done`.
 - When a Taskboard issue is linked to a GitHub Issue, keep completion-state changes synchronized across both systems. Record the local state change in the GitHub Issue and the GitHub state change in the local issue. The release gate below controls when the GitHub Issue can be closed.
 
@@ -186,7 +188,7 @@ A requested batch is complete only when:
 - no item is unexpectedly left in `in_progress`;
 - explicit waiting items are reported;
 - included PRs are reviewed and merged into `main`;
-- changed issues are in `in_review`, not `done`;
+- changed issues are in `in_review`, not `done`, except where the Agent review `done` exception in "Acceptance and issue status" applies;
 - the injected Codex App shows the latest status;
 - merged worktrees and feature branches are cleaned up;
 - task conversations remain available; and
