@@ -141,7 +141,9 @@ test("issues expose processing conversations without manual binding", () => {
   assert.match(detailSource, /agentKind=\{currentTask\.threadAgentKind\}/);
   assert.match(detailSource, /const threadAgentChanged = currentTask\.threadAgentKind !== task\.threadAgentKind/);
   assert.match(detailSource, /resumeCommandForAgent\(agentKind, threadId\)/);
-  assert.match(detailSource, /const canOpenConversation = agentKind === "codex"/);
+  assert.match(detailSource, /const canOpenConversation = canOpenConversationInAgent\(agentKind\)/);
+  assert.match(detailSource, /comment\.authorAgentKind === "claude-code"[\s\S]*?onOpenInHarness\(currentTask, "claude-desktop"\)/);
+  assert.doesNotMatch(appSource, /Kiro CLI in Orca requires a local project workspace/);
   assert.match(detailSource, /className="detail-harness-menu-trigger"/);
   assert.match(detailSource, /<HarnessChevron \/>/);
   assert.doesNotMatch(detailSource, /className="conversation-thread-id">\{threadId\}/);

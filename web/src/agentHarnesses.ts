@@ -20,6 +20,10 @@ export function harnessForAgentKind(agentKind: AgentKind | null | undefined): Ag
   return null;
 }
 
+export function canOpenConversationInAgent(agentKind: AgentKind | null | undefined): boolean {
+  return agentKind === "codex" || agentKind === "claude-code";
+}
+
 export function resumeCommandForAgent(
   agentKind: AgentKind | null | undefined,
   threadId: string,

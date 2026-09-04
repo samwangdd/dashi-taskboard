@@ -3158,10 +3158,6 @@ export function App() {
         window.location.assign(deepLink.toString());
         return;
       }
-      if (!workspacePath) {
-        setActionError("Kiro CLI in Orca requires a local project workspace.");
-        return;
-      }
       setActionError(null);
       try {
         const opened = await openLocalAgentHarness({

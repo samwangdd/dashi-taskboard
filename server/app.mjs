@@ -417,21 +417,27 @@ async function openLocalKiroHarness(body, harnessRuntime = {}) {
   stringField(body.taskId, "taskId", { required: true, maxLength: 256 });
   const title = stringField(body.title, "title", { required: true, maxLength: 512 });
   const instruction = stringField(body.instruction, "instruction", { required: true, maxLength: 16_384 });
-  const workspacePath = stringField(body.workspacePath, "workspacePath", { required: true, maxLength: 4096 });
+  const workspacePath = stringField(body.workspacePath, "workspacePath", { maxLength: 4096 });
   const platform = harnessRuntime.platform ?? process.platform;
   const run = harnessRuntime.run ?? runAgentHarnessCommand;
-  if (platform !== "darwin" || !path.isAbsolute(workspacePath)) {
-    throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an absolute macOS workspace path");
+  if (platform !== "darwin") {
+    throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires macOS");
   }
-  const workspaceStats = await stat(workspacePath).catch(() => null);
-  if (!workspaceStats?.isDirectory()) {
-    throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an existing workspace directory");
+  if (workspacePath !== undefined) {
+    if (!path.isAbsolute(workspacePath)) {
+      throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an absolute workspace path");
+    }
+    const workspaceStats = await stat(workspacePath).catch(() => null);
+    if (!workspaceStats?.isDirectory()) {
+      throw new ApiError(400, "INVALID_FIELD", "Kiro CLI in Orca requires an existing workspace directory");
+    }
   }
+  // 临时任务没有项目目录时仍可启动 Kiro；只有真实 workspace 才绑定 Orca worktree。
+  const workspaceArgs = workspacePath ? ["--worktree", `path:${workspacePath}`] : [];
   await run("/usr/local/bin/orca", [
     "terminal",
     "create",
-    "--worktree",
-    `path:${workspacePath}`,
+    ...workspaceArgs,
     "--title",
     title,
     "--command",

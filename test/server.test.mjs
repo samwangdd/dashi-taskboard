@@ -236,6 +236,40 @@ test("the local Kiro harness endpoint checks its workspace before handing orca a
   }
 });
 
+test("the local Kiro harness endpoint opens an unbound Orca terminal when no workspace is available", async () => {
+  const commands = [];
+  const baseUrl = await startServer(() => ({
+    agentHarnessPlatform: "darwin",
+    agentHarnessRunner: async (executable, args) => {
+      commands.push([executable, args]);
+    },
+  }));
+
+  const opened = await request(baseUrl, "/api/local/agent-harness", {
+    method: "POST",
+    body: {
+      harness: "kiro-cli-orca",
+      taskId: "task-1",
+      title: "Projectless Kiro task",
+      instruction: "Handle LOCAL-2",
+    },
+  });
+
+  assert.equal(opened.response.status, 200);
+  assert.deepEqual(opened.body, { opened: true, label: "Kiro CLI in Orca" });
+  assert.deepEqual(commands, [[
+    "/usr/local/bin/orca",
+    [
+      "terminal",
+      "create",
+      "--title",
+      "Projectless Kiro task",
+      "--command",
+      "kiro-cli chat --trust-all-tools --v3 'Handle LOCAL-2'",
+    ],
+  ]]);
+});
+
 test("an agent harness launch that fails is surfaced instead of being reported as opened", async () => {
   await assert.rejects(
     runAgentHarnessCommand(process.execPath, [

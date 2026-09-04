@@ -101,6 +101,7 @@ import { DescriptionDocument } from "./DescriptionDocument";
 import {
   AGENT_HARNESSES,
   agentKindForHarness,
+  canOpenConversationInAgent,
   harnessForAgentKind,
   resumeCommandForAgent,
   type AgentHarness,
@@ -393,9 +394,10 @@ function ConversationLink({
   onCopy: (text: string, announcement: string) => void;
 }) {
   const { text } = useTaskboardI18n();
-  const canOpenConversation = agentKind === "codex";
+  const canOpenConversation = canOpenConversationInAgent(agentKind);
   const command = resumeCommandForAgent(agentKind, threadId);
   const label = agentKind === "claude-code" ? "Claude Code" : agentKind === "codex" ? "Codex" : "AI Agent";
+  const openLabel = agentKind === "claude-code" ? "Claude Desktop" : label;
   const actor: ActorIdentity = {
     type: "agent",
     id: `${agentKind ?? "unknown"}-conversation-agent`,
@@ -409,11 +411,11 @@ function ConversationLink({
         <button
           className="issue-conversation-link"
           type="button"
-          title={text(`在 ${label} 中打开`, `Open in ${label}`)}
+          title={text(`在 ${openLabel} 中打开`, `Open in ${openLabel}`)}
           onClick={onOpen}
         >
           <ActorAvatar className="issue-conversation-agent-icon" actor={actor} />
-          <strong>{text(`打开 ${label}`, `Open ${label}`)}</strong>
+          <strong>{text(`打开 ${openLabel}`, `Open ${openLabel}`)}</strong>
         </button>
       )}
       <button
@@ -1281,9 +1283,11 @@ export function TaskDetail({
                     <ConversationLink
                       threadId={currentTask.threadBinding?.threadId ?? currentTask.legacyLocalThreadId!}
                       agentKind={currentTask.threadAgentKind}
-                      onOpen={() => currentTask.threadBinding
-                        ? onOpenThread(currentTask.threadBinding)
-                        : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
+                      onOpen={() => currentTask.threadAgentKind === "claude-code"
+                        ? onOpenInHarness(currentTask, "claude-desktop")
+                        : currentTask.threadBinding
+                          ? onOpenThread(currentTask.threadBinding)
+                          : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
                       onCopy={onCopy}
                     />
                   </div>
@@ -1586,9 +1590,11 @@ export function TaskDetail({
                           <ConversationLink
                             threadId={comment.threadBinding?.threadId ?? comment.legacyLocalThreadId!}
                             agentKind={comment.authorAgentKind}
-                            onOpen={() => comment.threadBinding
-                              ? onOpenThread(comment.threadBinding)
-                              : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}
+                            onOpen={() => comment.authorAgentKind === "claude-code"
+                              ? onOpenInHarness(currentTask, "claude-desktop")
+                              : comment.threadBinding
+                                ? onOpenThread(comment.threadBinding)
+                                : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}
                             onCopy={onCopy}
                           />
                         </div>
