@@ -5,6 +5,11 @@ import { DEFAULT_LABEL_NAMES } from "../../shared/domain.mjs";
 const JSON_BODY_LIMIT = 1024 * 1024;
 const PROJECT_README_BODY_LIMIT = 3 * 1024 * 1024;
 const ATTACHMENT_BODY_LIMIT = 25 * 1024 * 1024;
+const AGENT_KIND_NAMES = new Map([
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"],
+  ["unknown", "AI Agent"],
+]);
 const DEFAULT_PROJECT_LABELS_JSON = JSON.stringify(DEFAULT_LABEL_NAMES);
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TASK_STATUSES = [
@@ -525,12 +530,15 @@ async function authenticate(request, env) {
   }
   const userId = `basic:${encodeURIComponent(username.toLowerCase())}`;
   if (request.headers.get("x-taskboard-client") === "taskctl") {
+    const requestedKind = request.headers.get("x-taskboard-agent-kind");
+    const agentKind = AGENT_KIND_NAMES.has(requestedKind) ? requestedKind : "unknown";
     return {
       actor: {
         type: "agent",
         id: `${userId}:codex-agent`,
-        name: `Codex Agent (${username})`,
+        name: AGENT_KIND_NAMES.get(agentKind),
         avatarUrl: null,
+        agentKind,
         username,
       },
       sessionCookie,
@@ -549,12 +557,12 @@ async function authenticate(request, env) {
 }
 
 function resolveAssignee(target, actor) {
-  if (target === undefined || target === "current-user") return actor;
+  if ((target === undefined && actor.type !== "agent") || target === "current-user") return actor;
   const userId = `basic:${encodeURIComponent(actor.username.toLowerCase())}`;
   return {
     type: "agent",
     id: `${userId}:codex-agent`,
-    name: `Codex Agent (${actor.username})`,
+    name: "AI Agent",
     avatarUrl: null,
   };
 }
@@ -738,13 +746,18 @@ function storedThreadBindingForExisting(current, threadBinding, threadId) {
   return storedThreadBinding(threadBinding, threadId);
 }
 
+function storedThreadAgentKind(storedBinding, actor) {
+  return storedBinding?.[0] ? actor.agentKind ?? null : null;
+}
+
 function attachTaskActivity(task, comments, activities, previewImage = null) {
   const orderedComments = [...comments].sort((left, right) => left.id.localeCompare(right.id));
   const orderedActivities = [...activities].sort((left, right) => left.id.localeCompare(right.id));
   const participants = [];
   const participantIds = new Set();
   const addParticipant = (actor) => {
-    const key = `${actor.type}:${actor.id}`;
+    // 不同 harness 共享 wire id；参与者去重必须保留可见的 Agent 身份。
+    const key = `${actor.type}:${actor.id}:${actor.type === "agent" ? actor.agentKind ?? "unknown" : ""}`;
     if (participantIds.has(key)) return;
     participantIds.add(key);
     participants.push(actor);
@@ -754,6 +767,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
     id: task.creatorId,
     name: task.creatorName,
     avatarUrl: task.creatorAvatarUrl,
+    agentKind: task.creatorAgentKind,
   });
   addParticipant(task.assignee);
   for (const comment of orderedComments) {
@@ -762,6 +776,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
       id: comment.author_id,
       name: comment.author_name,
       avatarUrl: comment.author_avatar_url,
+      agentKind: comment.author_agent_kind ?? null,
     });
   }
   for (const activity of orderedActivities) {
@@ -770,6 +785,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
       id: activity.actor_id,
       name: activity.actor_name,
       avatarUrl: activity.actor_avatar_url,
+      agentKind: activity.actor_agent_kind ?? null,
     });
   }
   const conversationRefs = [];
@@ -831,6 +847,7 @@ function taskActivityFromRow(row) {
     actorId: row.actor_id,
     actorName: row.actor_name,
     actorAvatarUrl: row.actor_avatar_url,
+    actorAgentKind: row.actor_agent_kind ?? null,
     changes: JSON.parse(row.changes),
     createdAt: row.created_at,
   };
@@ -865,12 +882,14 @@ function taskFromRow(row) {
     labels: JSON.parse(row.labels),
     sortOrder: row.sort_order,
     threadId: row.thread_id,
+    threadAgentKind: row.thread_agent_kind ?? null,
     threadBinding: threadBindingFromRow(row),
     legacyLocalThreadId: legacyLocalThreadIdFromRow(row),
     creatorType: row.creator_type,
     creatorId: row.creator_id,
     creatorName: row.creator_name,
     creatorAvatarUrl: row.creator_avatar_url,
+    creatorAgentKind: row.creator_agent_kind ?? null,
     assignee: {
       type: row.assignee_type,
       id: row.assignee_id,
@@ -936,6 +955,7 @@ function commentFromRow(row, attachments = []) {
     authorId: row.author_id,
     authorName: row.author_name,
     authorAvatarUrl: row.author_avatar_url,
+    authorAgentKind: row.author_agent_kind ?? null,
     attachments,
     version: row.version,
     createdAt: row.created_at,
@@ -982,9 +1002,9 @@ function changed(result) {
 function taskActivityStatement(env, taskId, actor, changes, timestamp, version) {
   return env.DB.prepare(`
     INSERT INTO task_activities (
-      id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, changes, created_at
+      id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, actor_agent_kind, changes, created_at
     )
-    SELECT ?, ?, ?, ?, ?, ?, ?, ?
+    SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
     WHERE EXISTS (
       SELECT 1 FROM tasks WHERE id = ? AND version = ? AND updated_at = ?
     )
@@ -995,6 +1015,7 @@ function taskActivityStatement(env, taskId, actor, changes, timestamp, version) 
     actor.id,
     actor.name,
     actor.avatarUrl,
+    actor.agentKind ?? null,
     JSON.stringify(changes),
     timestamp,
     taskId,
@@ -1122,14 +1143,14 @@ async function hydrateTask(env, row, activityComments = null, activityChanges = 
       thread_id, thread_codex_project_id, thread_codex_project_kind,
       thread_codex_host_id, thread_workspace_path,
       author_type, author_id, author_name,
-      author_avatar_url, version, updated_at
+      author_avatar_url, author_agent_kind, version, updated_at
     FROM comments
     WHERE task_id = ?
     ORDER BY id
   `).bind(task.id));
   const activities = activityChanges ?? await all(env.DB.prepare(`
     SELECT
-      id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at
+      id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, actor_agent_kind, created_at
     FROM task_activities
     WHERE task_id = ?
     ORDER BY created_at, id
@@ -1227,7 +1248,7 @@ async function taskActivityComments(env, taskIds) {
         thread_id, thread_codex_project_id, thread_codex_project_kind,
         thread_codex_host_id, thread_workspace_path,
         author_type, author_id, author_name,
-        author_avatar_url, version, updated_at
+        author_avatar_url, author_agent_kind, version, updated_at
       FROM comments
       WHERE task_id IN (${placeholders})
       ORDER BY task_id, id
@@ -1737,8 +1758,8 @@ async function createTask(env, input, actor) {
       INSERT INTO tasks (
         id, identifier, project_id, title, description, status, priority, labels,
         sort_order, thread_id, thread_codex_project_id, thread_codex_project_kind,
-        thread_codex_host_id, thread_workspace_path,
-        creator_type, creator_id, creator_name, creator_avatar_url,
+        thread_codex_host_id, thread_workspace_path, thread_agent_kind,
+        creator_type, creator_id, creator_name, creator_avatar_url, creator_agent_kind,
         assignee_type, assignee_id, assignee_name, assignee_avatar_url,
         development_context_type, development_branch,
         start_date, due_date, recurrence_interval, recurrence_unit,
@@ -1756,8 +1777,8 @@ async function createTask(env, input, actor) {
         ) AS TEXT),
         projects.id,
         ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?,
         ?, ?, ?, ?,
@@ -1776,10 +1797,12 @@ async function createTask(env, input, actor) {
       JSON.stringify(input.labels),
       sortOrder,
       ...(storedThreadBinding(input.threadBinding, input.threadId) ?? [null, null, null, null, null]),
+      storedThreadAgentKind(storedThreadBinding(input.threadBinding, input.threadId), actor),
       actor.type,
       actor.id,
       actor.name,
       actor.avatarUrl,
+      actor.agentKind ?? null,
       assignee.type,
       assignee.id,
       assignee.name,
@@ -1940,8 +1963,9 @@ async function updateTask(env, id, input, actor) {
       "thread_codex_project_kind = ?",
       "thread_codex_host_id = ?",
       "thread_workspace_path = ?",
+      "thread_agent_kind = ?",
     );
-    values.push(...storedBinding);
+    values.push(...storedBinding, storedThreadAgentKind(storedBinding, actor));
   }
   assignments.push("version = version + 1", "updated_at = ?");
   const timestamp = now();
@@ -2090,7 +2114,7 @@ async function moveTask(env, id, input, actor) {
   const storedBinding = storedThreadBindingForExisting(current, input.threadBinding, input.threadId);
   const threadAssignment = storedBinding
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-      thread_codex_host_id = ?, thread_workspace_path = ?,`
+      thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
   const statements = [env.DB.prepare(`
     UPDATE tasks
@@ -2104,7 +2128,7 @@ async function moveTask(env, id, input, actor) {
   `).bind(
     input.status,
     sortOrder,
-    ...(storedBinding ?? []),
+    ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []),
     timestamp,
     current.id,
     input.version,
@@ -2140,7 +2164,7 @@ async function archiveTask(env, id, input, actor) {
   const storedBinding = storedThreadBindingForExisting(current, input.threadBinding, input.threadId);
   const threadAssignment = storedBinding
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-      thread_codex_host_id = ?, thread_workspace_path = ?,`
+      thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
   const results = await env.DB.batch([env.DB.prepare(`
     UPDATE tasks
@@ -2150,7 +2174,7 @@ async function archiveTask(env, id, input, actor) {
       version = version + 1,
       updated_at = ?
     WHERE id = ? AND version = ?
-  `).bind(timestamp, ...(storedBinding ?? []), timestamp, current.id, input.version),
+  `).bind(timestamp, ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, input.version),
   taskActivityStatement(
     env,
     current.id,
@@ -2181,7 +2205,7 @@ async function restoreTask(env, id, input, actor) {
   const storedBinding = storedThreadBindingForExisting(current, input.threadBinding, input.threadId);
   const threadAssignment = storedBinding
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-      thread_codex_host_id = ?, thread_workspace_path = ?,`
+      thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
   const results = await env.DB.batch([env.DB.prepare(`
     UPDATE tasks
@@ -2191,7 +2215,7 @@ async function restoreTask(env, id, input, actor) {
       version = version + 1,
       updated_at = ?
     WHERE id = ? AND version = ?
-  `).bind(...(storedBinding ?? []), timestamp, current.id, input.version),
+  `).bind(...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, input.version),
   taskActivityStatement(
     env,
     current.id,
@@ -2296,7 +2320,7 @@ async function addRelation(env, taskId, type, relatedTaskId, input, actor) {
   const storedBinding = storedThreadBindingForExisting(task, input.threadBinding, input.threadId);
   const threadAssignment = storedBinding
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-      thread_codex_host_id = ?, thread_workspace_path = ?,`
+      thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
   let previousRelation = null;
   const statements = [];
@@ -2378,7 +2402,7 @@ async function addRelation(env, taskId, type, relatedTaskId, input, actor) {
         version = version + 1,
         updated_at = ?
       WHERE id = ? AND version = ?
-    `).bind(...(storedBinding ?? []), timestamp, task.id, input.version),
+    `).bind(...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, task.id, input.version),
   );
   const taskUpdateIndex = statements.length - 1;
   statements.push(taskActivityStatement(
@@ -2461,7 +2485,7 @@ async function removeRelation(env, taskId, type, relatedTaskId, input, actor) {
   const storedBinding = storedThreadBindingForExisting(task, input.threadBinding, input.threadId);
   const threadAssignment = storedBinding
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-      thread_codex_host_id = ?, thread_workspace_path = ?,`
+      thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
   const mentionRemoval = input.origin === "mention"
     && endpoints.relationType === "related";
@@ -2534,7 +2558,7 @@ async function removeRelation(env, taskId, type, relatedTaskId, input, actor) {
         version = version + 1,
         updated_at = ?
       WHERE id = ? AND version = ?${mentionRemoval ? " AND changes() = 1" : ""}
-    `).bind(...(storedBinding ?? []), timestamp, task.id, input.version),
+    `).bind(...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, task.id, input.version),
     taskActivityStatement(
       env,
       task.id,
@@ -2709,8 +2733,8 @@ async function createComment(env, taskId, input, actor) {
     INSERT INTO comments (
       id, task_id, body, thread_id, thread_codex_project_id, thread_codex_project_kind,
       thread_codex_host_id, thread_workspace_path, author_type, author_id, author_name,
-      author_avatar_url, version, created_at, updated_at, change_revision
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?,
+      author_avatar_url, author_agent_kind, version, created_at, updated_at, change_revision
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?,
       (SELECT revision + 1 FROM global_revision WHERE singleton = 1))
   `).bind(
     id,
@@ -2721,6 +2745,7 @@ async function createComment(env, taskId, input, actor) {
     actor.id,
     actor.name,
     actor.avatarUrl,
+    actor.agentKind ?? null,
     timestamp,
     timestamp,
   ).run();

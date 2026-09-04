@@ -144,7 +144,7 @@ export function IssueListView({
                             conversations={presentations[task.id]?.conversations ?? []}
                             onOpenConversation={onOpenConversation}
                           />
-                          <label className="issue-list-assignee" title={task.assignee.name} onClick={stopRow}>
+                          <label className="issue-list-assignee" title={task.assignee.type === "agent" ? "AI Agent" : task.assignee.name} onClick={stopRow}>
                             <ActorAvatar actor={task.assignee} />
                             <select
                               aria-label={text(`${displayIdentifier} 负责人`, `${displayIdentifier} assignee`)}
@@ -153,7 +153,7 @@ export function IssueListView({
                               onChange={(event) => void onUpdate(task, { assigneeTarget: event.target.value as "current-user" | "codex-agent" }).catch(() => {})}
                             >
                               <option value="current-user">{currentUser.name}</option>
-                              <option value="codex-agent">Codex Agent</option>
+                              <option value="codex-agent">AI Agent</option>
                             </select>
                           </label>
                         </span>

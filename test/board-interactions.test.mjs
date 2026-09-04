@@ -137,7 +137,13 @@ test("issues expose processing conversations without manual binding", () => {
   assert.doesNotMatch(editorSource, /对话 ID|linkedThreadId/);
   assert.match(detailSource, /currentTask\.threadBinding \|\| currentTask\.legacyLocalThreadId/);
   assert.doesNotMatch(detailSource, /currentTask\.threadIds/);
-  assert.match(detailSource, /<strong>\{text\("查看对话", "View conversation"\)\}<\/strong>/);
+  assert.match(detailSource, /agentKind=\{comment\.authorAgentKind\}/);
+  assert.match(detailSource, /agentKind=\{currentTask\.threadAgentKind\}/);
+  assert.match(detailSource, /const threadAgentChanged = currentTask\.threadAgentKind !== task\.threadAgentKind/);
+  assert.match(detailSource, /resumeCommandForAgent\(agentKind, threadId\)/);
+  assert.match(detailSource, /const canOpenConversation = agentKind === "codex"/);
+  assert.match(detailSource, /className="detail-harness-menu-trigger"/);
+  assert.match(detailSource, /<HarnessChevron \/>/);
   assert.doesNotMatch(detailSource, /className="conversation-thread-id">\{threadId\}/);
   assert.doesNotMatch(detailSource, /shortThreadId/);
   assert.doesNotMatch(detailSource, /detail-property-label">Codex/);

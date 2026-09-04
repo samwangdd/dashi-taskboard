@@ -89,7 +89,10 @@ test("the Basic username becomes the trusted actor while the shared password gra
   const agentTask = await cloud.request("/api/tasks", {
     method: "POST",
     actorName: bob,
-    headers: { "x-taskboard-client": "taskctl" },
+    headers: {
+      "x-taskboard-client": "taskctl",
+      "x-taskboard-agent-kind": "codex",
+    },
     json: {
       projectId: "alpha",
       title: "Created through taskctl",
@@ -100,8 +103,23 @@ test("the Basic username becomes the trusted actor while the shared password gra
   });
   assert.equal(agentTask.response.status, 201);
   assert.equal(agentTask.body.task.creatorType, "agent");
-  assert.match(agentTask.body.task.creatorName, /Codex Agent/);
-  assert.match(agentTask.body.task.creatorName, /Bob/);
+  assert.equal(agentTask.body.task.creatorName, "Codex");
+  assert.equal(agentTask.body.task.creatorAgentKind, "codex");
+  const continuedAgentTask = await cloud.request(`/api/tasks/${agentTask.body.task.id}`, {
+    method: "PATCH",
+    actorName: bob,
+    headers: {
+      "x-taskboard-client": "taskctl",
+      "x-taskboard-agent-kind": "claude-code",
+    },
+    json: {
+      version: agentTask.body.task.version,
+      title: "Continued through taskctl",
+      threadId: "claude-cloud-session",
+    },
+  });
+  assert.equal(continuedAgentTask.response.status, 200);
+  assert.equal(continuedAgentTask.body.task.threadAgentKind, "claude-code");
 });
 
 test("projects, tasks, comments, and relations preserve the current API contract", async () => {
@@ -190,7 +208,10 @@ test("PATCH moves an issue to an existing project and records the change", async
   const moved = await cloud.request(`/api/tasks/${sourceTask.body.task.id}`, {
     method: "PATCH",
     actorName: bob,
-    headers: { "x-taskboard-client": "taskctl" },
+    headers: {
+      "x-taskboard-client": "taskctl",
+      "x-taskboard-agent-kind": "codex",
+    },
     json: {
       version: sourceTask.body.task.version,
       projectId: "move-target",
@@ -220,7 +241,8 @@ test("PATCH moves an issue to an existing project and records the change", async
   );
   assert.equal(activity.response.status, 200);
   assert.equal(activity.body.activities.at(-1).actorType, "agent");
-  assert.match(activity.body.activities.at(-1).actorName, /Bob/);
+  assert.equal(activity.body.activities.at(-1).actorName, "Codex");
+  assert.equal(activity.body.activities.at(-1).actorAgentKind, "codex");
   assert.deepEqual(activity.body.activities.at(-1).changes, [{
     field: "projectId",
     before: "move-source",

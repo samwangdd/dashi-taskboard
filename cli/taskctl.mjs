@@ -493,6 +493,7 @@ function createApiClient(overrides, {
 
   const env = overrides.env ?? process.env;
   const baseUrl = normalizeBaseUrl(explicitBaseUrl ?? DEFAULT_API_URL);
+  const agentKind = taskctlAgentKind(env);
 
   return {
     async request(method, pathname, body) {
@@ -503,6 +504,7 @@ function createApiClient(overrides, {
           headers: {
             accept: "application/json",
             "x-taskboard-client": "taskctl",
+            "x-taskboard-agent-kind": agentKind,
             ...(body === undefined ? {} : { "content-type": "application/json" }),
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -539,6 +541,7 @@ function createApiClient(overrides, {
           headers: {
             accept: "*/*",
             "x-taskboard-client": "taskctl",
+            "x-taskboard-agent-kind": agentKind,
           },
         });
       } catch (error) {
@@ -575,6 +578,7 @@ function createApiClient(overrides, {
             accept: "application/json",
             "content-type": contentType,
             "x-taskboard-client": "taskctl",
+            "x-taskboard-agent-kind": agentKind,
             "x-taskboard-filename": encodeURIComponent(filename),
             "x-taskboard-attachment-kind": kind,
           },
@@ -606,6 +610,15 @@ function createApiClient(overrides, {
       return payload;
     },
   };
+}
+
+function taskctlAgentKind(env) {
+  // Codex 可能运行在 Claude Code 子进程中；session 级信号必须优先于继承的父环境。
+  if (typeof env.CODEX_THREAD_ID === "string" && env.CODEX_THREAD_ID.trim() !== "") return "codex";
+  if (env.CLAUDECODE === "1") return "claude-code";
+  return ["codex", "claude-code", "unknown"].includes(env.TASKBOARD_AGENT)
+    ? env.TASKBOARD_AGENT
+    : "unknown";
 }
 
 async function downloadAttachment(api, attachmentId, options, overrides) {

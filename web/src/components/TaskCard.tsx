@@ -13,7 +13,7 @@ import {
 } from "../types";
 import { labelPresentation } from "../labels";
 import { taskPriorityLabel, useTaskboardI18n } from "../i18n";
-import { CODEX_AGENT_ACTOR, actorKey, assigneeTargetForActor } from "../actors";
+import { AI_AGENT_ACTOR, actorDisplayName, actorKey, assigneeTargetForActor } from "../actors";
 import type {
   TaskCardPresentation,
   TaskConversationItem,
@@ -241,7 +241,7 @@ function ParticipantAvatars({ participants }: { participants: ActorIdentity[] })
         <ActorAvatar
           actor={participant}
           className="task-participant-avatar"
-          key={`${participant.type}:${participant.id}`}
+          key={`${participant.type}:${participant.id}:${participant.agentKind ?? ""}`}
         />
       ))}
     </span>
@@ -354,7 +354,7 @@ function AssigneeControl({
 }) {
   const { text } = useTaskboardI18n();
   const displayIdentifier = task.externalKey ?? task.identifier;
-  const options = [task.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const options = [task.assignee, currentUser, AI_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
@@ -363,7 +363,9 @@ function AssigneeControl({
       value={actorKey(task.assignee)}
       options={options.map((actor) => ({
         value: actorKey(actor),
-        label: actor.id === currentUser.id ? text(`${actor.name}（我）`, `${actor.name} (me)`) : actor.name,
+        label: actor.id === currentUser.id
+          ? text(`${actorDisplayName(actor)}（我）`, `${actorDisplayName(actor)} (me)`)
+          : actorDisplayName(actor),
         icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
       }))}
       open={open}
@@ -416,6 +418,7 @@ export function TaskCard({
     id: task.creatorId,
     name: task.creatorName,
     avatarUrl: task.creatorAvatarUrl,
+    agentKind: task.creatorAgentKind,
   };
   const processingCard = task.status === "in_progress";
   const supportsConversation = task.status === "in_progress"

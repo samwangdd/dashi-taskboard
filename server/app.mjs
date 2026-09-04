@@ -60,12 +60,17 @@ const INLINE_ATTACHMENT_TYPES = new Set([
 const PROJECT_ID_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const TRUSTED_EMBED_ORIGINS = new Set(["app://-"]);
 const TRUSTED_ORIGINS_ENV = "CODEX_TASKBOARD_TRUSTED_ORIGINS";
-const CODEX_AGENT_ACTOR = {
+const AI_AGENT_ACTOR = {
   type: "agent",
   id: "codex-agent",
-  name: "Codex Agent",
+  name: "AI Agent",
   avatarUrl: null,
 };
+const AGENT_KIND_NAMES = new Map([
+  ["claude-code", "Claude Code"],
+  ["codex", "Codex"],
+  ["unknown", "AI Agent"],
+]);
 const CONTENT_TYPES = new Map([
   [".css", "text/css; charset=utf-8"],
   [".html", "text/html; charset=utf-8"],
@@ -644,9 +649,21 @@ function requestHeader(request, name) {
   return Array.isArray(value) ? value[0] : value;
 }
 
+function agentActorFromRequest(request) {
+  const requestedKind = requestHeader(request, "x-taskboard-agent-kind");
+  const agentKind = AGENT_KIND_NAMES.has(requestedKind) ? requestedKind : "unknown";
+  return {
+    type: "agent",
+    id: "codex-agent",
+    name: AGENT_KIND_NAMES.get(agentKind),
+    avatarUrl: null,
+    agentKind,
+  };
+}
+
 function actorFromRequest(request) {
   if (request.headers["x-taskboard-client"] === "taskctl") {
-    return CODEX_AGENT_ACTOR;
+    return agentActorFromRequest(request);
   }
 
   const rawId = requestHeader(request, "x-taskboard-user-id");
@@ -697,8 +714,8 @@ function parseAssigneeTarget(value) {
 }
 
 function resolveAssignee(target, actor) {
-  if (target === undefined) return actor;
-  if (target === "codex-agent") return CODEX_AGENT_ACTOR;
+  if (target === undefined) return actor.type === "agent" ? AI_AGENT_ACTOR : actor;
+  if (target === "codex-agent") return AI_AGENT_ACTOR;
   if (actor.type !== "user") {
     throw new ApiError(400, "INVALID_FIELD", "'current-user' requires a user request identity");
   }

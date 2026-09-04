@@ -81,7 +81,8 @@ import {
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
-import { TaskDetail, type AgentHarness } from "./components/TaskDetail";
+import { TaskDetail } from "./components/TaskDetail";
+import type { AgentHarness } from "./agentHarnesses";
 import {
   TaskEditor,
   type NewTaskCreateOptions,

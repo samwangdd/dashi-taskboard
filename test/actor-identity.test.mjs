@@ -29,7 +29,11 @@ test("issue activity renders distinct avatars and styles without duplicate actor
   assert.match(avatarSource, /actor-avatar-\$\{actor\.type\}/);
   assert.match(avatarSource, /actor\.type === "agent"/);
   assert.match(avatarSource, /className="actor-avatar-image actor-avatar-agent-image"/);
-  assert.match(avatarSource, /src="codex-agent-logo\.png"/);
+  assert.match(avatarSource, /actor\.agentKind === "claude-code"/);
+  assert.match(avatarSource, /"claude-code-agent-logo\.svg"/);
+  assert.match(avatarSource, /actor\.agentKind === "codex"/);
+  assert.match(avatarSource, /"codex-agent-logo\.png"/);
+  assert.match(avatarSource, /"ai-agent-logo\.svg"/);
   assert.match(avatarSource, /actor\.avatarUrl/);
   assert.match(detailSource, /currentTask\.creatorType/);
   assert.match(detailSource, /currentTask\.creatorId/);
