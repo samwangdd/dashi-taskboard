@@ -785,7 +785,7 @@ kbd {
   display: flex;
   flex-direction: column;
   width: min(240px, calc(100vw - 24px));
-  max-height: min(480px, calc(100vh - 56px));
+  max-height: 80vh;
   padding: 5px;
   overflow: hidden;
   border: var(--border-hairline) solid var(--border-strong);
@@ -2475,6 +2475,38 @@ kbd {
   animation: task-card-settle 200ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
 }
 
+.board-column.status-in_review .column-list {
+  view-transition-name: review-task-list;
+  view-transition-group: contain;
+}
+
+::view-transition-group-children(review-task-list) {
+  overflow: clip;
+}
+
+::view-transition-group(*) {
+  animation-duration: 220ms;
+  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+::view-transition-group(root),
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-old(completing-task) {
+  animation: task-card-complete-exit 180ms ease-out both;
+  transform-origin: center;
+}
+
+@keyframes task-card-complete-exit {
+  to {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+}
+
 @keyframes task-card-settle {
   from {
     opacity: 0.38;
@@ -3174,16 +3206,18 @@ kbd {
 }
 
 .issue-description-document .task-list-item {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  column-gap: 7px;
   list-style: none;
 }
 
 .issue-description-document input[type="checkbox"] {
   width: 14px;
   height: 14px;
-  margin: 0 7px 0 0;
+  margin: 4px 0 0;
   accent-color: var(--accent);
   pointer-events: none;
-  vertical-align: -2px;
 }
 
 .issue-description-document blockquote {
@@ -5819,10 +5853,6 @@ kbd {
   padding: 6px 0 12px;
   font-size: 15px;
   line-height: 27px;
-}
-
-.inline-media-description[data-empty="true"] {
-  min-height: 100px;
 }
 
 .composer-title textarea::placeholder,
