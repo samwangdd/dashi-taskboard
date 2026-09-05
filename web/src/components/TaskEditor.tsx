@@ -20,7 +20,7 @@ import {
   type TaskStatus,
 } from "../types";
 import {
-  CODEX_AGENT_ACTOR,
+  AI_AGENT_ACTOR,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
@@ -272,7 +272,7 @@ export function TaskEditor({
         : subIssueIds,
   );
 
-  const assigneeOptions = [task?.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [task?.assignee, currentUser, AI_AGENT_ACTOR]
     .filter((actor): actor is ActorIdentity => actor !== undefined)
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index

@@ -84,6 +84,10 @@ function storedThreadBindingForExisting(current, threadBinding, threadId) {
   return storedThreadBinding(threadBinding, threadId);
 }
 
+function storedThreadAgentKind(storedBinding, actor) {
+  return storedBinding?.[0] ? actor.agentKind ?? null : null;
+}
+
 function attachTaskActivity(task, comments, activities, previewImage = null) {
   const orderedComments = [...comments].sort((left, right) => (
     left.id.localeCompare(right.id)
@@ -94,7 +98,8 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
   const participants = [];
   const participantIds = new Set();
   const addParticipant = (actor) => {
-    const key = `${actor.type}:${actor.id}`;
+    // 不同 harness 共享 wire id；参与者去重必须保留可见的 Agent 身份。
+    const key = `${actor.type}:${actor.id}:${actor.type === "agent" ? actor.agentKind ?? "unknown" : ""}`;
     if (participantIds.has(key)) return;
     participantIds.add(key);
     participants.push(actor);
@@ -104,6 +109,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
     id: task.creatorId,
     name: task.creatorName,
     avatarUrl: task.creatorAvatarUrl,
+    agentKind: task.creatorAgentKind,
   });
   addParticipant(task.assignee);
   for (const comment of orderedComments) {
@@ -112,6 +118,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
       id: comment.author_id,
       name: comment.author_name,
       avatarUrl: comment.author_avatar_url,
+      agentKind: comment.author_agent_kind ?? null,
     });
   }
   for (const activity of orderedActivities) {
@@ -120,6 +127,7 @@ function attachTaskActivity(task, comments, activities, previewImage = null) {
       id: activity.actor_id,
       name: activity.actor_name,
       avatarUrl: activity.actor_avatar_url,
+      agentKind: activity.actor_agent_kind ?? null,
     });
   }
   const conversationRefs = [];
@@ -182,6 +190,7 @@ function taskActivityFromRow(row) {
     actorId: row.actor_id,
     actorName: row.actor_name,
     actorAvatarUrl: row.actor_avatar_url,
+    actorAgentKind: row.actor_agent_kind ?? null,
     changes: JSON.parse(row.changes),
     createdAt: row.created_at,
   };
@@ -242,12 +251,14 @@ function taskFromRow(row) {
     labels: JSON.parse(row.labels),
     sortOrder: row.sort_order,
     threadId: row.thread_id,
+    threadAgentKind: row.thread_agent_kind ?? null,
     threadBinding: threadBindingFromRow(row),
     legacyLocalThreadId: legacyLocalThreadIdFromRow(row),
     creatorType: row.creator_type,
     creatorId: row.creator_id,
     creatorName: row.creator_name,
     creatorAvatarUrl: row.creator_avatar_url,
+    creatorAgentKind: row.creator_agent_kind ?? null,
     assignee: {
       type: row.assignee_type,
       id: row.assignee_id,
@@ -318,6 +329,7 @@ function commentFromRow(row) {
     authorId: row.author_id,
     authorName: row.author_name,
     authorAvatarUrl: row.author_avatar_url,
+    authorAgentKind: row.author_agent_kind ?? null,
     attachments: [],
     version: row.version,
     createdAt: row.created_at,
@@ -492,10 +504,12 @@ export class TaskboardDatabase {
         thread_codex_project_kind TEXT,
         thread_codex_host_id TEXT,
         thread_workspace_path TEXT,
+        thread_agent_kind TEXT CHECK (thread_agent_kind IS NULL OR thread_agent_kind IN ('claude-code', 'codex', 'unknown')),
         creator_type TEXT NOT NULL DEFAULT 'user',
         creator_id TEXT NOT NULL DEFAULT 'local-user',
         creator_name TEXT NOT NULL DEFAULT '本地用户',
         creator_avatar_url TEXT,
+        creator_agent_kind TEXT CHECK (creator_agent_kind IS NULL OR creator_agent_kind IN ('claude-code', 'codex', 'unknown')),
         assignee_type TEXT NOT NULL DEFAULT 'user' CHECK (assignee_type IN ('user', 'agent')),
         assignee_id TEXT NOT NULL DEFAULT 'local-user',
         assignee_name TEXT NOT NULL DEFAULT '本地用户',
@@ -534,6 +548,7 @@ export class TaskboardDatabase {
         author_id TEXT NOT NULL,
         author_name TEXT NOT NULL,
         author_avatar_url TEXT,
+        author_agent_kind TEXT CHECK (author_agent_kind IS NULL OR author_agent_kind IN ('claude-code', 'codex', 'unknown')),
         version INTEGER NOT NULL DEFAULT 1 CHECK (version > 0),
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
@@ -550,6 +565,7 @@ export class TaskboardDatabase {
         actor_id TEXT NOT NULL,
         actor_name TEXT NOT NULL,
         actor_avatar_url TEXT,
+        actor_agent_kind TEXT CHECK (actor_agent_kind IS NULL OR actor_agent_kind IN ('claude-code', 'codex', 'unknown')),
         changes TEXT NOT NULL,
         created_at TEXT NOT NULL
       );
@@ -718,6 +734,12 @@ export class TaskboardDatabase {
     if (!migratedTaskColumns.some((column) => column.name === "creator_type")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN creator_type TEXT NOT NULL DEFAULT 'user'");
     }
+    if (!migratedTaskColumns.some((column) => column.name === "thread_agent_kind")) {
+      this.database.exec(`
+        ALTER TABLE tasks ADD COLUMN thread_agent_kind TEXT
+        CHECK (thread_agent_kind IS NULL OR thread_agent_kind IN ('claude-code', 'codex', 'unknown'))
+      `);
+    }
     if (!migratedTaskColumns.some((column) => column.name === "creator_id")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN creator_id TEXT NOT NULL DEFAULT 'local-user'");
     }
@@ -726,6 +748,12 @@ export class TaskboardDatabase {
     }
     if (!migratedTaskColumns.some((column) => column.name === "creator_avatar_url")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN creator_avatar_url TEXT");
+    }
+    if (!migratedTaskColumns.some((column) => column.name === "creator_agent_kind")) {
+      this.database.exec(`
+        ALTER TABLE tasks ADD COLUMN creator_agent_kind TEXT
+        CHECK (creator_agent_kind IS NULL OR creator_agent_kind IN ('claude-code', 'codex', 'unknown'))
+      `);
     }
     if (!migratedTaskColumns.some((column) => column.name === "external_source")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN external_source TEXT");
@@ -894,8 +922,21 @@ export class TaskboardDatabase {
     if (!commentColumns.some((column) => column.name === "author_avatar_url")) {
       this.database.exec("ALTER TABLE comments ADD COLUMN author_avatar_url TEXT");
     }
+    if (!commentColumns.some((column) => column.name === "author_agent_kind")) {
+      this.database.exec(`
+        ALTER TABLE comments ADD COLUMN author_agent_kind TEXT
+        CHECK (author_agent_kind IS NULL OR author_agent_kind IN ('claude-code', 'codex', 'unknown'))
+      `);
+    }
     if (!commentColumns.some((column) => column.name === "change_revision")) {
       this.database.exec("ALTER TABLE comments ADD COLUMN change_revision INTEGER NOT NULL DEFAULT 0");
+    }
+    const activityColumns = this.database.prepare("PRAGMA table_info(task_activities)").all();
+    if (!activityColumns.some((column) => column.name === "actor_agent_kind")) {
+      this.database.exec(`
+        ALTER TABLE task_activities ADD COLUMN actor_agent_kind TEXT
+        CHECK (actor_agent_kind IS NULL OR actor_agent_kind IN ('claude-code', 'codex', 'unknown'))
+      `);
     }
     this.database.exec(`
       UPDATE comments
@@ -2019,13 +2060,13 @@ export class TaskboardDatabase {
         INSERT INTO tasks (
           id, identifier, project_id, title, description, status, priority, labels,
           sort_order, thread_id, thread_codex_project_id, thread_codex_project_kind,
-          thread_codex_host_id, thread_workspace_path,
-          creator_type, creator_id, creator_name, creator_avatar_url,
+          thread_codex_host_id, thread_workspace_path, thread_agent_kind,
+          creator_type, creator_id, creator_name, creator_avatar_url, creator_agent_kind,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
           git_branch, worktree_path, worktree_branch,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -2037,10 +2078,12 @@ export class TaskboardDatabase {
         JSON.stringify(input.labels),
         sortOrder,
         ...(storedThreadBinding(input.threadBinding, input.threadId) ?? [null, null, null, null, null]),
+        storedThreadAgentKind(storedThreadBinding(input.threadBinding, input.threadId), input.actor),
         input.actor.type,
         input.actor.id,
         input.actor.name,
         input.actor.avatarUrl,
+        input.actor.agentKind ?? null,
         input.assignee.type,
         input.assignee.id,
         input.assignee.name,
@@ -2160,8 +2203,9 @@ export class TaskboardDatabase {
         "thread_codex_project_kind = ?",
         "thread_codex_host_id = ?",
         "thread_workspace_path = ?",
+        "thread_agent_kind = ?",
       );
-      values.push(...storedBinding);
+      values.push(...storedBinding, storedThreadAgentKind(storedBinding, actor));
     }
     assignments.push("version = version + 1", "updated_at = ?");
     const timestamp = now();
@@ -2227,7 +2271,7 @@ export class TaskboardDatabase {
     const storedBinding = storedThreadBindingForExisting(current, threadBinding, threadId);
     const threadAssignment = storedBinding
       ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-        thread_codex_host_id = ?, thread_workspace_path = ?,`
+        thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
       : "";
     this.database.exec("BEGIN IMMEDIATE");
     try {
@@ -2235,7 +2279,7 @@ export class TaskboardDatabase {
         UPDATE tasks
         SET status = ?, sort_order = ?, ${threadAssignment} version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(status, sortOrder, ...(storedBinding ?? []), timestamp, current.id, version);
+      `).run(status, sortOrder, ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, version);
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
@@ -2260,7 +2304,7 @@ export class TaskboardDatabase {
     const storedBinding = storedThreadBindingForExisting(current, threadBinding, threadId);
     const threadAssignment = storedBinding
       ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-        thread_codex_host_id = ?, thread_workspace_path = ?,`
+        thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
       : "";
     this.database.exec("BEGIN IMMEDIATE");
     try {
@@ -2268,7 +2312,7 @@ export class TaskboardDatabase {
         UPDATE tasks
         SET archived_at = ?, ${threadAssignment} version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(timestamp, ...(storedBinding ?? []), timestamp, current.id, version);
+      `).run(timestamp, ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, version);
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
@@ -2296,7 +2340,7 @@ export class TaskboardDatabase {
     const storedBinding = storedThreadBindingForExisting(current, threadBinding, threadId);
     const threadAssignment = storedBinding
       ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-        thread_codex_host_id = ?, thread_workspace_path = ?,`
+        thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
       : "";
     this.database.exec("BEGIN IMMEDIATE");
     try {
@@ -2304,7 +2348,7 @@ export class TaskboardDatabase {
         UPDATE tasks
         SET archived_at = NULL, ${threadAssignment} version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(...(storedBinding ?? []), timestamp, current.id, version);
+      `).run(...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, version);
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
@@ -2394,7 +2438,7 @@ export class TaskboardDatabase {
           relation_type, source_task_id, target_task_id, origin, created_at
         ) VALUES (?, ?, ?, ?, ?)
       `).run(relationType, sourceTaskId, targetTaskId, origin, timestamp);
-      this.#touchTask(task.id, version, threadId, threadBinding, timestamp);
+      this.#touchTask(task.id, version, threadId, threadBinding, actor, timestamp);
       this.#recordTaskActivity(task.id, actor, [{
         field: "relation",
         before: previousRelation,
@@ -2491,7 +2535,7 @@ export class TaskboardDatabase {
         };
       }
       const timestamp = now();
-      this.#touchTask(task.id, version, threadId, threadBinding, timestamp);
+      this.#touchTask(task.id, version, threadId, threadBinding, actor, timestamp);
       this.#recordTaskActivity(task.id, actor, [{
         field: "relation",
         before: relationActivityValue(type, relatedTask),
@@ -2548,9 +2592,9 @@ export class TaskboardDatabase {
         INSERT INTO comments (
           id, task_id, body, thread_id, thread_codex_project_id, thread_codex_project_kind,
           thread_codex_host_id, thread_workspace_path,
-          author_type, author_id, author_name, author_avatar_url,
+          author_type, author_id, author_name, author_avatar_url, author_agent_kind,
           version, created_at, updated_at, change_revision
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
       `).run(
         id,
         task.id,
@@ -2560,6 +2604,7 @@ export class TaskboardDatabase {
         input.actor.id,
         input.actor.name,
         input.actor.avatarUrl,
+        input.actor.agentKind ?? null,
         timestamp,
         timestamp,
         changeRevision,
@@ -2943,8 +2988,8 @@ export class TaskboardDatabase {
     if (changes.length === 0) return;
     this.database.prepare(`
       INSERT INTO task_activities (
-        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, changes, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, actor_agent_kind, changes, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       randomUUID(),
       taskId,
@@ -2952,23 +2997,24 @@ export class TaskboardDatabase {
       actor.id,
       actor.name,
       actor.avatarUrl,
+      actor.agentKind ?? null,
       JSON.stringify(changes),
       timestamp,
     );
   }
 
-  #touchTask(id, version, threadId, threadBinding, timestamp) {
+  #touchTask(id, version, threadId, threadBinding, actor, timestamp) {
     const current = this.#requireTask(id);
     const storedBinding = storedThreadBindingForExisting(current, threadBinding, threadId);
     const threadAssignment = storedBinding
       ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
-        thread_codex_host_id = ?, thread_workspace_path = ?,`
+        thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
       : "";
     const result = this.database.prepare(`
       UPDATE tasks
       SET ${threadAssignment} version = version + 1, updated_at = ?
       WHERE id = ? AND version = ?
-    `).run(...(storedBinding ?? []), timestamp, id, version);
+    `).run(...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, id, version);
     if (result.changes !== 1) {
       this.#throwMissingOrConflict(id, version);
     }

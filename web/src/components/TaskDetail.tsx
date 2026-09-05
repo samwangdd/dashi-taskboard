@@ -30,6 +30,7 @@ import {
 import { TASK_PRIORITIES, TASK_STATUSES } from "../types";
 import type {
   ActorIdentity,
+  AgentKind,
   Attachment,
   Comment,
   CodexThreadBinding,
@@ -46,7 +47,8 @@ import type {
   TaskStatus,
 } from "../types";
 import {
-  CODEX_AGENT_ACTOR,
+  AI_AGENT_ACTOR,
+  actorDisplayName,
   actorKey,
   assigneeTargetForActor,
 } from "../actors";
@@ -96,6 +98,14 @@ import { postEmbeddedHostMessage } from "../embeddedHost.mjs";
 import copyIdIcon from "../assets/figma-taskboard/copy-id.svg";
 import copyLinkIcon from "../assets/figma-taskboard/copy-link.svg";
 import { DescriptionDocument } from "./DescriptionDocument";
+import {
+  AGENT_HARNESSES,
+  agentKindForHarness,
+  canOpenConversationInAgent,
+  harnessForAgentKind,
+  resumeCommandForAgent,
+  type AgentHarness,
+} from "../agentHarnesses";
 
 type TaskDetailError = string | readonly [string, string];
 
@@ -134,37 +144,45 @@ interface TaskDetailProps {
   onError: (message: TaskDetailError | null) => void;
 }
 
-export type AgentHarness = "codex-desktop" | "claude-desktop" | "kiro-cli-orca";
-
 function AgentHarnessIcon({ harness }: { harness: AgentHarness }) {
-  if (harness === "codex-desktop") {
+  if (harness === "kiro-cli-orca") {
     return (
-      <svg className="agent-harness-icon is-codex" viewBox="0 0 18 18" aria-hidden="true">
-        <path d="M9 2.1a3.7 3.7 0 0 1 3.6 2.7 3.7 3.7 0 0 1 1.5 6.2 3.7 3.7 0 0 1-5.1 4.5A3.7 3.7 0 0 1 3.9 11a3.7 3.7 0 0 1 1.5-6.2A3.7 3.7 0 0 1 9 2.1Z" fill="none" stroke="currentColor" strokeWidth="1.45" />
-        <path d="m5.4 4.8 5.8 3.3v6.5M12.6 13.2 6.8 9.9V3.4M3.9 7.3 9.7 4l4.4 2.5M14.1 10.7 8.3 14l-4.4-2.5M6.8 9.9l5.8-3.3" fill="none" stroke="currentColor" strokeWidth="1.15" strokeLinejoin="round" />
+      <svg className="agent-harness-icon is-kiro" viewBox="0 0 18 18" aria-hidden="true">
+        <path d="M3 4.2 9 1.5l6 2.7v9.6L9 16.5l-6-2.7Z" fill="currentColor" opacity=".18" />
+        <path d="m5.2 5.2 3.7-1.7 3.9 1.7-3.9 2.1Zm0 1.8 3.7 2.1 3.9-2.1v4l-3.9 2.1L5.2 11Z" fill="currentColor" />
       </svg>
     );
   }
-  if (harness === "claude-desktop") {
-    return (
-      <svg className="agent-harness-icon is-claude" viewBox="0 0 18 18" aria-hidden="true">
-        <path d="M9 1.8v5.1m0 4.2v5.1M1.8 9h5.1m4.2 0h5.1M3.9 3.9l3.6 3.6m3 3 3.6 3.6m0-10.2-3.6 3.6m-3 3-3.6 3.6" fill="none" stroke="currentColor" strokeWidth="2.1" strokeLinecap="round" />
-      </svg>
-    );
-  }
+  const agentKind = agentKindForHarness(harness);
+  const label = AGENT_HARNESSES.find((entry) => entry.harness === harness)?.label ?? "AI Agent";
   return (
-    <svg className="agent-harness-icon is-kiro" viewBox="0 0 18 18" aria-hidden="true">
-      <path d="M3 4.2 9 1.5l6 2.7v9.6L9 16.5l-6-2.7Z" fill="currentColor" opacity=".18" />
-      <path d="m5.2 5.2 3.7-1.7 3.9 1.7-3.9 2.1Zm0 1.8 3.7 2.1 3.9-2.1v4l-3.9 2.1L5.2 11Z" fill="currentColor" />
-    </svg>
+    <ActorAvatar
+      className="agent-harness-icon"
+      actor={{
+        type: "agent",
+        id: `${harness}-agent`,
+        name: label,
+        avatarUrl: null,
+        agentKind,
+      }}
+    />
   );
 }
 
-const AGENT_HARNESSES: ReadonlyArray<{ harness: AgentHarness; label: string }> = [
-  { harness: "codex-desktop", label: "Codex" },
-  { harness: "claude-desktop", label: "Claude" },
-  { harness: "kiro-cli-orca", label: "Kiro" },
-];
+function HarnessChevron() {
+  return (
+    <svg className="detail-harness-menu-chevron" viewBox="0 0 16 16" aria-hidden="true">
+      <path
+        d="m4 6 4 4 4-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
 
 function messageFor(error: unknown): TaskDetailError {
   if (error instanceof ApiError) return error.message;
@@ -366,36 +384,61 @@ function ActivityChangeIcon({ field, before, after }: {
 
 function ConversationLink({
   threadId,
+  agentKind,
   onOpen,
   onCopy,
 }: {
   threadId: string;
+  agentKind: AgentKind | null;
   onOpen: () => void;
   onCopy: (text: string, announcement: string) => void;
 }) {
   const { text } = useTaskboardI18n();
+  const canOpenConversation = canOpenConversationInAgent(agentKind);
+  const command = resumeCommandForAgent(agentKind, threadId);
+  const label = agentKind === "claude-code" ? "Claude Code" : agentKind === "codex" ? "Codex" : "AI Agent";
+  const openLabel = agentKind === "claude-code" ? "Claude Desktop" : label;
+  const actor: ActorIdentity = {
+    type: "agent",
+    id: `${agentKind ?? "unknown"}-conversation-agent`,
+    name: label,
+    avatarUrl: null,
+    agentKind,
+  };
   return (
     <div className="issue-conversation-actions">
-      <button
-        className="issue-conversation-link"
-        type="button"
-        title={text("查看对话", "View conversation")}
-        onClick={onOpen}
-      >
-        <ConversationIcon color="currentColor" size={16} />
-        <strong>{text("查看对话", "View conversation")}</strong>
-      </button>
+      {canOpenConversation && (
+        <button
+          className="issue-conversation-link"
+          type="button"
+          title={text(`在 ${openLabel} 中打开`, `Open in ${openLabel}`)}
+          onClick={onOpen}
+        >
+          <ActorAvatar className="issue-conversation-agent-icon" actor={actor} />
+          <strong>{text(`打开 ${openLabel}`, `Open ${openLabel}`)}</strong>
+        </button>
+      )}
       <button
         className="issue-conversation-copy"
         type="button"
-        title={text("复制终端命令", "Copy terminal command")}
+        title={command
+          ? text("复制终端命令", "Copy terminal command")
+          : text("复制对话 ID", "Copy conversation ID")}
         onClick={() => onCopy(
-          `codex resume ${threadId}`,
-          text("Codex 恢复命令已复制。", "Codex resume command copied."),
+          command ?? threadId,
+          command
+            ? text(`${label} 恢复命令已复制。`, `${label} resume command copied.`)
+            : text("对话 ID 已复制。", "Conversation ID copied."),
         )}
       >
-        <CodexResumeIcon />
-        <span>{text("复制终端命令", "Copy terminal command")}</span>
+        {agentKind === "claude-code"
+          ? <ActorAvatar className="issue-conversation-agent-icon" actor={actor} />
+          : command
+            ? <CodexResumeIcon />
+            : <ConversationIcon color="currentColor" size={16} />}
+        <span>{command
+          ? text("复制终端命令", "Copy terminal command")
+          : text("复制对话 ID", "Copy conversation ID")}</span>
       </button>
     </div>
   );
@@ -453,7 +496,9 @@ export function TaskDetail({
   const [submitting, setSubmitting] = useState(false);
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [harnessMenuOpen, setHarnessMenuOpen] = useState(false);
-  const [selectedHarness, setSelectedHarness] = useState<AgentHarness>("codex-desktop");
+  const [selectedHarness, setSelectedHarness] = useState<AgentHarness>(
+    () => harnessForAgentKind(task.threadAgentKind) ?? "codex-desktop",
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSegments, setEditingSegments] = useState<InlineMediaSegment[]>(
     () => createInlineMediaSegments(),
@@ -483,6 +528,7 @@ export function TaskDetail({
 
   useEffect(() => {
     const taskChanged = currentTask.id !== task.id;
+    const threadAgentChanged = currentTask.threadAgentKind !== task.threadAgentKind;
     setCurrentTask(task);
     if (document.activeElement !== titleRef.current) setTitle(task.title);
     if (taskChanged || !editingDescription) {
@@ -492,6 +538,9 @@ export function TaskDetail({
     if (taskChanged) {
       setEditingDescription(false);
       setChangeStatusToTodo(false);
+    }
+    if (taskChanged || threadAgentChanged) {
+      setSelectedHarness(harnessForAgentKind(task.threadAgentKind) ?? "codex-desktop");
     }
   }, [task]);
 
@@ -1040,7 +1089,7 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, CODEX_AGENT_ACTOR]
+  const assigneeOptions = [currentTask.assignee, currentUser, AI_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
@@ -1233,9 +1282,12 @@ export function TaskDetail({
                   >
                     <ConversationLink
                       threadId={currentTask.threadBinding?.threadId ?? currentTask.legacyLocalThreadId!}
-                      onOpen={() => currentTask.threadBinding
-                        ? onOpenThread(currentTask.threadBinding)
-                        : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
+                      agentKind={currentTask.threadAgentKind}
+                      onOpen={() => currentTask.threadAgentKind === "claude-code"
+                        ? onOpenInHarness(currentTask, "claude-desktop")
+                        : currentTask.threadBinding
+                          ? onOpenThread(currentTask.threadBinding)
+                          : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
                       onCopy={onCopy}
                     />
                   </div>
@@ -1278,11 +1330,18 @@ export function TaskDetail({
                         id: currentTask.creatorId,
                         name: currentTask.creatorName,
                         avatarUrl: currentTask.creatorAvatarUrl,
+                        agentKind: currentTask.creatorAgentKind,
                       }}
                     />
                   </span>
                   <p>
-                    <strong>{currentTask.creatorName}</strong>
+                    <strong>{actorDisplayName({
+                      type: currentTask.creatorType,
+                      id: currentTask.creatorId,
+                      name: currentTask.creatorName,
+                      avatarUrl: currentTask.creatorAvatarUrl,
+                      agentKind: currentTask.creatorAgentKind,
+                    })}</strong>
                     {text(" 创建了此议题", " created this issue")}
                     <time title={exactTime(currentTask.createdAt, locale)}>{relativeTime(currentTask.createdAt, locale)}</time>
                   </p>
@@ -1324,7 +1383,13 @@ export function TaskDetail({
                           />
                         </span>
                         <p>
-                          <strong>{activity.actorName}</strong>
+                          <strong>{actorDisplayName({
+                            type: activity.actorType,
+                            id: activity.actorId,
+                            name: activity.actorName,
+                            avatarUrl: activity.actorAvatarUrl,
+                            agentKind: activity.actorAgentKind,
+                          })}</strong>
                           {" "}
                           {change.field === "description" ? (
                             <>{text("更新了描述", "updated the description")}</>
@@ -1368,9 +1433,16 @@ export function TaskDetail({
                             id: comment.authorId,
                             name: comment.authorName,
                             avatarUrl: comment.authorAvatarUrl,
+                            agentKind: comment.authorAgentKind,
                           }}
                         />
-                        <strong>{comment.authorName}</strong>
+                        <strong>{actorDisplayName({
+                          type: comment.authorType,
+                          id: comment.authorId,
+                          name: comment.authorName,
+                          avatarUrl: comment.authorAvatarUrl,
+                          agentKind: comment.authorAgentKind,
+                        })}</strong>
                         <time title={exactTime(comment.createdAt, locale)}>{relativeTime(comment.createdAt, locale)}</time>
                         {comment.version > 1 && (
                           <span
@@ -1517,9 +1589,12 @@ export function TaskDetail({
                         <div className="comment-conversation-link">
                           <ConversationLink
                             threadId={comment.threadBinding?.threadId ?? comment.legacyLocalThreadId!}
-                            onOpen={() => comment.threadBinding
-                              ? onOpenThread(comment.threadBinding)
-                              : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}
+                            agentKind={comment.authorAgentKind}
+                            onOpen={() => comment.authorAgentKind === "claude-code"
+                              ? onOpenInHarness(currentTask, "claude-desktop")
+                              : comment.threadBinding
+                                ? onOpenThread(comment.threadBinding)
+                                : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}
                             onCopy={onCopy}
                           />
                         </div>
@@ -1622,18 +1697,29 @@ export function TaskDetail({
           <aside className="issue-properties" aria-label={text("议题属性", "Issue properties")}>
             <div className="detail-primary-actions">
               <div className="detail-harness-menu" ref={harnessMenuRef}>
-                <button
-                  className="detail-open-thread-action"
-                  type="button"
-                  disabled={openingThread}
-                  aria-haspopup="menu"
-                  aria-expanded={harnessMenuOpen}
-                  onClick={() => setHarnessMenuOpen((current) => !current)}
-                >
-                  <AgentHarnessIcon harness={selectedHarness} />
-                  <span>{openingThread ? "Opening…" : AGENT_HARNESSES.find(({ harness }) => harness === selectedHarness)?.label}</span>
-                  <span className="detail-harness-menu-chevron" aria-hidden="true">⌄</span>
-                </button>
+                <div className="detail-harness-split-action">
+                  <button
+                    className="detail-open-thread-action"
+                    type="button"
+                    disabled={openingThread}
+                    onClick={() => onOpenInHarness(currentTask, selectedHarness)}
+                  >
+                    <AgentHarnessIcon harness={selectedHarness} />
+                    <span>{openingThread ? "Opening…" : AGENT_HARNESSES.find(({ harness }) => harness === selectedHarness)?.label}</span>
+                  </button>
+                  <button
+                    className="detail-harness-menu-trigger"
+                    type="button"
+                    disabled={openingThread}
+                    title="Choose agent"
+                    aria-label="Choose agent"
+                    aria-haspopup="menu"
+                    aria-expanded={harnessMenuOpen}
+                    onClick={() => setHarnessMenuOpen((current) => !current)}
+                  >
+                    <HarnessChevron />
+                  </button>
+                </div>
                 {harnessMenuOpen && (
                   <div className="detail-harness-options" role="menu">
                     {AGENT_HARNESSES.map(({ harness, label }) => (
@@ -1765,8 +1851,8 @@ export function TaskDetail({
                 options={assigneeOptions.map((actor) => ({
                   value: actorKey(actor),
                   label: actor.id === currentUser.id
-                    ? `${actor.name}${text("（我）", " (me)")}`
-                    : actor.name,
+                    ? `${actorDisplayName(actor)}${text("（我）", " (me)")}`
+                    : actorDisplayName(actor),
                   icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
                 }))}
                 open={propertyMenu === "assignee"}

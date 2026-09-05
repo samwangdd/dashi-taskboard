@@ -1,6 +1,27 @@
 const HOST_REQUEST_ERROR = "自动认领配置暂时无法应用，请刷新后重试";
 const AUTOMATION_SCHEMA_DIAGNOSTIC = "AUTOMATION_SCHEMA_MISMATCH";
 
+function shellSingleQuote(value) {
+  return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+export function buildKiroOrcaArgs(request) {
+  // 临时任务没有项目目录时仍可启动 Kiro；只有真实 workspace 才绑定 Orca worktree。
+  const workspaceArgs = request.workspacePath
+    ? ["--worktree", `path:${request.workspacePath}`]
+    : [];
+  return [
+    "terminal",
+    "create",
+    ...workspaceArgs,
+    "--title",
+    request.title,
+    "--command",
+    `kiro-cli chat --trust-all-tools --v3 ${shellSingleQuote(request.instruction)}`,
+    "--json",
+  ];
+}
+
 function parseHostRequest(payload, parseAutomationRequest) {
   if (typeof payload !== "string" || payload.length > 4_194_304) {
     return { id: null, request: null, error: HOST_REQUEST_ERROR };

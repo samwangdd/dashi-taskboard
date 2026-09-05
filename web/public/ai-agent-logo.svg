@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="AI Agent">
+  <circle cx="32" cy="32" r="27" fill="#EEF1F5" stroke="#697386" stroke-width="4"/>
+  <path d="M20 27h24v18H20z" fill="#697386"/>
+  <circle cx="27" cy="35" r="3" fill="#fff"/>
+  <circle cx="37" cy="35" r="3" fill="#fff"/>
+  <path d="M32 27V18m-5 27h10" stroke="#697386" stroke-width="4" stroke-linecap="round"/>
+  <circle cx="32" cy="16" r="4" fill="#697386"/>
+</svg>

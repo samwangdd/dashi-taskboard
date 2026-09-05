@@ -317,7 +317,7 @@ export async function openLocalAgentHarness(input: {
   taskId: string;
   title: string;
   instruction: string;
-  workspacePath: string;
+  workspacePath?: string;
 }): Promise<{ opened: boolean; label: string }> {
   return request<{ opened: boolean; label: string }>("/api/local/agent-harness", {
     method: "POST",

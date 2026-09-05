@@ -236,6 +236,40 @@ test("the local Kiro harness endpoint checks its workspace before handing orca a
   }
 });
 
+test("the local Kiro harness endpoint opens an unbound Orca terminal when no workspace is available", async () => {
+  const commands = [];
+  const baseUrl = await startServer(() => ({
+    agentHarnessPlatform: "darwin",
+    agentHarnessRunner: async (executable, args) => {
+      commands.push([executable, args]);
+    },
+  }));
+
+  const opened = await request(baseUrl, "/api/local/agent-harness", {
+    method: "POST",
+    body: {
+      harness: "kiro-cli-orca",
+      taskId: "task-1",
+      title: "Projectless Kiro task",
+      instruction: "Handle LOCAL-2",
+    },
+  });
+
+  assert.equal(opened.response.status, 200);
+  assert.deepEqual(opened.body, { opened: true, label: "Kiro CLI in Orca" });
+  assert.deepEqual(commands, [[
+    "/usr/local/bin/orca",
+    [
+      "terminal",
+      "create",
+      "--title",
+      "Projectless Kiro task",
+      "--command",
+      "kiro-cli chat --trust-all-tools --v3 'Handle LOCAL-2'",
+    ],
+  ]]);
+});
+
 test("an agent harness launch that fails is surfaced instead of being reported as opened", async () => {
   await assert.rejects(
     runAgentHarnessCommand(process.execPath, [
@@ -1520,13 +1554,14 @@ test("issue comments can be created, edited, listed, and deleted", async () => {
   assert.equal(taskAfterDelete.body.task.threadId, null);
 });
 
-test("taskctl issue creation and comments use the Codex Agent identity", async () => {
+test("taskctl issue creation and comments use the declared Codex identity", async () => {
   const baseUrl = await startServer();
   const agentHeaders = {
     "x-taskboard-client": "taskctl",
     "x-taskboard-user-id": "spoofed-user",
     "x-taskboard-user-name": "Spoofed User",
     "x-taskboard-user-avatar": "https://example.com/spoofed.png",
+    "x-taskboard-agent-kind": "codex",
   };
   const createTaskResult = await request(baseUrl, "/api/tasks", {
     method: "POST",
@@ -1537,12 +1572,14 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const task = createTaskResult.body.task;
   assert.equal(task.creatorType, "agent");
   assert.equal(task.creatorId, "codex-agent");
-  assert.equal(task.creatorName, "Codex Agent");
+  assert.equal(task.creatorName, "Codex");
+  assert.equal(task.creatorAgentKind, "codex");
+  assert.equal(task.threadAgentKind, "codex");
   assert.equal(task.creatorAvatarUrl, null);
   assert.deepEqual(task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "AI Agent",
     avatarUrl: null,
   });
 
@@ -1555,9 +1592,30 @@ test("taskctl issue creation and comments use the Codex Agent identity", async (
   const comment = createCommentResult.body.comment;
   assert.equal(comment.authorType, "agent");
   assert.equal(comment.authorId, "codex-agent");
-  assert.equal(comment.authorName, "Codex Agent");
+  assert.equal(comment.authorName, "Codex");
+  assert.equal(comment.authorAgentKind, "codex");
   assert.equal(comment.authorAvatarUrl, null);
   assert.equal(comment.threadId, "thread-agent-comment");
+
+  const claudeUpdate = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "PATCH",
+    headers: {
+      ...agentHeaders,
+      "x-taskboard-agent-kind": "claude-code",
+    },
+    body: {
+      version: task.version,
+      title: "Continued by Claude Code",
+      threadId: "claude-session-update",
+    },
+  });
+  assert.equal(claudeUpdate.response.status, 200);
+  assert.equal(claudeUpdate.body.task.threadId, "claude-session-update");
+  assert.equal(claudeUpdate.body.task.threadAgentKind, "claude-code");
+
+  const activities = await request(baseUrl, `/api/tasks/${task.id}/activities`);
+  assert.equal(activities.response.status, 200);
+  assert.equal(activities.body.activities.at(-1).actorAgentKind, "claude-code");
 });
 
 test("Codex-hosted user mutations persist the current account identity and avatar", async () => {
@@ -1597,7 +1655,7 @@ test("Codex-hosted user mutations persist the current account identity and avata
   assert.deepEqual(assignedToCodexResult.body.task.assignee, {
     type: "agent",
     id: "codex-agent",
-    name: "Codex Agent",
+    name: "AI Agent",
     avatarUrl: null,
   });
 

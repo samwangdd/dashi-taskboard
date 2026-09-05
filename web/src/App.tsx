@@ -81,7 +81,8 @@ import {
 import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
-import { TaskDetail, type AgentHarness } from "./components/TaskDetail";
+import { TaskDetail } from "./components/TaskDetail";
+import type { AgentHarness } from "./agentHarnesses";
 import {
   TaskEditor,
   type NewTaskCreateOptions,
@@ -3155,10 +3156,6 @@ export function App() {
         deepLink.searchParams.set("q", instruction);
         if (workspacePath) deepLink.searchParams.set("folder", workspacePath);
         window.location.assign(deepLink.toString());
-        return;
-      }
-      if (!workspacePath) {
-        setActionError("Kiro CLI in Orca requires a local project workspace.");
         return;
       }
       setActionError(null);

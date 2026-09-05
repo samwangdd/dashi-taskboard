@@ -2,11 +2,35 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildKiroOrcaArgs,
   findResidentInjectorPids,
   handleHostBindingPayload,
   reconcileInjectionRuntime,
   restartResidentInjector,
 } from "../scripts/codex-injector-runtime.mjs";
+
+test("the embedded host builds Kiro terminals with an optional workspace binding", () => {
+  const request = {
+    title: "Projectless Kiro task",
+    instruction: "Handle today's LOCAL-2",
+  };
+
+  assert.deepEqual(buildKiroOrcaArgs(request), [
+    "terminal",
+    "create",
+    "--title",
+    "Projectless Kiro task",
+    "--command",
+    `kiro-cli chat --trust-all-tools --v3 'Handle today'"'"'s LOCAL-2'`,
+    "--json",
+  ]);
+  assert.deepEqual(buildKiroOrcaArgs({ ...request, workspacePath: "/tmp/project" }).slice(0, 4), [
+    "terminal",
+    "create",
+    "--worktree",
+    "path:/tmp/project",
+  ]);
+});
 
 const currentAutomationRequest = {
   id: "host-request-1",

@@ -3419,6 +3419,12 @@ kbd {
   height: 16px;
 }
 
+.issue-conversation-agent-icon {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+}
+
 .issue-conversation-link > strong {
   flex: 0 0 auto;
   font-size: 11px;
@@ -4470,22 +4476,6 @@ kbd {
   padding: 2px 16px 16px;
 }
 
-.comment-card .issue-conversation-copy {
-  opacity: 0;
-  visibility: hidden;
-  transition:
-    background 100ms ease,
-    color 100ms ease,
-    opacity 200ms ease-out,
-    visibility 0s linear 200ms;
-}
-
-.comment-card:hover .issue-conversation-copy {
-  opacity: 1;
-  visibility: visible;
-  transition-delay: 0s;
-}
-
 .comment-attachment-list li {
   display: flex;
   align-items: center;
@@ -4768,14 +4758,36 @@ kbd {
 
 .detail-harness-menu {
   position: relative;
-  grid-column: 1 / -1;
+}
+
+.detail-harness-split-action {
+  display: flex;
+  width: 100%;
+}
+
+.detail-harness-split-action .detail-open-thread-action {
+  min-width: 0;
+  border-radius: 6px 0 0 6px;
+}
+
+.detail-harness-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 30px;
+  min-height: 36px;
+  padding: 0;
+  border: var(--border-hairline) solid var(--border);
+  border-left: 0;
+  border-radius: 0 6px 6px 0;
+  background: var(--surface);
+  color: var(--text-secondary);
 }
 
 .detail-harness-menu-chevron {
-  margin-left: auto;
-  color: var(--text-secondary);
-  font-size: 14px;
-  line-height: 1;
+  display: block;
+  width: 14px;
+  height: 14px;
 }
 
 .detail-harness-options {
@@ -4821,17 +4833,10 @@ kbd {
 }
 
 .agent-harness-icon {
+  display: inline-flex;
   flex: 0 0 16px;
   width: 16px;
   height: 16px;
-}
-
-.agent-harness-icon.is-codex {
-  color: var(--text-primary);
-}
-
-.agent-harness-icon.is-claude {
-  color: #d97757;
 }
 
 .agent-harness-icon.is-kiro {
@@ -4839,18 +4844,25 @@ kbd {
 }
 
 .detail-open-thread-action:hover:not(:disabled),
+.detail-harness-menu-trigger:hover:not(:disabled),
 .detail-copy-action:hover {
   border-color: var(--border-strong);
   background: var(--surface-hover);
 }
 
 .detail-open-thread-action:focus-visible,
+.detail-harness-menu-trigger:focus-visible,
 .detail-copy-action:focus-visible {
   outline: 0;
   box-shadow: 0 0 0 2px var(--accent-soft);
 }
 
 .detail-open-thread-action:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.detail-harness-menu-trigger:disabled {
   cursor: default;
   opacity: 0.55;
 }

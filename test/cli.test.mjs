@@ -64,6 +64,22 @@ test("project list uses the default local service and adds schemaVersion", async
   assert.equal(calls[0].init.headers["x-taskboard-client"], "taskctl");
 });
 
+test("taskctl declares the active agent kind on API requests", async () => {
+  const observed = [];
+  for (const env of [
+    { CODEX_THREAD_ID: "thread-current", CLAUDECODE: "1" },
+    { CLAUDECODE: "1" },
+    {},
+  ]) {
+    const result = await run(["project", "list"], async (_url, init) => {
+      observed.push(init.headers["x-taskboard-agent-kind"]);
+      return response({ projects: [] });
+    }, { env });
+    assert.equal(result.exitCode, 0);
+  }
+  assert.deepEqual(observed, ["codex", "claude-code", "unknown"]);
+});
+
 test("CODEX_TASKBOARD_URL overrides the service origin", async () => {
   let requestedUrl;
   const result = await run(

@@ -12,6 +12,7 @@ export const TASK_PRIORITIES = ["none", "urgent", "high", "medium", "low"] as co
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 export type ActorType = "user" | "agent";
+export type AgentKind = "claude-code" | "codex" | "unknown";
 export type AssigneeTarget = "current-user" | "codex-agent";
 export type IssueRelationType = "parent" | "blocks" | "blocked_by" | "related";
 export type IssueRelationOrigin = "manual" | "mention";
@@ -21,6 +22,7 @@ export interface ActorIdentity {
   id: string;
   name: string;
   avatarUrl: string | null;
+  agentKind?: AgentKind | null;
 }
 
 export type DevelopmentContext =
@@ -409,6 +411,7 @@ export interface Task {
   labels: string[];
   sortOrder: number;
   threadId: string | null;
+  threadAgentKind: AgentKind | null;
   threadBinding: CodexThreadBinding | null;
   legacyLocalThreadId: string | null;
   conversationRefs: TaskConversationRef[];
@@ -420,6 +423,7 @@ export interface Task {
   creatorId: string;
   creatorName: string;
   creatorAvatarUrl: string | null;
+  creatorAgentKind: AgentKind | null;
   assignee: ActorIdentity;
   developmentContext: DevelopmentContext | null;
   startDate: string | null;
@@ -455,6 +459,7 @@ export interface Comment {
   authorId: string;
   authorName: string;
   authorAvatarUrl: string | null;
+  authorAgentKind: AgentKind | null;
   threadId: string | null;
   threadBinding: CodexThreadBinding | null;
   legacyLocalThreadId: string | null;
@@ -477,6 +482,7 @@ export interface TaskChangeActivity {
   actorId: string;
   actorName: string;
   actorAvatarUrl: string | null;
+  actorAgentKind: AgentKind | null;
   changes: TaskActivityChange[];
   createdAt: string;
 }
