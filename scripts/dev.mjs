@@ -3,10 +3,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadLocalEnv } from "../shared/local-env.mjs";
+import { isLauncherRuntimeReachable, readLauncherRuntime } from "../shared/launcher-runtime.mjs";
 
-loadLocalEnv(path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."));
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+loadLocalEnv(projectRoot);
 
-const serverUrl = "http://127.0.0.1:47823/";
+// injector 托管的服务会把自己的实际地址写进 launcher runtime 描述符，端口不一定是默认值，
+// 所以可达性要按描述符里的 origin 探，而不是写死 47823。
+const launcherRuntime = await readLauncherRuntime(projectRoot);
+const serverUrl = launcherRuntime ? `${launcherRuntime.url.origin}/` : "http://127.0.0.1:47823/";
 const webUrl = "http://127.0.0.1:5173/";
 
 async function isReachable(url) {
@@ -38,8 +43,13 @@ function openBrowser(url) {
   opener.unref();
 }
 
+// 两个判据都要看：token 感知探测确认 injector 托管的服务活着；裸可达性兜住
+// 「描述符已失效但端口仍被别的服务占用」，避免我们再起一个撞端口的 dev server。
+const serverAlreadyRunning = await isLauncherRuntimeReachable(launcherRuntime)
+  || await isReachable(serverUrl);
+
 const children = [];
-if (!(await isReachable(serverUrl))) {
+if (!serverAlreadyRunning) {
   children.push(spawn(process.execPath, ["--watch", "server/index.mjs", "--dev"], {
     stdio: "inherit",
   }));

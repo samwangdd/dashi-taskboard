@@ -10,9 +10,9 @@
     "taskctl": "./cli/taskctl.mjs"
   },
   "scripts": {
-    "codex": "node scripts/codex-injector.mjs --launch --watch --open --port 9231",
-    "codex:inject": "node scripts/codex-injector.mjs --watch",
-    "codex:daemon": "node scripts/codex-injector.mjs --daemon --open",
+    "codex": "npm run build:web && node scripts/codex-injector.mjs --launch --watch --open --port 9231",
+    "codex:inject": "npm run build:web && node scripts/codex-injector.mjs --watch",
+    "codex:daemon": "npm run build:web && node scripts/codex-injector.mjs --daemon --open",
     "codex:refresh": "node scripts/codex-injector.mjs --refresh",
     "app:prepare": "npm run build:web && node scripts/prepare-tauri-app.mjs",
     "app:dev": "npm run app:prepare && tauri dev",
