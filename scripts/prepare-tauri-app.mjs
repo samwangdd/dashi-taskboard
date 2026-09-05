@@ -253,6 +253,7 @@ async function copyApplicationResources() {
     "codex-injector-runtime.mjs",
     "codex-rate-limits.mjs",
     "taskboard-supervisor.mjs",
+    "windows-codex.mjs",
   ]) {
     await copyFile(
       path.join(projectRoot, "scripts", fileName),
@@ -308,7 +309,11 @@ exec "$RESOURCE_DIR/../../bin/codex-taskboard-node" "$RESOURCE_DIR/app/cli/taskc
   const taskctlWrapper = `#!/bin/zsh
 set -u
 
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPT_PATH="$0"
+if [ -L "$SCRIPT_PATH" ]; then
+  SCRIPT_PATH="$(readlink "$SCRIPT_PATH")"
+fi
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
 CONTENTS_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 export CODEX_TASKBOARD_DATA_DIR="$HOME/Library/Application Support/Codex Taskboard"
 export CODEX_TASKBOARD_RUNTIME_FILE="$CODEX_TASKBOARD_DATA_DIR/launcher-runtime.json"
