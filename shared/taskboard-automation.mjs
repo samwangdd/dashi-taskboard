@@ -12,8 +12,9 @@ const AUTOMATION_OPERATIONS = new Set([
 ]);
 const INTERVAL_MINUTES = new Set([5, 10, 15, 30, 60]);
 const LOOP_PROMPT_KINDS = new Set(["automation", "delivery", "triage"]);
-// 交接卡标记是与 skill `taskboard-handoff`、`issue-to-mr`（DAS-18）共享的跨技能契约，
-// 三处必须同步变更，因此本文件的三种 loop prompt 一律引用这个常量而不各自硬编码字符串。
+// 交接卡标记是与 skill `taskboard-handoff` 和本仓 AGENTS.md（DAS-18）共享的跨技能契约，
+// 必须同步变更（`issue-to-mr` 只按 skill 名引用，间接依赖），因此本文件的三种 loop prompt
+// 一律引用这个常量而不各自硬编码字符串。
 export const HANDOFF_CARD_MARKER = "<!-- handoff v1 -->";
 const HOST_REQUEST_FIELDS = new Set([
   "id",
@@ -182,7 +183,7 @@ function buildTaskboardTriagePrompt(request) {
     "This run is board repair, never execution. Do not claim work, implement or debug code, invoke $issue-to-mr or $mexc-coding-loop, create or resume an execution binding, create a conversation, branch, or worktree, push, open an MR, merge, release, or mark work done.",
     "Apply only repairs whose end state follows mechanically from current tracker evidence and is allowed by the unattended mutation boundary in $triaging-blocked-issues. Preserve durable checkpoints and worktree evidence. Report high-judgment cases without mutating them, including semantic splits, ambiguous survivors, done rollbacks, uncertain owners, and Git or Taskboard contradictions.",
     "Before every write, re-read the current version. Use a stable triage marker to avoid duplicate comments. After a partial failure, re-read the affected scope and apply only the missing delta; never replay the original batch.",
-    `For every in_progress issue, if its latest agent-authored comment does not start with the exact marker \`${HANDOFF_CARD_MARKER}\`, report it as a report-only finding of "no handoff card", listing the issue identifier and the age of that latest comment. This is a report-only finding, not an automatic status change.`,
+    `For every in_progress issue, if no comment whose body starts with the exact marker \`${HANDOFF_CARD_MARKER}\` exists, report a report-only finding of "no handoff card" listing the issue identifier and the age of the issue's latest comment; if such a card exists, report only the age of the latest card. Triage's own marker comments and later evidence or review comments never make a card stale. This finding never changes status.`,
     "Independently verify the final board snapshot as required by $triaging-blocked-issues. If no independent read channel is available, report changed but not independently verified.",
     "Finish with the number of issues scanned, automatic repairs and their evidence, report-only findings, every remaining in_progress executor and next action, every remaining blocked external exit condition and request evidence, relation anomalies, and confirmation that no execution binding, conversation, branch, or worktree was created.",
   ].join("\n");

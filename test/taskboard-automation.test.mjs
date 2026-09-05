@@ -263,6 +263,23 @@ test("the delivery prompt requires a handoff card before ending in_progress or m
   );
 });
 
+// done 例外只写在本仓 AGENTS.md §8，不进任何 loop prompt：这些 prompt 是产品件，会为任意用户项目生成，
+// 里面引用本仓 AGENTS.md 或声明压过打包的 $manage-taskboard 都会让第三方 agent 按不存在的文档自行关单。
+test("no loop prompt carries the repo-local Agent review done exception", () => {
+  const prompts = [
+    buildTaskboardAutomationPrompt(baseRequest),
+    buildTaskboardAutomationPrompt(remoteRequest),
+    buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "delivery" }),
+    buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "triage" }),
+  ];
+  for (const prompt of prompts) {
+    assert.doesNotMatch(prompt, /AGENTS\.md/);
+    assert.doesNotMatch(prompt, /Agent review/);
+    assert.doesNotMatch(prompt, /优先于 \$manage-taskboard/);
+    assert.doesNotMatch(prompt, /takes precedence over the generic done rule/);
+  }
+});
+
 test("the triage prompt reports an in_progress issue with no handoff card as a report-only finding", () => {
   const prompt = buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "triage" });
   assert.ok(prompt.includes(HANDOFF_CARD_MARKER));
@@ -270,6 +287,10 @@ test("the triage prompt reports an in_progress issue with no handoff card as a r
   assert.match(prompt, /report-only/);
   assert.match(prompt, /age of/);
   assert.match(prompt, /in_progress/);
+  assert.match(prompt, /no comment whose body starts with/);
+  assert.match(prompt, /never make a card stale/);
+  assert.match(prompt, /never changes status/);
+  assert.doesNotMatch(prompt, /latest agent-authored comment does not start/);
 });
 
 test("the generated automation command uses the packaged CLI and an argv runtime file", () => {
