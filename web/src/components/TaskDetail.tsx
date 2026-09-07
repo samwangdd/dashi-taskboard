@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useLayoutEffect,
   useRef,
@@ -514,6 +515,7 @@ export function TaskDetail({
   const editingComposerRef = useRef<InlineMediaComposerHandle>(null);
   const editingCommentScrollPositionRef = useRef<{ element: HTMLElement; top: number } | null>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
+  const descriptionAttachmentPickerOpenRef = useRef(false);
   const commentAttachmentInputRef = useRef<HTMLInputElement>(null);
   const editCommentAttachmentInputRef = useRef<HTMLInputElement>(null);
   const harnessMenuRef = useRef<HTMLDivElement>(null);
@@ -1073,14 +1075,17 @@ export function TaskDetail({
     }
   }
 
-  function handleAttachmentDownload(event: MouseEvent<HTMLAnchorElement>, attachment: Attachment) {
+  const handleAttachmentDownload = useCallback((
+    event: MouseEvent<HTMLAnchorElement>,
+    attachment: Attachment,
+  ) => {
     event.preventDefault();
     event.stopPropagation();
     setAttachmentsError(null);
     void downloadAttachmentFile(attachment).catch((error) => {
       setAttachmentsError(messageFor(error));
     });
-  }
+  }, []);
 
   const developmentOptions = [...developmentScan.contexts];
   if (
@@ -1089,7 +1094,12 @@ export function TaskDetail({
   ) {
     developmentOptions.unshift(currentTask.developmentContext);
   }
-  const assigneeOptions = [currentTask.assignee, currentUser, AI_AGENT_ACTOR]
+  const displayAssignee = currentTask.assignee.type === currentUser.type
+    && currentTask.assignee.id === currentUser.id
+    ? currentUser
+    : currentTask.assignee;
+  // 上游把负责人归一到实时的 currentUser（头像/邮箱可能已更新）；fork 的 agent 常量是 AI_AGENT_ACTOR
+  const assigneeOptions = [displayAssignee, currentUser, AI_AGENT_ACTOR]
     .filter((actor, index, actors) => (
       actors.findIndex((candidate) => actorKey(candidate) === actorKey(actor)) === index
     ));
@@ -1149,7 +1159,16 @@ export function TaskDetail({
                 {editingDescription ? (
                   <div
                     className="issue-description-composer"
+                    onMouseDownCapture={(event) => {
+                      if (
+                        event.target instanceof Element
+                        && event.target.closest(
+                          ".inline-media-image > button, .inline-media-attachment > button, .issue-description-attach-button",
+                        )
+                      ) event.preventDefault();
+                    }}
                     onBlur={(event) => {
+                      if (descriptionAttachmentPickerOpenRef.current) return;
                       if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
                       void saveDescription();
                     }}
@@ -1188,20 +1207,34 @@ export function TaskDetail({
                       disabled={savingProperty === "description"}
                       aria-label={text("添加描述附件", "Add description attachments")}
                       title={text("添加附件", "Add attachments")}
-                      onClick={() => attachmentInputRef.current?.click()}
+                      onClick={() => {
+                        const input = attachmentInputRef.current;
+                        if (!input) return;
+                        descriptionAttachmentPickerOpenRef.current = true;
+                        input.click();
+                      }}
                     >
                       <AttachmentIcon color="currentColor" />
                     </button>
                     <input
-                      ref={attachmentInputRef}
+                      ref={(input) => {
+                        attachmentInputRef.current = input;
+                        if (!input) return;
+                        input.oncancel = () => {
+                          descriptionAttachmentPickerOpenRef.current = false;
+                          requestAnimationFrame(() => descriptionComposerRef.current?.focus());
+                        };
+                      }}
                       type="file"
                       multiple
                       hidden
                       onChange={(event) => {
+                        descriptionAttachmentPickerOpenRef.current = false;
                         if (event.currentTarget.files) {
                           descriptionComposerRef.current?.addFiles(event.currentTarget.files);
                         }
                         event.currentTarget.value = "";
+                        requestAnimationFrame(() => descriptionComposerRef.current?.focus());
                       }}
                     />
                   </div>
@@ -1212,6 +1245,7 @@ export function TaskDetail({
                     tabIndex={0}
                     aria-label={text("编辑议题描述", "Edit issue description")}
                     onClick={(event) => {
+                      if (event.target instanceof Element && event.target.closest("video")) return;
                       if (window.getSelection()?.isCollapsed === false) return;
                       descriptionCaretRef.current = null;
                       const range = event.currentTarget.ownerDocument.caretRangeFromPoint(
@@ -1418,6 +1452,17 @@ export function TaskDetail({
                     );
                   }
                   const comment = item.comment;
+                  const commentActor: ActorIdentity = comment.authorType === currentUser.type
+                    && comment.authorId === currentUser.id
+                    ? currentUser
+                    : {
+                        type: comment.authorType,
+                        id: comment.authorId,
+                        name: comment.authorName,
+                        avatarUrl: comment.authorAvatarUrl,
+                        // fork 的 agent 身份区分依赖 agentKind，缺失时头像与名称会退回通用 AI Agent
+                        agentKind: comment.authorAgentKind,
+                      };
                   return (
                   <article
                     className={`comment-entry is-${comment.authorType}`}
@@ -1428,21 +1473,9 @@ export function TaskDetail({
                       <header className="comment-header">
                         <ActorAvatar
                           className="comment-avatar"
-                          actor={{
-                            type: comment.authorType,
-                            id: comment.authorId,
-                            name: comment.authorName,
-                            avatarUrl: comment.authorAvatarUrl,
-                            agentKind: comment.authorAgentKind,
-                          }}
+                          actor={commentActor}
                         />
-                        <strong>{actorDisplayName({
-                          type: comment.authorType,
-                          id: comment.authorId,
-                          name: comment.authorName,
-                          avatarUrl: comment.authorAvatarUrl,
-                          agentKind: comment.authorAgentKind,
-                        })}</strong>
+                        <strong>{actorDisplayName(commentActor)}</strong>
                         <time title={exactTime(comment.createdAt, locale)}>{relativeTime(comment.createdAt, locale)}</time>
                         {comment.version > 1 && (
                           <span
@@ -1847,10 +1880,10 @@ export function TaskDetail({
             <div className="detail-property-row assignee-property">
               <span className="detail-property-label">{text("负责人", "Assignee")}</span>
               <TaskPropertyPicker
-                value={actorKey(currentTask.assignee)}
+                value={actorKey(displayAssignee)}
                 options={assigneeOptions.map((actor) => ({
                   value: actorKey(actor),
-                  label: actor.id === currentUser.id
+                  label: actorKey(actor) === actorKey(currentUser)
                     ? `${actorDisplayName(actor)}${text("（我）", " (me)")}`
                     : actorDisplayName(actor),
                   icon: <ActorAvatar actor={actor} className="task-property-assignee-avatar" />,
