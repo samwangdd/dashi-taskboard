@@ -23,6 +23,11 @@ import {
   buildTaskboardLoopPrompt,
   parseTaskboardAutomationHostRequest,
 } from "../shared/taskboard-automation.mjs";
+import {
+  ReviewArtifactValidationError,
+  normalizeReviewArtifact,
+  requiresReviewArtifact,
+} from "../shared/review-artifact.mjs";
 import { AiChatService } from "./ai-chat.mjs";
 import { resolveAiWorkspace, resolveMappedAiWorkspace } from "./ai-chat-catalog.mjs";
 import { decodeComposerReferenceKey } from "./composer-reference.mjs";
@@ -732,7 +737,7 @@ function parseTaskCreate(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "projectId", "title", "description", "status", "priority", "labels", "sortOrder", "threadId", "threadBinding",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "developmentContext", "reviewArtifact", "startDate", "dueDate", "recurrence",
   ]));
   const projectId = validateProjectId(body.projectId ?? DEFAULT_PROJECT_ID);
   const task = {
@@ -747,6 +752,7 @@ function parseTaskCreate(body) {
     threadBinding: parseThreadBinding(body.threadBinding),
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    reviewArtifact: parseReviewArtifact(body.reviewArtifact ?? null),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
@@ -761,7 +767,7 @@ function parseTaskPatch(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version", "projectId", "title", "description", "status", "priority", "labels", "threadId", "threadBinding",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "developmentContext", "reviewArtifact", "startDate", "dueDate", "recurrence",
   ]));
   const version = parseVersion(body.version);
   const threadId = parseThreadId(body.threadId);
@@ -775,6 +781,7 @@ function parseTaskPatch(body) {
   if (body.priority !== undefined) changes.priority = parsePriority(body.priority);
   if (body.labels !== undefined) changes.labels = parseLabels(body.labels);
   if (body.developmentContext !== undefined) changes.developmentContext = parseDevelopmentContext(body.developmentContext);
+  if (body.reviewArtifact !== undefined) changes.reviewArtifact = parseReviewArtifact(body.reviewArtifact);
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
   if (body.recurrence !== undefined) changes.recurrence = parseRecurrence(body.recurrence);
@@ -789,14 +796,40 @@ function parseTaskPatch(body) {
 
 function parseMove(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "status", "sortOrder", "threadId", "threadBinding"]));
+  assertAllowedKeys(body, new Set([
+    "version", "status", "sortOrder", "threadId", "threadBinding", "reviewArtifact",
+  ]));
   return {
     version: parseVersion(body.version),
     status: parseStatus(body.status),
     sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
+    reviewArtifact: body.reviewArtifact === undefined
+      ? undefined
+      : parseReviewArtifact(body.reviewArtifact),
   };
+}
+
+function parseReviewArtifact(value) {
+  try {
+    return normalizeReviewArtifact(value);
+  } catch (error) {
+    if (error instanceof ReviewArtifactValidationError) {
+      throw new ApiError(400, "INVALID_FIELD", error.message);
+    }
+    throw error;
+  }
+}
+
+function assertReviewArtifactTransition(status, reviewRequired, reviewArtifact) {
+  if (requiresReviewArtifact(status, reviewRequired) && reviewArtifact == null) {
+    throw new ApiError(
+      409,
+      "REVIEW_ARTIFACT_REQUIRED",
+      "A task with a development context requires a review artifact before entering in_review",
+    );
+  }
 }
 
 function parseArchive(body) {
@@ -3242,6 +3275,16 @@ export function createTaskboardServer(options = {}) {
             if (recurrence && !dueDate) {
               throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires a due date");
             }
+            const targetDevelopmentContext = Object.hasOwn(changes, "developmentContext")
+              ? changes.developmentContext
+              : current.developmentContext;
+            assertReviewArtifactTransition(
+              Object.hasOwn(changes, "status") ? changes.status : current.status,
+              current.reviewRequired || targetDevelopmentContext !== null,
+              Object.hasOwn(changes, "reviewArtifact")
+                ? changes.reviewArtifact
+                : current.reviewArtifact,
+            );
             jiraChanged = await jira.updateTask(current, changes);
           }
           if (assigneeTarget !== undefined) {
@@ -3288,6 +3331,10 @@ export function createTaskboardServer(options = {}) {
           const move = resolveInputThreadBinding(parseMove(await readJson(request)));
           const current = database.getTask(id);
           if (!current) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
+          const targetReviewArtifact = move.reviewArtifact === undefined
+            ? current.reviewArtifact
+            : move.reviewArtifact;
+          assertReviewArtifactTransition(move.status, current.reviewRequired, targetReviewArtifact);
           if (current.source === "jira") {
             if (current.version !== move.version) {
               throw new ApiError(409, "VERSION_CONFLICT", "Task changed since it was last read", {
@@ -3307,6 +3354,7 @@ export function createTaskboardServer(options = {}) {
             move.sortOrder,
             move.threadId,
             move.threadBinding,
+            move.reviewArtifact,
             actorFromRequest(request),
           );
           events.emit("task.moved", { task });

@@ -29,6 +29,14 @@ export type DevelopmentContext =
   | { type: "branch"; branch: string }
   | { type: "worktree"; path: string; branch: string | null };
 
+export interface ReviewArtifact {
+  provider: "github" | "gitlab";
+  url: string;
+  remoteSha: string;
+  sourceBranch: string;
+  targetBranch: string;
+}
+
 export type Recurrence = {
   interval: number;
   unit: "day" | "week" | "month" | "year";
@@ -426,6 +434,8 @@ export interface Task {
   creatorAgentKind: AgentKind | null;
   assignee: ActorIdentity;
   developmentContext: DevelopmentContext | null;
+  reviewRequired: boolean;
+  reviewArtifact: ReviewArtifact | null;
   startDate: string | null;
   dueDate: string | null;
   recurrence: Recurrence | null;

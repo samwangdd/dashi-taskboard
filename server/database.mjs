@@ -4,6 +4,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { DEFAULT_LABEL_NAMES, JIRA_PROJECT_ID } from "../shared/domain.mjs";
+import { requiresReviewArtifact } from "../shared/review-artifact.mjs";
 
 const DEFAULT_PROJECT_LABELS_JSON = JSON.stringify(DEFAULT_LABEL_NAMES);
 const TASK_TREE_MAX_NODES = 1_000;
@@ -266,6 +267,8 @@ function taskFromRow(row) {
       avatarUrl: row.assignee_avatar_url,
     },
     developmentContext,
+    reviewRequired: row.review_required === 1,
+    reviewArtifact: row.review_artifact == null ? null : JSON.parse(row.review_artifact),
     startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
@@ -517,6 +520,8 @@ export class TaskboardDatabase {
         git_branch TEXT,
         worktree_path TEXT,
         worktree_branch TEXT,
+        review_required INTEGER NOT NULL DEFAULT 0 CHECK (review_required IN (0, 1)),
+        review_artifact TEXT,
         start_date TEXT,
         due_date TEXT,
         recurrence_interval INTEGER,
@@ -731,6 +736,21 @@ export class TaskboardDatabase {
     }
     this.#migrateTaskStatuses();
     const migratedTaskColumns = this.database.prepare("PRAGMA table_info(tasks)").all();
+    if (!migratedTaskColumns.some((column) => column.name === "review_required")) {
+      this.database.exec(`
+        ALTER TABLE tasks
+        ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0 CHECK (review_required IN (0, 1))
+      `);
+    }
+    this.database.exec(`
+      UPDATE tasks
+      SET review_required = 1
+      WHERE review_required = 0
+        AND (git_branch IS NOT NULL OR worktree_path IS NOT NULL)
+    `);
+    if (!migratedTaskColumns.some((column) => column.name === "review_artifact")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN review_artifact TEXT");
+    }
     if (!migratedTaskColumns.some((column) => column.name === "creator_type")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN creator_type TEXT NOT NULL DEFAULT 'user'");
     }
@@ -1302,10 +1322,16 @@ export class TaskboardDatabase {
           continue;
         }
 
+        // Jira 同步也是状态写入口；缺少评审证据时保留本地状态，避免外部变更绕过门禁。
+        const syncedStatus = requiresReviewArtifact(issue.status, existing.review_required === 1)
+          && existing.review_artifact == null
+          ? existing.status
+          : issue.status;
+
         const changed = existing.identifier !== issue.identifier
           || existing.title !== issue.title
           || existing.description !== issue.description
-          || existing.status !== issue.status
+          || existing.status !== syncedStatus
           || existing.priority !== issue.priority
           || existing.labels !== labels
           || existing.sort_order !== issue.sortOrder
@@ -1328,7 +1354,7 @@ export class TaskboardDatabase {
           issue.identifier,
           issue.title,
           issue.description,
-          issue.status,
+          syncedStatus,
           issue.priority,
           labels,
           issue.sortOrder,
@@ -2006,6 +2032,8 @@ export class TaskboardDatabase {
   }
 
   createTask(input) {
+    const reviewRequired = input.developmentContext !== null;
+    this.#requireReviewArtifact(input.status, reviewRequired, input.reviewArtifact);
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const project = this.database.prepare(`
@@ -2063,10 +2091,10 @@ export class TaskboardDatabase {
           thread_codex_host_id, thread_workspace_path, thread_agent_kind,
           creator_type, creator_id, creator_name, creator_avatar_url, creator_agent_kind,
           assignee_type, assignee_id, assignee_name, assignee_avatar_url,
-          git_branch, worktree_path, worktree_branch,
+          git_branch, worktree_path, worktree_branch, review_required, review_artifact,
           start_date, due_date, recurrence_interval, recurrence_unit,
           archived_at, version, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1, ?, ?)
       `).run(
         id,
         identifier,
@@ -2091,6 +2119,8 @@ export class TaskboardDatabase {
         input.developmentContext?.type === "branch" ? input.developmentContext.branch : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.path : null,
         input.developmentContext?.type === "worktree" ? input.developmentContext.branch : null,
+        reviewRequired ? 1 : 0,
+        input.reviewArtifact == null ? null : JSON.stringify(input.reviewArtifact),
         input.startDate,
         input.dueDate,
         input.recurrence?.interval ?? null,
@@ -2109,6 +2139,16 @@ export class TaskboardDatabase {
   updateTask(id, version, changes, threadId, threadBinding, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    const targetStatus = Object.hasOwn(changes, "status") ? changes.status : current.status;
+    const targetDevelopmentContext = Object.hasOwn(changes, "developmentContext")
+      ? changes.developmentContext
+      : current.developmentContext;
+    // 一旦绑定过开发上下文，这个议题就是仓库交付；清空上下文不能解除评审门禁。
+    const targetReviewRequired = current.reviewRequired || targetDevelopmentContext !== null;
+    const targetReviewArtifact = Object.hasOwn(changes, "reviewArtifact")
+      ? changes.reviewArtifact
+      : current.reviewArtifact;
+    this.#requireReviewArtifact(targetStatus, targetReviewRequired, targetReviewArtifact);
     const activityChanges = taskFieldChanges(current, changes);
     const targetProject = Object.hasOwn(changes, "projectId")
       ? this.database.prepare("SELECT id, name, workspace_path, labels FROM projects WHERE id = ?").get(changes.projectId)
@@ -2157,6 +2197,9 @@ export class TaskboardDatabase {
     };
     const assignments = [];
     const values = [];
+    if (targetReviewRequired !== current.reviewRequired) {
+      assignments.push("review_required = 1");
+    }
     for (const [key, value] of Object.entries(changes)) {
       if (key === "developmentContext") {
         assignments.push("git_branch = ?", "worktree_path = ?", "worktree_branch = ?");
@@ -2170,6 +2213,11 @@ export class TaskboardDatabase {
       if (key === "recurrence") {
         assignments.push("recurrence_interval = ?", "recurrence_unit = ?");
         values.push(value?.interval ?? null, value?.unit ?? null);
+        continue;
+      }
+      if (key === "reviewArtifact") {
+        assignments.push("review_artifact = ?");
+        values.push(value === null ? null : JSON.stringify(value));
         continue;
       }
       if (key === "assignee") {
@@ -2245,9 +2293,13 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  moveTask(id, version, status, sortOrder, threadId, threadBinding, actor) {
+  moveTask(id, version, status, sortOrder, threadId, threadBinding, reviewArtifact, actor) {
     const current = this.#requireTask(id);
     this.#requireVersion(current, version);
+    const targetReviewArtifact = reviewArtifact === undefined
+      ? current.reviewArtifact
+      : reviewArtifact;
+    this.#requireReviewArtifact(status, current.reviewRequired, targetReviewArtifact);
     if (current.archivedAt !== null) {
       throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
     }
@@ -2273,20 +2325,34 @@ export class TaskboardDatabase {
       ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
         thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
       : "";
+    const reviewArtifactAssignment = reviewArtifact === undefined ? "" : "review_artifact = ?,";
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const result = this.database.prepare(`
         UPDATE tasks
-        SET status = ?, sort_order = ?, ${threadAssignment} version = version + 1, updated_at = ?
+        SET status = ?, sort_order = ?, ${threadAssignment} ${reviewArtifactAssignment} version = version + 1, updated_at = ?
         WHERE id = ? AND version = ?
-      `).run(status, sortOrder, ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []), timestamp, current.id, version);
+      `).run(
+        status,
+        sortOrder,
+        ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []),
+        ...(reviewArtifact === undefined
+          ? []
+          : [reviewArtifact === null ? null : JSON.stringify(reviewArtifact)]),
+        timestamp,
+        current.id,
+        version,
+      );
       if (result.changes !== 1) {
         this.#throwMissingOrConflict(id, version);
       }
       this.#recordTaskActivity(
         current.id,
         actor,
-        taskFieldChanges(current, { status }),
+        taskFieldChanges(current, {
+          status,
+          ...(reviewArtifact === undefined ? {} : { reviewArtifact: targetReviewArtifact }),
+        }),
         timestamp,
       );
       this.database.exec("COMMIT");
@@ -2295,6 +2361,16 @@ export class TaskboardDatabase {
       throw error;
     }
     return this.#announceStatusChange(this.getTask(current.id), current.status);
+  }
+
+  #requireReviewArtifact(status, reviewRequired, reviewArtifact) {
+    if (requiresReviewArtifact(status, reviewRequired) && reviewArtifact == null) {
+      throw new ApiError(
+        409,
+        "REVIEW_ARTIFACT_REQUIRED",
+        "A task with a development context requires a review artifact before entering in_review",
+      );
+    }
   }
 
   archiveTask(id, version, threadId, threadBinding, actor) {

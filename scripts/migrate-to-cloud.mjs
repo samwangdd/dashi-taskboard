@@ -17,7 +17,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { DEFAULT_LABEL_NAMES } from "../shared/domain.mjs";
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const WRANGLER_D1_STATEMENT_MAX_BYTES = 90_000;
 const PROJECT_README_D1_CHUNK_CHARACTERS = 10_000;
 const TABLE_ORDER = [
@@ -367,8 +367,8 @@ const CLOUD_COLUMNS = {
     "thread_codex_host_id", "thread_workspace_path", "creator_type", "creator_id", "creator_name",
     "creator_avatar_url", "assignee_type", "assignee_id", "assignee_name",
     "assignee_avatar_url", "development_context_type", "development_branch",
-    "due_date", "recurrence_interval", "recurrence_unit", "archived_at", "version",
-    "created_at", "updated_at",
+    "review_required", "review_artifact", "due_date", "recurrence_interval", "recurrence_unit",
+    "archived_at", "version", "created_at", "updated_at",
   ],
   comments: [
     "id", "task_id", "body", "thread_id", "thread_codex_project_id",
@@ -393,6 +393,8 @@ function cloudTaskRow(task) {
         ? "branch"
         : null,
     development_branch: isWorktree ? task.worktree_branch : task.git_branch,
+    review_required: task.review_required ?? (isWorktree || task.git_branch != null ? 1 : 0),
+    review_artifact: task.review_artifact ?? null,
   };
 }
 

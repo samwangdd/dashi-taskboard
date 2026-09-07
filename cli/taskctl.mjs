@@ -53,6 +53,11 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "review-provider",
+      "review-url",
+      "review-remote-sha",
+      "review-source-branch",
+      "review-target-branch",
       "start-date",
       "due-date",
       "recurrence-interval",
@@ -74,6 +79,11 @@ const COMMAND_OPTIONS = new Map([
       "git-branch",
       "worktree-path",
       "worktree-branch",
+      "review-provider",
+      "review-url",
+      "review-remote-sha",
+      "review-source-branch",
+      "review-target-branch",
       "start-date",
       "due-date",
       "recurrence-interval",
@@ -91,6 +101,11 @@ const COMMAND_OPTIONS = new Map([
     "binding-codex-host-id",
     "binding-workspace-path",
     "clear-binding-thread",
+    "review-provider",
+    "review-url",
+    "review-remote-sha",
+    "review-source-branch",
+    "review-target-branch",
     "if-version",
     "json",
   ])],
@@ -160,6 +175,8 @@ Actions:
     [--status STATUS] [--priority PRIORITY] [--labels a,b]
     [--thread-id ID]
     [--git-branch BRANCH | --worktree-path PATH [--worktree-branch BRANCH]]
+    [--review-provider github|gitlab --review-url URL --review-remote-sha SHA
+     --review-source-branch BRANCH --review-target-branch BRANCH]
     [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD]
     [--recurrence-interval N --recurrence-unit day|week|month|year] [--json]
   update ISSUE_ID
@@ -168,10 +185,14 @@ Actions:
     [--status STATUS] [--priority PRIORITY] [--labels a,b]
     [--thread-id ID]
     [--git-branch BRANCH | --worktree-path PATH [--worktree-branch BRANCH]]
+    [--review-provider github|gitlab --review-url URL --review-remote-sha SHA
+     --review-source-branch BRANCH --review-target-branch BRANCH]
     [--start-date YYYY-MM-DD] [--due-date YYYY-MM-DD]
     [--recurrence-interval N --recurrence-unit day|week|month|year]
     [--if-version N] [--json]
   move ISSUE_ID --status STATUS [--thread-id ID]
+    [--review-provider github|gitlab --review-url URL --review-remote-sha SHA
+     --review-source-branch BRANCH --review-target-branch BRANCH]
     [--binding-thread-id ID
       [--binding-codex-project-id ID --binding-codex-project-kind local|remote
        --binding-codex-host-id ID --binding-workspace-path PATH]
@@ -882,6 +903,7 @@ async function createIssue(api, options, overrides) {
   assertPriority(priority);
 
   const developmentContext = developmentContextFromOptions(options, overrides);
+  const reviewArtifact = reviewArtifactFromOptions(options);
   const recurrence = recurrenceFromOptions(options);
   const threadId = resolveThreadId(options, overrides);
   return api.request("POST", "/api/tasks", {
@@ -893,6 +915,7 @@ async function createIssue(api, options, overrides) {
     labels: parseLabels(options.labels),
     threadId,
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("reviewArtifact", reviewArtifact),
     ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
@@ -904,6 +927,7 @@ async function updateIssue(api, taskId, options, overrides) {
   if (options.priority !== undefined) assertPriority(options.priority);
 
   const developmentContext = developmentContextFromOptions(options, overrides);
+  const reviewArtifact = reviewArtifactFromOptions(options);
   const recurrence = recurrenceFromOptions(options);
   const threadId = resolveThreadId(options, overrides);
   const patch = {
@@ -913,6 +937,7 @@ async function updateIssue(api, taskId, options, overrides) {
     ...optionalField("priority", options.priority),
     ...optionalField("labels", options.labels === undefined ? undefined : parseLabels(options.labels)),
     ...optionalField("developmentContext", developmentContext),
+    ...optionalField("reviewArtifact", reviewArtifact),
     ...optionalField("startDate", options["start-date"]),
     ...optionalField("dueDate", options["due-date"]),
     ...optionalField("recurrence", recurrence),
@@ -934,12 +959,37 @@ async function moveIssue(api, taskId, options, overrides) {
   assertStatus(status);
   const threadId = resolveThreadId(options, overrides);
   const threadBinding = threadBindingFromOptions(options);
+  const reviewArtifact = reviewArtifactFromOptions(options);
   return api.request("POST", `${taskPath(taskId)}/move`, {
     status,
     threadId,
     ...optionalField("threadBinding", threadBinding),
+    ...optionalField("reviewArtifact", reviewArtifact),
     version: await resolveVersion(api, taskId, options["if-version"]),
   });
+}
+
+function reviewArtifactFromOptions(options) {
+  const fields = [
+    options["review-provider"],
+    options["review-url"],
+    options["review-remote-sha"],
+    options["review-source-branch"],
+    options["review-target-branch"],
+  ];
+  if (fields.every((field) => field === undefined)) return undefined;
+  if (fields.some((field) => field === undefined)) {
+    throw usageError(
+      "Review artifact requires provider, URL, remote SHA, source branch, and target branch",
+    );
+  }
+  return {
+    provider: options["review-provider"].trim(),
+    url: options["review-url"].trim(),
+    remoteSha: options["review-remote-sha"].trim(),
+    sourceBranch: options["review-source-branch"].trim(),
+    targetBranch: options["review-target-branch"].trim(),
+  };
 }
 
 function threadBindingFromOptions(options) {

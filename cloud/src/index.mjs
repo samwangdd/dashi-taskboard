@@ -1,6 +1,11 @@
 import { DurableObject } from "cloudflare:workers";
 
 import { DEFAULT_LABEL_NAMES } from "../../shared/domain.mjs";
+import {
+  ReviewArtifactValidationError,
+  normalizeReviewArtifact,
+  requiresReviewArtifact,
+} from "../../shared/review-artifact.mjs";
 
 const JSON_BODY_LIMIT = 1024 * 1024;
 const PROJECT_README_BODY_LIMIT = 3 * 1024 * 1024;
@@ -897,6 +902,8 @@ function taskFromRow(row) {
       avatarUrl: row.assignee_avatar_url,
     },
     developmentContext: developmentContextFromRow(row),
+    reviewRequired: row.review_required === 1,
+    reviewArtifact: row.review_artifact == null ? null : JSON.parse(row.review_artifact),
     startDate: row.start_date,
     dueDate: row.due_date,
     recurrence: row.recurrence_interval && row.recurrence_unit
@@ -1318,6 +1325,7 @@ function parseTaskCreate(body) {
     "threadBinding",
     "assigneeTarget",
     "developmentContext",
+    "reviewArtifact",
     "startDate",
     "dueDate",
     "recurrence",
@@ -1334,6 +1342,7 @@ function parseTaskCreate(body) {
     threadBinding: parseThreadBinding(body.threadBinding),
     assigneeTarget: parseAssigneeTarget(body.assigneeTarget),
     developmentContext: parseDevelopmentContext(body.developmentContext ?? null),
+    reviewArtifact: parseReviewArtifact(body.reviewArtifact ?? null),
     startDate: parseDueDate(body.startDate ?? null, "startDate"),
     dueDate: parseDueDate(body.dueDate ?? null),
     recurrence: parseRecurrence(body.recurrence ?? null),
@@ -1358,6 +1367,7 @@ function parseTaskPatch(body) {
     "threadBinding",
     "assigneeTarget",
     "developmentContext",
+    "reviewArtifact",
     "startDate",
     "dueDate",
     "recurrence",
@@ -1375,6 +1385,9 @@ function parseTaskPatch(body) {
   if (body.labels !== undefined) changes.labels = parseLabels(body.labels);
   if (body.developmentContext !== undefined) {
     changes.developmentContext = parseDevelopmentContext(body.developmentContext);
+  }
+  if (body.reviewArtifact !== undefined) {
+    changes.reviewArtifact = parseReviewArtifact(body.reviewArtifact);
   }
   if (body.startDate !== undefined) changes.startDate = parseDueDate(body.startDate, "startDate");
   if (body.dueDate !== undefined) changes.dueDate = parseDueDate(body.dueDate);
@@ -1394,14 +1407,40 @@ function parseTaskPatch(body) {
 
 function parseMove(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "status", "sortOrder", "threadId", "threadBinding"]));
+  assertAllowedKeys(body, new Set([
+    "version", "status", "sortOrder", "threadId", "threadBinding", "reviewArtifact",
+  ]));
   return {
     version: parseVersion(body.version),
     status: parseStatus(body.status),
     sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
+    reviewArtifact: body.reviewArtifact === undefined
+      ? undefined
+      : parseReviewArtifact(body.reviewArtifact),
   };
+}
+
+function parseReviewArtifact(value) {
+  try {
+    return normalizeReviewArtifact(value);
+  } catch (error) {
+    if (error instanceof ReviewArtifactValidationError) {
+      throw new ApiError(400, "INVALID_FIELD", error.message);
+    }
+    throw error;
+  }
+}
+
+function assertReviewArtifactGate(status, reviewRequired, reviewArtifact) {
+  if (requiresReviewArtifact(status, reviewRequired) && reviewArtifact == null) {
+    throw new ApiError(
+      409,
+      "REVIEW_ARTIFACT_REQUIRED",
+      "A task with a development context requires a review artifact before entering in_review",
+    );
+  }
 }
 
 function parseVersionMutation(body) {
@@ -1722,6 +1761,8 @@ async function listTasks(env, filters) {
 }
 
 async function createTask(env, input, actor) {
+  const reviewRequired = input.developmentContext !== null;
+  assertReviewArtifactGate(input.status, reviewRequired, input.reviewArtifact);
   const project = await env.DB.prepare(`
     SELECT
       projects.id,
@@ -1761,7 +1802,7 @@ async function createTask(env, input, actor) {
         thread_codex_host_id, thread_workspace_path, thread_agent_kind,
         creator_type, creator_id, creator_name, creator_avatar_url, creator_agent_kind,
         assignee_type, assignee_id, assignee_name, assignee_avatar_url,
-        development_context_type, development_branch,
+        development_context_type, development_branch, review_required, review_artifact,
         start_date, due_date, recurrence_interval, recurrence_unit,
         archived_at, version, created_at, updated_at
       )
@@ -1780,7 +1821,7 @@ async function createTask(env, input, actor) {
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
-        ?, ?,
+        ?, ?, ?, ?,
         ?, ?, ?, ?,
         NULL, 1, ?, ?
       FROM projects
@@ -1809,6 +1850,8 @@ async function createTask(env, input, actor) {
       assignee.avatarUrl,
       input.developmentContext?.type ?? null,
       input.developmentContext?.branch ?? null,
+      reviewRequired ? 1 : 0,
+      input.reviewArtifact == null ? null : JSON.stringify(input.reviewArtifact),
       input.startDate,
       input.dueDate,
       input.recurrence?.interval ?? null,
@@ -1874,6 +1917,18 @@ async function updateTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
   const currentTask = taskFromRow(current);
+  const targetStatus = Object.hasOwn(input.changes, "status")
+    ? input.changes.status
+    : currentTask.status;
+  const targetDevelopmentContext = Object.hasOwn(input.changes, "developmentContext")
+    ? input.changes.developmentContext
+    : currentTask.developmentContext;
+  // 一旦绑定过开发上下文，这个议题就是仓库交付；清空上下文不能解除评审门禁。
+  const targetReviewRequired = currentTask.reviewRequired || targetDevelopmentContext !== null;
+  const targetReviewArtifact = Object.hasOwn(input.changes, "reviewArtifact")
+    ? input.changes.reviewArtifact
+    : currentTask.reviewArtifact;
+  assertReviewArtifactGate(targetStatus, targetReviewRequired, targetReviewArtifact);
   const targetProject = Object.hasOwn(input.changes, "projectId")
     ? await requireProject(env, input.changes.projectId)
     : null;
@@ -1910,6 +1965,9 @@ async function updateTask(env, id, input, actor) {
 
   const assignments = [];
   const values = [];
+  if (targetReviewRequired !== currentTask.reviewRequired) {
+    assignments.push("review_required = 1");
+  }
   const columns = {
     projectId: "project_id",
     title: "title",
@@ -1924,6 +1982,9 @@ async function updateTask(env, id, input, actor) {
     if (key === "developmentContext") {
       assignments.push("development_context_type = ?", "development_branch = ?");
       values.push(value?.type ?? null, value?.branch ?? null);
+    } else if (key === "reviewArtifact") {
+      assignments.push("review_artifact = ?");
+      values.push(value === null ? null : JSON.stringify(value));
     } else if (key === "recurrence") {
       assignments.push("recurrence_interval = ?", "recurrence_unit = ?");
       values.push(value?.interval ?? null, value?.unit ?? null);
@@ -2091,6 +2152,11 @@ async function updateTask(env, id, input, actor) {
 async function moveTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
+  const currentTask = taskFromRow(current);
+  const targetReviewArtifact = input.reviewArtifact === undefined
+    ? currentTask.reviewArtifact
+    : input.reviewArtifact;
+  assertReviewArtifactGate(input.status, currentTask.reviewRequired, targetReviewArtifact);
   if (current.archived_at !== null) {
     throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
   }
@@ -2116,12 +2182,16 @@ async function moveTask(env, id, input, actor) {
     ? `thread_id = ?, thread_codex_project_id = ?, thread_codex_project_kind = ?,
       thread_codex_host_id = ?, thread_workspace_path = ?, thread_agent_kind = ?,`
     : "";
+  const reviewArtifactAssignment = input.reviewArtifact === undefined
+    ? ""
+    : "review_artifact = ?,";
   const statements = [env.DB.prepare(`
     UPDATE tasks
     SET
       status = ?,
       sort_order = ?,
       ${threadAssignment}
+      ${reviewArtifactAssignment}
       version = version + 1,
       updated_at = ?
     WHERE id = ? AND version = ?
@@ -2129,11 +2199,19 @@ async function moveTask(env, id, input, actor) {
     input.status,
     sortOrder,
     ...(storedBinding ? [...storedBinding, storedThreadAgentKind(storedBinding, actor)] : []),
+    ...(input.reviewArtifact === undefined
+      ? []
+      : [input.reviewArtifact === null ? null : JSON.stringify(input.reviewArtifact)]),
     timestamp,
     current.id,
     input.version,
   )];
-  const activityChanges = taskFieldChanges(taskFromRow(current), { status: input.status });
+  const activityChanges = taskFieldChanges(currentTask, {
+    status: input.status,
+    ...(input.reviewArtifact === undefined
+      ? {}
+      : { reviewArtifact: targetReviewArtifact }),
+  });
   if (activityChanges.length > 0) {
     statements.push(taskActivityStatement(
       env,
