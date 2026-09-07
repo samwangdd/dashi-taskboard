@@ -480,7 +480,7 @@ test("migration snapshots live WAL data, counts each project, and strips local e
     attachmentsDirectory: fixture.attachmentsDirectory,
   });
 
-  assert.equal(bundle.schemaVersion, 2);
+  assert.equal(bundle.schemaVersion, 3);
   assert.deepEqual(bundle.counts.byProject, expectedProjectCounts());
   assert.deepEqual(
     bundle.tables.projects.map((project) => project.id).sort(),
@@ -729,6 +729,12 @@ test("real D1 batch atomically imports a bundle containing local and maps develo
     UPDATE projects SET id = 'local' WHERE id = 'alpha';
     UPDATE tasks SET project_id = 'local' WHERE project_id = 'alpha';
     PRAGMA foreign_keys = ON;
+    ALTER TABLE tasks ADD COLUMN review_required INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE tasks ADD COLUMN review_artifact TEXT;
+    UPDATE tasks
+    SET review_required = 1,
+        review_artifact = '{"provider":"github","url":"https://github.com/acme/taskboard/pull/21","remoteSha":"0123456789abcdef0123456789abcdef01234567","sourceBranch":"features/DAS-21-review-artifact-gate","targetBranch":"main"}'
+    WHERE id = 'task-a1';
   `);
   const bundle = await createCloudMigrationBundle({
     databasePath: fixture.databasePath,
@@ -783,13 +789,15 @@ test("real D1 batch atomically imports a bundle containing local and maps develo
     );
     assert.deepEqual(
       await cloud.db.prepare(`
-        SELECT development_context_type, development_branch
+        SELECT development_context_type, development_branch, review_required, review_artifact
         FROM tasks
         WHERE id = 'task-a1'
       `).first(),
       {
         development_context_type: "worktree",
         development_branch: "feature/cloud-share",
+        review_required: 1,
+        review_artifact: '{"provider":"github","url":"https://github.com/acme/taskboard/pull/21","remoteSha":"0123456789abcdef0123456789abcdef01234567","sourceBranch":"features/DAS-21-review-artifact-gate","targetBranch":"main"}',
       },
     );
     assert.deepEqual(

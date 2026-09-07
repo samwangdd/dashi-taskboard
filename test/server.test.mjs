@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import os from "node:os";
@@ -13,6 +13,7 @@ import {
   resolveServerOptions,
   runAgentHarnessCommand,
 } from "../server/index.mjs";
+import { TaskboardDatabase } from "../server/database.mjs";
 import { buildTaskboardAutomationPrompt } from "../shared/taskboard-automation.mjs";
 
 const runningApps = [];
@@ -537,6 +538,67 @@ test("existing task and comment thread attribution remains content-specific", as
   assert.equal(commentForeignKeys.some((foreignKey) => foreignKey.table === "tasks"), true);
 });
 
+test("legacy development tasks are migrated into the review artifact gate", async () => {
+  const baseUrl = await startServer(async (directory) => {
+    const databasePath = path.join(directory, "taskboard.sqlite");
+    const database = new DatabaseSync(databasePath);
+    database.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        workspace_path TEXT,
+        labels TEXT NOT NULL DEFAULT '[]',
+        next_task_number INTEGER NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      CREATE TABLE tasks (
+        id TEXT PRIMARY KEY,
+        identifier TEXT NOT NULL UNIQUE,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        title TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL CHECK (status IN ('backlog', 'todo', 'in_progress', 'in_review', 'blocked', 'done', 'canceled')),
+        priority TEXT NOT NULL,
+        labels TEXT NOT NULL DEFAULT '[]',
+        sort_order REAL NOT NULL,
+        git_branch TEXT,
+        worktree_path TEXT,
+        worktree_branch TEXT,
+        review_required INTEGER NOT NULL DEFAULT 0,
+        review_artifact TEXT,
+        archived_at TEXT,
+        version INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+      INSERT INTO projects VALUES (
+        'local', 'Local', NULL, '[]', 2,
+        '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z'
+      );
+      INSERT INTO tasks VALUES (
+        'legacy-review-task', 'LOCAL-1', 'local', 'Legacy review task', '',
+        'in_progress', 'none', '[]', 1000, 'features/legacy-review', NULL, NULL,
+        0, NULL, NULL, 1, '2026-09-07T00:00:00.000Z', '2026-09-07T00:00:00.000Z'
+      );
+    `);
+    database.close();
+    return { databasePath };
+  });
+
+  const taskResult = await request(baseUrl, "/api/tasks/legacy-review-task");
+  assert.equal(taskResult.response.status, 200);
+  assert.equal(taskResult.body.task.reviewRequired, true);
+  assert.equal(taskResult.body.task.reviewArtifact, null);
+
+  const rejected = await request(baseUrl, "/api/tasks/legacy-review-task/move", {
+    method: "POST",
+    body: { version: taskResult.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejected.response.status, 409);
+  assert.equal(rejected.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+});
+
 test("task thread migration excludes comment-only aggregate entries", async () => {
   const baseUrl = await startServer(async (directory) => {
     const databasePath = path.join(directory, "taskboard.sqlite");
@@ -1015,6 +1077,271 @@ test("moving a task updates its status and sort order", async () => {
   assert.equal(moveResult.body.task.sortOrder, 2500.5);
   assert.equal(moveResult.body.task.threadId, "thread-move");
   assert.equal(moveResult.body.task.version, 2);
+});
+
+test("review artifact gates development tasks entering in_review", async () => {
+  const baseUrl = await startServer();
+  const createResult = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Publish before review",
+      status: "in_progress",
+      developmentContext: { type: "branch", branch: "features/DAS-21" },
+    },
+  });
+  const task = createResult.body.task;
+
+  const rejected = await request(baseUrl, `/api/tasks/${task.id}/move`, {
+    method: "POST",
+    body: { version: task.version, status: "in_review" },
+  });
+  assert.equal(rejected.response.status, 409);
+  assert.equal(rejected.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const unchanged = await request(baseUrl, `/api/tasks/${task.id}`);
+  assert.equal(unchanged.body.task.status, "in_progress");
+  assert.equal(unchanged.body.task.version, task.version);
+  assert.equal(unchanged.body.task.reviewArtifact, null);
+
+  const reviewArtifact = {
+    provider: "github",
+    url: "https://github.com/example/taskboard/pull/21",
+    remoteSha: "0123456789abcdef0123456789abcdef01234567",
+    sourceBranch: "features/DAS-21",
+    targetBranch: "main",
+  };
+  const accepted = await request(baseUrl, `/api/tasks/${task.id}/move`, {
+    method: "POST",
+    body: { version: task.version, status: "in_review", reviewArtifact },
+  });
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.body.task.status, "in_review");
+  assert.equal(accepted.body.task.version, task.version + 1);
+  assert.deepEqual(accepted.body.task.reviewArtifact, reviewArtifact);
+});
+
+test("review artifact gate runs before Jira transition side effects", async () => {
+  const transitionRequests = [];
+  const taskId = "jira-review-gate";
+  const jiraApplicationId = "jira-review-gate-origin";
+  const originId = createHash("sha256").update(jiraApplicationId).digest("hex");
+  const jiraConfig = {
+    version: 2,
+    baseUrl: "https://jira.example.test",
+    username: "alice",
+    password: "secret",
+    originId,
+    displayName: "Alice",
+    projects: [],
+  };
+  const baseUrl = await startServer(async (directory) => {
+    const databasePath = path.join(directory, "taskboard.sqlite");
+    const database = new TaskboardDatabase(databasePath);
+    const actor = { type: "user", id: "alice", name: "Alice", avatarUrl: null };
+    database.syncJiraTasks([{
+      id: taskId,
+      identifier: `JIRA:${originId.toUpperCase()}:21`,
+      title: "Jira review gate",
+      description: "",
+      status: "in_progress",
+      priority: "none",
+      labels: [],
+      sortOrder: 1_000,
+      creator: actor,
+      assignee: actor,
+      dueDate: null,
+      externalOrigin: originId,
+      externalId: "21",
+      externalKey: "DAS-21",
+      externalUrl: "https://jira.example.test/browse/DAS-21",
+      createdAt: "2026-09-07T00:00:00.000Z",
+      updatedAt: "2026-09-07T00:00:00.000Z",
+    }], { projectName: "Jira · Alice" });
+    const task = database.getTask(taskId);
+    database.updateTask(
+      taskId,
+      task.version,
+      { developmentContext: { type: "branch", branch: "features/DAS-21" } },
+      undefined,
+      undefined,
+      actor,
+    );
+    database.close();
+    return {
+      databasePath,
+      jiraConfigStore: { read: async () => jiraConfig },
+      jiraFetch: async (url, init = {}) => {
+        const requestUrl = new URL(url);
+        if (requestUrl.pathname === "/rest/applinks/1.0/manifest") {
+          return Response.json({ id: jiraApplicationId });
+        }
+        if (requestUrl.pathname.endsWith("/transitions") && init.method === "POST") {
+          transitionRequests.push({ url, method: init.method });
+          return new Response(null, { status: 204 });
+        }
+        if (requestUrl.pathname.endsWith("/transitions")) {
+          return Response.json({
+            transitions: [{
+              id: "31",
+              name: "Review",
+              to: { name: "Review", statusCategory: { key: "indeterminate" } },
+            }],
+          });
+        }
+        if (requestUrl.pathname === "/rest/api/2/search") {
+          return Response.json({
+            total: 1,
+            issues: [{
+              id: "21",
+              key: "DAS-21",
+              fields: {
+                summary: "Jira review gate",
+                description: "",
+                status: { name: "Review", statusCategory: { key: "indeterminate" } },
+                priority: null,
+                labels: [],
+                duedate: null,
+                assignee: { key: "alice", displayName: "Alice" },
+                reporter: { key: "alice", displayName: "Alice" },
+                created: "2026-09-07T00:00:00.000Z",
+                updated: "2026-09-07T01:00:00.000Z",
+              },
+            }],
+          });
+        }
+        throw new Error(`Unexpected Jira request: ${init.method ?? "GET"} ${requestUrl.pathname}`);
+      },
+    };
+  });
+
+  const current = await request(baseUrl, `/api/tasks/${taskId}`);
+  const rejectedPatch = await request(baseUrl, `/api/tasks/${taskId}`, {
+    method: "PATCH",
+    body: { version: current.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejectedPatch.response.status, 409);
+  assert.equal(rejectedPatch.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+  assert.deepEqual(transitionRequests, []);
+
+  const rejectedMove = await request(baseUrl, `/api/tasks/${taskId}/move`, {
+    method: "POST",
+    body: { version: current.body.task.version, status: "in_review" },
+  });
+
+  assert.equal(rejectedMove.response.status, 409);
+  assert.equal(rejectedMove.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+  assert.deepEqual(transitionRequests, []);
+
+  const synced = await request(baseUrl, "/api/local/jira-connection/sync", { method: "POST" });
+  assert.equal(synced.response.status, 200);
+  const afterSync = await request(baseUrl, `/api/tasks/${taskId}`);
+  assert.equal(afterSync.body.task.status, "in_progress");
+  assert.equal(afterSync.body.task.reviewRequired, true);
+  assert.equal(afterSync.body.task.reviewArtifact, null);
+});
+
+test("review artifact gate covers create and patch without blocking non-development review", async () => {
+  const baseUrl = await startServer();
+  const developmentContext = { type: "branch", branch: "features/DAS-21" };
+  const reviewArtifact = {
+    provider: "github",
+    url: "https://github.com/example/taskboard/pull/21",
+    remoteSha: "0123456789abcdef0123456789abcdef01234567",
+    sourceBranch: "features/DAS-21",
+    targetBranch: "main",
+  };
+
+  const rejectedCreate = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Create bypass", status: "in_review", developmentContext },
+  });
+  assert.equal(rejectedCreate.response.status, 409);
+  assert.equal(rejectedCreate.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const invalidArtifact = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Invalid review artifact",
+      status: "in_review",
+      developmentContext,
+      reviewArtifact: { ...reviewArtifact, url: "http://github.com/example/taskboard/pull/21" },
+    },
+  });
+  assert.equal(invalidArtifact.response.status, 400);
+  assert.equal(invalidArtifact.body.error.code, "INVALID_FIELD");
+
+  const acceptedCreate = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Atomic create",
+      status: "in_review",
+      developmentContext,
+      reviewArtifact,
+    },
+  });
+  assert.equal(acceptedCreate.response.status, 201);
+  assert.equal(acceptedCreate.body.task.status, "in_review");
+  assert.deepEqual(acceptedCreate.body.task.reviewArtifact, reviewArtifact);
+
+  const unboundCreate = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Research review", status: "in_review" },
+  });
+  assert.equal(unboundCreate.response.status, 201);
+  assert.equal(unboundCreate.body.task.reviewArtifact, null);
+
+  const boundCreate = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: { title: "Patch bypass", status: "in_progress", developmentContext },
+  });
+  const task = boundCreate.body.task;
+  const rejectedPatch = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "PATCH",
+    body: { version: task.version, status: "in_review" },
+  });
+  assert.equal(rejectedPatch.response.status, 409);
+  assert.equal(rejectedPatch.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const unchanged = await request(baseUrl, `/api/tasks/${task.id}`);
+  assert.equal(unchanged.body.task.status, "in_progress");
+  assert.equal(unchanged.body.task.version, task.version);
+
+  const acceptedPatch = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "PATCH",
+    body: { version: task.version, status: "in_review", reviewArtifact },
+  });
+  assert.equal(acceptedPatch.response.status, 200);
+  assert.equal(acceptedPatch.body.task.status, "in_review");
+  assert.deepEqual(acceptedPatch.body.task.reviewArtifact, reviewArtifact);
+});
+
+test("clearing development context cannot downgrade the review artifact gate", async () => {
+  const baseUrl = await startServer();
+  const createResult = await request(baseUrl, "/api/tasks", {
+    method: "POST",
+    body: {
+      title: "Cannot downgrade review",
+      status: "in_progress",
+      developmentContext: { type: "branch", branch: "features/DAS-21" },
+    },
+  });
+  const task = createResult.body.task;
+  assert.equal(task.reviewRequired, true);
+
+  const cleared = await request(baseUrl, `/api/tasks/${task.id}`, {
+    method: "PATCH",
+    body: { version: task.version, developmentContext: null },
+  });
+  assert.equal(cleared.response.status, 200);
+  assert.equal(cleared.body.task.developmentContext, null);
+  assert.equal(cleared.body.task.reviewRequired, true);
+
+  const rejected = await request(baseUrl, `/api/tasks/${task.id}/move`, {
+    method: "POST",
+    body: { version: cleared.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejected.response.status, 409);
+  assert.equal(rejected.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
 });
 
 test("remote task bindings keep their own identity and can be cleared independently", async () => {

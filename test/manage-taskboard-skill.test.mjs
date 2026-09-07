@@ -41,8 +41,10 @@ test("the taskboard skill coordinates safe issue execution and review handoff", 
 
   assert.match(
     skillSource,
-    /Verify the requested operation path[\s\S]*Add a comment with the changes, verification result, outcome, and remaining risks[\s\S]*Read the issue again, then move it to `in_review` with its current `version`/i,
+    /If `issue get` returns `reviewRequired: true`[\s\S]*push the issue branch[\s\S]*create or reuse its PR\/MR[\s\S]*read back the remote SHA, PR\/MR URL, source branch, and target branch[\s\S]*Local commits, tests, or local review cannot substitute for this published artifact/i,
   );
+  assert.match(skillSource, /If publication is not authorized or cannot complete, keep the issue `in_progress`/i);
+  assert.match(skillSource, /pass all five `--review-\*` fields on the versioned move to `in_review`/i);
 });
 
 test("the taskboard skill requires complete thread bindings for claimed work", () => {
@@ -68,6 +70,12 @@ test("the taskboard skill requires complete thread bindings for claimed work", (
   assert.match(cliReference, /--binding-codex-project-kind local\|remote/i);
   assert.match(cliReference, /--binding-codex-host-id HOST_ID/i);
   assert.match(cliReference, /--binding-workspace-path PATH/i);
+  assert.match(cliReference, /--review-provider github\|gitlab/i);
+  assert.match(cliReference, /--review-url URL/i);
+  assert.match(cliReference, /--review-remote-sha SHA/i);
+  assert.match(cliReference, /--review-source-branch BRANCH/i);
+  assert.match(cliReference, /--review-target-branch BRANCH/i);
+  assert.match(cliReference, /All five review artifact options are required together/i);
   assert.match(
     cliReference,
     /`--thread-id` records the conversation performing the mutation; it does not create a complete task binding/i,

@@ -414,6 +414,82 @@ test("issue move fetches the current version when --if-version is omitted", asyn
   });
 });
 
+test("issue move sends a complete review artifact and rejects partial evidence", async () => {
+  let requestBody;
+  const result = await run([
+    "issue", "move", "DAS-21",
+    "--status", "in_review",
+    "--review-provider", "github",
+    "--review-url", "https://github.com/example/taskboard/pull/21",
+    "--review-remote-sha", "0123456789abcdef0123456789abcdef01234567",
+    "--review-source-branch", "features/DAS-21",
+    "--review-target-branch", "main",
+    "--if-version", "3",
+  ], async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return response({ task: { id: "DAS-21", status: "in_review", version: 4 } });
+  });
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody.reviewArtifact, {
+    provider: "github",
+    url: "https://github.com/example/taskboard/pull/21",
+    remoteSha: "0123456789abcdef0123456789abcdef01234567",
+    sourceBranch: "features/DAS-21",
+    targetBranch: "main",
+  });
+
+  let called = false;
+  const partial = await run([
+    "issue", "move", "DAS-21",
+    "--status", "in_review",
+    "--review-provider", "github",
+    "--review-url", "https://github.com/example/taskboard/pull/21",
+    "--if-version", "3",
+  ], async () => {
+    called = true;
+    return response({});
+  });
+  assert.equal(partial.exitCode, 2);
+  assert.equal(called, false);
+  assert.match(partial.stderr.error.message, /Review artifact requires provider, URL, remote SHA, source branch, and target branch/);
+});
+
+test("issue create and update forward complete review artifacts", async () => {
+  const reviewArgs = [
+    "--review-provider", "gitlab",
+    "--review-url", "https://gitlab.example.test/team/taskboard/-/merge_requests/21",
+    "--review-remote-sha", "0123456789abcdef0123456789abcdef01234567",
+    "--review-source-branch", "features/DAS-21",
+    "--review-target-branch", "main",
+  ];
+  const bodies = [];
+  const fetch = async (_url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return response({ task: { id: "DAS-21", version: 4 } });
+  };
+
+  const created = await run([
+    "issue", "create", "--project", "local", "--title", "Atomic create",
+    "--status", "in_review", ...reviewArgs,
+  ], fetch);
+  assert.equal(created.exitCode, 0);
+
+  const updated = await run([
+    "issue", "update", "DAS-21", "--status", "in_review", ...reviewArgs, "--if-version", "3",
+  ], fetch);
+  assert.equal(updated.exitCode, 0);
+
+  for (const body of bodies) {
+    assert.deepEqual(body.reviewArtifact, {
+      provider: "gitlab",
+      url: "https://gitlab.example.test/team/taskboard/-/merge_requests/21",
+      remoteSha: "0123456789abcdef0123456789abcdef01234567",
+      sourceBranch: "features/DAS-21",
+      targetBranch: "main",
+    });
+  }
+});
+
 test("issue move separates controller attribution from the task thread binding", async () => {
   let requestBody;
   const windowsWorkspacePath = String.raw`C:\Users\admin\Documents\dashi-taskboard`;

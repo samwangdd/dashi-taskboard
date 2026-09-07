@@ -732,6 +732,131 @@ test("task lifecycle keeps optimistic versions and never persists a worktree pat
   assert.equal(restored.body.task.archivedAt, null);
 });
 
+test("cloud review artifact gate matches local create, patch, and move semantics", async () => {
+  await createProject("review-artifact-gate");
+  const developmentContext = { type: "branch", branch: "features/DAS-21" };
+  const reviewArtifact = {
+    provider: "github",
+    url: "https://github.com/example/taskboard/pull/21",
+    remoteSha: "0123456789abcdef0123456789abcdef01234567",
+    sourceBranch: "features/DAS-21",
+    targetBranch: "main",
+  };
+
+  const rejectedCreate = await createTask(
+    "review-artifact-gate",
+    "Create bypass",
+    alice,
+    { status: "in_review", developmentContext },
+  );
+  assert.equal(rejectedCreate.response.status, 409);
+  assert.equal(rejectedCreate.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const acceptedCreate = await createTask(
+    "review-artifact-gate",
+    "Atomic create",
+    alice,
+    { status: "in_review", developmentContext, reviewArtifact },
+  );
+  assert.equal(acceptedCreate.response.status, 201);
+  assert.equal(acceptedCreate.body.task.status, "in_review");
+  assert.deepEqual(acceptedCreate.body.task.reviewArtifact, reviewArtifact);
+
+  const created = await createTask(
+    "review-artifact-gate",
+    "Move bypass",
+    alice,
+    { status: "in_progress", developmentContext },
+  );
+  assert.equal(created.response.status, 201);
+  assert.equal(created.body.task.reviewRequired, true);
+
+  const rejectedMove = await cloud.request(`/api/tasks/${created.body.task.id}/move`, {
+    method: "POST",
+    actorName: alice,
+    json: { version: created.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejectedMove.response.status, 409);
+  assert.equal(rejectedMove.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const unchanged = await cloud.request(`/api/tasks/${created.body.task.id}`, {
+    actorName: alice,
+  });
+  assert.equal(unchanged.body.task.status, "in_progress");
+  assert.equal(unchanged.body.task.version, created.body.task.version);
+
+  const accepted = await cloud.request(`/api/tasks/${created.body.task.id}/move`, {
+    method: "POST",
+    actorName: alice,
+    json: {
+      version: created.body.task.version,
+      status: "in_review",
+      reviewArtifact,
+    },
+  });
+  assert.equal(accepted.response.status, 200);
+  assert.equal(accepted.body.task.status, "in_review");
+  assert.deepEqual(accepted.body.task.reviewArtifact, reviewArtifact);
+
+  const patchCandidate = await createTask(
+    "review-artifact-gate",
+    "Patch bypass",
+    alice,
+    { status: "in_progress", developmentContext },
+  );
+  const rejectedPatch = await cloud.request(`/api/tasks/${patchCandidate.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: { version: patchCandidate.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejectedPatch.response.status, 409);
+  assert.equal(rejectedPatch.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const acceptedPatch = await cloud.request(`/api/tasks/${patchCandidate.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: {
+      version: patchCandidate.body.task.version,
+      status: "in_review",
+      reviewArtifact,
+    },
+  });
+  assert.equal(acceptedPatch.response.status, 200);
+  assert.equal(acceptedPatch.body.task.status, "in_review");
+  assert.deepEqual(acceptedPatch.body.task.reviewArtifact, reviewArtifact);
+
+  const clearCandidate = await createTask(
+    "review-artifact-gate",
+    "Clear bypass",
+    alice,
+    { status: "in_progress", developmentContext },
+  );
+  const cleared = await cloud.request(`/api/tasks/${clearCandidate.body.task.id}`, {
+    method: "PATCH",
+    actorName: alice,
+    json: { version: clearCandidate.body.task.version, developmentContext: null },
+  });
+  assert.equal(cleared.response.status, 200);
+  assert.equal(cleared.body.task.reviewRequired, true);
+  const rejectedAfterClear = await cloud.request(`/api/tasks/${clearCandidate.body.task.id}/move`, {
+    method: "POST",
+    actorName: alice,
+    json: { version: cleared.body.task.version, status: "in_review" },
+  });
+  assert.equal(rejectedAfterClear.response.status, 409);
+  assert.equal(rejectedAfterClear.body.error.code, "REVIEW_ARTIFACT_REQUIRED");
+
+  const research = await createTask(
+    "review-artifact-gate",
+    "Research review",
+    alice,
+    { status: "in_review" },
+  );
+  assert.equal(research.response.status, 201);
+  assert.equal(research.body.task.reviewRequired, false);
+  assert.equal(research.body.task.reviewArtifact, null);
+});
+
 test("relation direction, deletion, and parent-cycle checks match the local contract", async () => {
   await createProject("relation-parity");
   const blocker = await createTask("relation-parity", "Blocker");

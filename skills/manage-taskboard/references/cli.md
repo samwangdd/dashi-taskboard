@@ -81,6 +81,11 @@ taskctl issue create \
   [--start-date YYYY-MM-DD] \
   [--due-date YYYY-MM-DD] \
   [--recurrence-interval N --recurrence-unit day|week|month|year] \
+  [--review-provider github|gitlab \
+   --review-url URL \
+   --review-remote-sha SHA \
+   --review-source-branch BRANCH \
+   --review-target-branch BRANCH] \
   [--json]
 ```
 
@@ -107,6 +112,11 @@ taskctl issue update ID \
   [--start-date YYYY-MM-DD] \
   [--due-date YYYY-MM-DD] \
   [--recurrence-interval N --recurrence-unit day|week|month|year] \
+  [--review-provider github|gitlab \
+   --review-url URL \
+   --review-remote-sha SHA \
+   --review-source-branch BRANCH \
+   --review-target-branch BRANCH] \
   [--if-version N] \
   [--json]
 
@@ -118,12 +128,19 @@ taskctl issue move ID --status STATUS \
      --binding-codex-host-id HOST_ID \
      --binding-workspace-path PATH] \
    | --clear-binding-thread] \
+  [--review-provider github|gitlab \
+   --review-url URL \
+   --review-remote-sha SHA \
+   --review-source-branch BRANCH \
+   --review-target-branch BRANCH] \
   [--if-version N] [--json]
 taskctl issue archive ID [--thread-id ID] [--if-version N] [--json]
 taskctl issue restore ID [--thread-id ID] [--if-version N] [--json]
 ```
 
 Use `issue move` to set `in_progress` before implementation and `in_review` after implementation and self-verification. Codex must not move work directly from `in_progress` to `done`; use `done` only after the user explicitly confirms acceptance or explicitly asks to mark the issue complete. Use `blocked` when work cannot continue and `canceled` when it will not continue. On a version conflict, fetch the issue again and reconcile before retrying.
+
+All five review artifact options are required together. They record the provider, HTTPS PR/MR URL, published remote commit SHA, source branch, and target branch. When issue JSON has `reviewRequired: true`, creating or moving it to `in_review` without this complete artifact returns `409 REVIEW_ARTIFACT_REQUIRED`. Read the values back from the remote provider before writing them; local `HEAD` alone is not evidence that the branch or PR/MR was published.
 
 `--thread-id` records the conversation performing the mutation; it does not create a complete task binding. `--binding-thread-id` can stand alone to preserve a legacy local binding. If any binding identity option is present, all four identity options are required. `--clear-binding-thread` conflicts with every `--binding-*` option. A conversation that claims or continues an issue must pass all five `--binding-*` options together. Reuse an existing complete binding exactly. For an unbound local issue launched with injected Taskboard context, use the current conversation id, injected project id and workspace path, `local` project kind, and `local` host id. Never leave an active issue with only a legacy local `threadId`. Use `--clear-binding-thread` only when the workflow explicitly requires an unbound issue.
 

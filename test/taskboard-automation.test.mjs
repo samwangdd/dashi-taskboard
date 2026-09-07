@@ -210,6 +210,24 @@ test("the remote automation prompt keeps taskctl local and delegates work to the
   assert.match(prompt, /移动到 in_review/);
 });
 
+test("local and remote automation publish review evidence before code issues enter in_review", () => {
+  for (const prompt of [
+    buildTaskboardAutomationPrompt(baseRequest),
+    buildTaskboardAutomationPrompt(remoteRequest),
+    buildTaskboardLoopPrompt({ ...baseRequest, promptKind: "delivery" }),
+  ]) {
+    assert.match(prompt, /reviewRequired=true/);
+    assert.match(prompt, /普通 push.*创建或复用 PR\/MR/);
+    assert.match(prompt, /不授权 force push、merge、release 或 done/);
+    assert.match(prompt, /回读.*remote SHA.*PR\/MR URL.*source branch.*target branch/);
+    assert.match(
+      prompt,
+      /--review-provider[\s\S]*--review-url[\s\S]*--review-remote-sha[\s\S]*--review-source-branch[\s\S]*--review-target-branch/,
+    );
+    assert.match(prompt, /任一证据缺失[\s\S]*保持 in_progress/);
+  }
+});
+
 test("HANDOFF_CARD_MARKER is the shared handoff card contract marker", () => {
   assert.equal(HANDOFF_CARD_MARKER, "<!-- handoff v1 -->");
 });
