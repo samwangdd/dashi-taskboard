@@ -179,6 +179,12 @@ export async function getJiraConnection(signal?: AbortSignal): Promise<JiraConne
   }
 }
 
+export async function getClaudeDesktopSession(cliSessionId: string): Promise<string> {
+  const query = new URLSearchParams({ cliSessionId });
+  const data = await request<{ sessionId: string }>(`/api/local/claude-desktop-session?${query}`);
+  return data.sessionId;
+}
+
 export async function configureJiraConnection(input: {
   baseUrl: string;
   username: string;

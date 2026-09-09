@@ -12,8 +12,8 @@ import {
 
 test("the embedded host resumes an existing Claude Desktop conversation", () => {
   assert.equal(
-    buildClaudeDesktopConversationUrl("claude-session-456"),
-    "claude://resume?session=claude-session-456",
+    buildClaudeDesktopConversationUrl("local_session-456"),
+    "claude://claude.ai/epitaxy/local_session-456",
   );
 });
 

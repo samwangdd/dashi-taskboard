@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
-import { access, chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -74,6 +74,40 @@ async function requestWithHost(baseUrl, host, headers = {}, pathname = "/health"
     outgoing.end();
   });
 }
+
+test("the local companion resolves a CLI transcript to its original Claude Desktop session", async () => {
+  const cliSessionId = "4e2d623c-7dc2-4c28-806e-ba7479cf4f03";
+  const originalSessionId = "local_1ebb0620-c212-4bdd-a623-4287ac9787d2";
+  const baseUrl = await startServer(async (directory) => {
+    const sessionsDirectory = path.join(directory, "claude-code-sessions");
+    const organizationDirectory = path.join(sessionsDirectory, "account", "organization");
+    await mkdir(organizationDirectory, { recursive: true });
+    await writeFile(path.join(organizationDirectory, `${originalSessionId}.json`), JSON.stringify({
+      sessionId: originalSessionId,
+      cliSessionId,
+      createdAt: 1,
+    }));
+    await writeFile(path.join(organizationDirectory, `local_${cliSessionId}.json`), JSON.stringify({
+      sessionId: `local_${cliSessionId}`,
+      cliSessionId,
+    }));
+    return { claudeSessionsDirectory: sessionsDirectory };
+  });
+
+  const resolved = await request(
+    baseUrl,
+    `/api/local/claude-desktop-session?cliSessionId=${cliSessionId}`,
+  );
+  assert.equal(resolved.response.status, 200);
+  assert.equal(resolved.body.sessionId, originalSessionId);
+
+  const missing = await request(
+    baseUrl,
+    "/api/local/claude-desktop-session?cliSessionId=00000000-0000-4000-8000-000000000000",
+  );
+  assert.equal(missing.response.status, 404);
+  assert.equal(missing.body.error.code, "CLAUDE_DESKTOP_SESSION_NOT_FOUND");
+});
 
 async function openEventStream(baseUrl, headers) {
   const target = new URL("/api/events", baseUrl);

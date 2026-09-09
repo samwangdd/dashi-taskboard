@@ -23,8 +23,8 @@ export function buildKiroOrcaArgs(request) {
 }
 
 export function buildClaudeDesktopConversationUrl(conversationId) {
-  const deepLink = new URL("claude://resume");
-  deepLink.searchParams.set("session", conversationId);
+  const deepLink = new URL("claude://claude.ai/epitaxy/");
+  deepLink.pathname += encodeURIComponent(conversationId);
   return deepLink.toString();
 }
 
