@@ -1139,7 +1139,14 @@ function recurrenceFromOptions(options) {
 
 function resolveThreadId(options, overrides) {
   const env = overrides.env ?? process.env;
-  const value = options["thread-id"] ?? env.CODEX_THREAD_ID;
+  const requestedThreadId = options["thread-id"] ?? env.CODEX_THREAD_ID;
+  // claude-sched-* 只用于调度归因；其余显式 id 仍遵循 CLI 参数优先契约。
+  const claudeSessionId = taskctlAgentKind(env) === "claude-code"
+    && typeof requestedThreadId === "string"
+    && requestedThreadId.trim().startsWith("claude-sched-")
+    ? env.CODEX_COMPANION_SESSION_ID
+    : undefined;
+  const value = claudeSessionId ?? requestedThreadId;
   if (typeof value !== "string" || value.trim().length === 0) {
     throw usageError("Codex conversation attribution requires --thread-id or CODEX_THREAD_ID");
   }
