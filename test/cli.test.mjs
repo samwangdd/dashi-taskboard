@@ -476,6 +476,49 @@ test("an explicit --thread-id overrides CODEX_THREAD_ID on issue writes", async 
   assert.equal(result.stdout.task.threadId, "thread-9");
 });
 
+test("the active Claude Desktop session overrides a scheduler attribution id", async () => {
+  let requestBody;
+  const result = await run(
+    ["comment", "add", "TASK-1", "--body", "Progress", "--thread-id", "claude-sched-task-20260909"],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ comment: { id: "comment-1", threadId: "claude-session-1", version: 1 } });
+    },
+    {
+      env: {
+        CLAUDECODE: "1",
+        CODEX_COMPANION_SESSION_ID: "claude-session-1",
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.deepEqual(requestBody, {
+    body: "Progress",
+    threadId: "claude-session-1",
+  });
+});
+
+test("an explicit Claude conversation id keeps CLI option priority", async () => {
+  let requestBody;
+  const result = await run(
+    ["comment", "add", "TASK-1", "--body", "Progress", "--thread-id", "explicit-session-1"],
+    async (_url, init) => {
+      requestBody = JSON.parse(init.body);
+      return response({ comment: { id: "comment-1", threadId: "explicit-session-1", version: 1 } });
+    },
+    {
+      env: {
+        CLAUDECODE: "1",
+        CODEX_COMPANION_SESSION_ID: "active-session-1",
+      },
+    },
+  );
+
+  assert.equal(result.exitCode, 0);
+  assert.equal(requestBody.threadId, "explicit-session-1");
+});
+
 test("issue restore uses the mutation thread and optimistic version", async () => {
   let requestBody;
   const result = await run(
