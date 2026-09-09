@@ -39,6 +39,18 @@ test("14 MR backlog chooses one integration head and applies claim backpressure"
   assert.deepEqual(planIntegration(input), plan);
 });
 
+test("non-merge heads report their actual state instead of missing authorization", () => {
+  for (const [delta, proposedAction, reason] of [
+    [{ git: "conflict" }, "resolve_conflict", "conflict"],
+    [{ git: "behind" }, "sync_target", "needs_rebase"],
+    [{ inclusion: "equivalent" }, "close_covered", "covered_or_empty"],
+  ]) {
+    const input = snapshot();
+    Object.assign(input.mergeRequests[0], delta);
+    assert.deepEqual(planIntegration(input).nextAction, { type: "report", candidateId: "1", proposedAction, reason });
+  }
+});
+
 test("independent lanes remain claimable while file/domain overlap and dependencies wait", () => {
   const input = snapshot(2);
   input.mergeRequests[0].domains = ["follow"];

@@ -65,7 +65,8 @@ export function planIntegration(snapshot) {
     dependencyEdges: snapshot.mergeRequests.flatMap(mr => mr.dependsOn.map(to => ({ from: mr.id, to }))),
     nextAction: head ? (head.state === "merge_ready" && !freeze && authorized(snapshot)
       ? { type: "merge", candidateId: head.id, method: snapshot.policy.authority.method }
-      : { type: "report", candidateId: head.id, proposedAction: actions[head.state], reason: freeze ? "cross_cutting_wave" : "missing_authorization" })
+      : { type: "report", candidateId: head.id, proposedAction: actions[head.state],
+          reason: freeze ? "cross_cutting_wave" : head.state === "merge_ready" ? "missing_authorization" : head.state })
       : candidates.some(c => c.state !== "covered_or_empty") ? { type: "report", reason: "waiting_for_evidence_or_dependency" } : { type: "no_action" },
     backpressure: { openMergeRequests: open.length, freeze },
     claims,

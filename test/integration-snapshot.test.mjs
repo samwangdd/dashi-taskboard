@@ -72,12 +72,20 @@ test("a squash-equivalent source is covered when its merge result keeps the targ
   assert.equal(planIntegration(result).candidates[0].state, "covered_or_empty");
 });
 
-test("provider failure, truncated changes, missing mapping and missing Git objects fail closed", async () => {
+test("truncated changes reach the provider data guard", async () => {
+  const deps = dependencies(); const provider = deps.provider;
+  deps.provider = async endpoint => endpoint.endsWith("/changes")
+    ? { ...mr, overflow: true, changes: [{ old_path: "a.js", new_path: "a.js" }] } : provider(endpoint);
+  const result = await collectIntegrationSnapshot("integration", deps);
+  assert.equal(result.error, "malformed_or_truncated_provider_data");
+  assert.equal(planIntegration(result).status, "invalid");
+});
+
+test("provider failure, missing mapping and missing Git objects fail closed", async () => {
   for (const deps of [
     dependencies({ provider: async () => { throw new Error("provider unavailable"); } }),
     dependencies({ project: { id: "p" } }),
     dependencies({ git: async () => { throw new Error("timeout"); } }),
-    dependencies({ provider: async () => ({ overflow: true }) }),
   ]) {
     assert.equal(planIntegration(await collectIntegrationSnapshot("integration", deps)).status, "invalid");
   }
