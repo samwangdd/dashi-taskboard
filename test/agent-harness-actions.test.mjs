@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   agentKindForHarness,
+  claudeDesktopConversationUrl,
   canOpenConversationInAgent,
   harnessForAgentKind,
   resumeCommandForAgent,
@@ -21,4 +22,8 @@ test("agent activity actions use the matching harness and resume command", () =>
   assert.equal(canOpenConversationInAgent("codex"), true);
   assert.equal(canOpenConversationInAgent("claude-code"), true);
   assert.equal(canOpenConversationInAgent("unknown"), false);
+  assert.equal(
+    claudeDesktopConversationUrl("session-456"),
+    "claude://resume?session=session-456",
+  );
 });

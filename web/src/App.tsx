@@ -84,7 +84,10 @@ import { ProjectAutomationMenu } from "./components/ProjectAutomationMenu";
 import { TaskboardIcon } from "./components/TaskboardIcon";
 import { TaskContextMenu } from "./components/TaskContextMenu";
 import { TaskDetail } from "./components/TaskDetail";
-import type { AgentHarness } from "./agentHarnesses";
+import {
+  claudeDesktopConversationUrl,
+  type AgentHarness,
+} from "./agentHarnesses";
 import {
   TaskEditor,
   type NewTaskCreateOptions,
@@ -3229,7 +3232,7 @@ export function App() {
     });
   }
 
-  async function openTaskInHarness(task: Task, harness: AgentHarness) {
+  async function openTaskInHarness(task: Task, harness: AgentHarness, conversationId?: string) {
     if (harness === "codex-desktop") {
       void openTaskInThread(task);
       return;
@@ -3245,6 +3248,10 @@ export function App() {
 
     if (!embedded || window.parent === window) {
       if (harness === "claude-desktop") {
+        if (conversationId) {
+          window.location.assign(claudeDesktopConversationUrl(conversationId));
+          return;
+        }
         const deepLink = new URL("claude://code/new");
         deepLink.searchParams.set("q", instruction);
         if (workspacePath) deepLink.searchParams.set("folder", workspacePath);
@@ -3276,6 +3283,7 @@ export function App() {
         title: task.title,
         instruction,
         workspacePath,
+        conversationId,
       },
     });
   }

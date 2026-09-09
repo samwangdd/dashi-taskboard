@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  buildClaudeDesktopConversationUrl,
   buildKiroOrcaArgs,
   findResidentInjectorPids,
   handleHostBindingPayload,
   reconcileInjectionRuntime,
   restartResidentInjector,
 } from "../scripts/codex-injector-runtime.mjs";
+
+test("the embedded host resumes an existing Claude Desktop conversation", () => {
+  assert.equal(
+    buildClaudeDesktopConversationUrl("claude-session-456"),
+    "claude://resume?session=claude-session-456",
+  );
+});
 
 test("the embedded host builds Kiro terminals with an optional workspace binding", () => {
   const request = {
@@ -133,7 +141,12 @@ test("agent harness launches only reach the host for a known harness and bounded
     parseAutomationRequest: () => null,
     ensure: async () => assert.fail("ensure must not run"),
     openAgentHarness: async (request) => {
-      calls.push(["harness", request.harness, request.workspacePath ?? null]);
+      calls.push([
+        "harness",
+        request.harness,
+        request.workspacePath ?? null,
+        request.conversationId ?? null,
+      ]);
       return { opened: true, label: "Kiro CLI in Orca" };
     },
     runAutomation: async () => assert.fail("automation must not run"),
@@ -160,7 +173,7 @@ test("agent harness launches only reach the host for a known harness and bounded
   await send({ instruction: "x".repeat(14_001) });
   await send({ instruction: "" });
   await send({ workspacePath: undefined });
-  await send({ harness: "claude-desktop" });
+  await send({ harness: "claude-desktop", conversationId: "claude-session-456" });
 
   assert.deepEqual(calls, [
     ["response", false],
@@ -168,9 +181,9 @@ test("agent harness launches only reach the host for a known harness and bounded
     ["response", false],
     ["response", false],
     ["response", false],
-    ["harness", "kiro-cli-orca", null],
+    ["harness", "kiro-cli-orca", null, null],
     ["response", true],
-    ["harness", "claude-desktop", "/tmp/project"],
+    ["harness", "claude-desktop", "/tmp/project", "claude-session-456"],
     ["response", true],
   ]);
 });

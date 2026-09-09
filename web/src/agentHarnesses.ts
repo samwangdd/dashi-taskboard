@@ -24,6 +24,12 @@ export function canOpenConversationInAgent(agentKind: AgentKind | null | undefin
   return agentKind === "codex" || agentKind === "claude-code";
 }
 
+export function claudeDesktopConversationUrl(conversationId: string): string {
+  const deepLink = new URL("claude://resume");
+  deepLink.searchParams.set("session", conversationId);
+  return deepLink.toString();
+}
+
 export function resumeCommandForAgent(
   agentKind: AgentKind | null | undefined,
   threadId: string,
