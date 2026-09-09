@@ -48,6 +48,8 @@ const AI_CHAT_ATTACHMENT_LIMIT = 10;
 const AI_CHAT_SKILL_MARKER = "\uFFFC";
 const HOST_RUNTIME_TTL_MS = 3_000;
 const CODEX_PLAN_TAIL_BYTES = 16 * 1024 * 1024;
+const CLAUDE_CLI_SESSION_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CLAUDE_DESKTOP_SESSION_ID_PATTERN = /^local_[A-Za-z0-9-]{1,64}$/;
 const INLINE_ATTACHMENT_TYPES = new Set([
   "application/pdf",
   "image/avif",
@@ -102,6 +104,83 @@ function sendJson(response, status, value, headers = {}) {
 function sendEmpty(response, status, headers = {}) {
   response.writeHead(status, { "cache-control": "no-store", ...headers });
   response.end();
+}
+
+function defaultClaudeSessionsDirectory(environment, platform = process.platform) {
+  if (platform === "darwin") {
+    return path.join(os.homedir(), "Library", "Application Support", "Claude", "claude-code-sessions");
+  }
+  if (platform === "win32") {
+    const appData = environment.APPDATA || path.join(os.homedir(), "AppData", "Roaming");
+    return path.join(appData, "Claude", "claude-code-sessions");
+  }
+  const configHome = environment.XDG_CONFIG_HOME || path.join(os.homedir(), ".config");
+  return path.join(configHome, "Claude", "claude-code-sessions");
+}
+
+async function findClaudeDesktopSession(sessionsDirectory, cliSessionId) {
+  const matches = [];
+  const readDirectory = async (directory) => {
+    try {
+      return await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  const accounts = await readDirectory(sessionsDirectory);
+  for (const account of accounts) {
+    if (!account.isDirectory()) continue;
+    const accountDirectory = path.join(sessionsDirectory, account.name);
+    const organizations = await readDirectory(accountDirectory);
+    for (const organization of organizations) {
+      if (!organization.isDirectory()) continue;
+      const organizationDirectory = path.join(accountDirectory, organization.name);
+      const entries = await readDirectory(organizationDirectory);
+      for (const entry of entries) {
+        if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+        const entryPath = path.join(organizationDirectory, entry.name);
+        let entryStat;
+        try {
+          entryStat = await stat(entryPath);
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
+        if (!entryStat || entryStat.size > 1024 * 1024) continue;
+        let rawMetadata;
+        try {
+          rawMetadata = await readFile(entryPath, "utf8");
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
+        let metadata;
+        try {
+          metadata = JSON.parse(rawMetadata);
+        } catch {
+          continue;
+        }
+        if (
+          metadata?.cliSessionId === cliSessionId
+          && typeof metadata.sessionId === "string"
+          && CLAUDE_DESKTOP_SESSION_ID_PATTERN.test(metadata.sessionId)
+        ) {
+          matches.push({
+            sessionId: metadata.sessionId,
+            createdAt: Number.isFinite(metadata.createdAt) ? metadata.createdAt : Number.MAX_SAFE_INTEGER,
+          });
+        }
+      }
+    }
+  }
+  const importedSessionId = `local_${cliSessionId}`;
+  // resume 深链生成的导入副本复用 CLI ID；优先原生 local ID 才能回到既有 Desktop 会话。
+  return matches
+    .sort((left, right) => (
+      Number(left.sessionId === importedSessionId) - Number(right.sessionId === importedSessionId)
+      || left.createdAt - right.createdAt
+    ))[0]?.sessionId ?? null;
 }
 
 function toFetchRequest(request) {
@@ -1809,6 +1888,8 @@ export function resolveServerOptions(options = {}) {
     cloudConfigPath: options.cloudConfigPath ?? path.join(dataDirectory, "cloud-companion.json"),
     jiraConfigPath: options.jiraConfigPath ?? path.join(dataDirectory, "jira-connection.json"),
     clientStoragePath: options.clientStoragePath ?? path.join(dataDirectory, "client-storage.json"),
+    claudeSessionsDirectory: options.claudeSessionsDirectory
+      ?? defaultClaudeSessionsDirectory(environment, options.platform),
     staticDirectory: options.staticDirectory ?? path.join(PROJECT_ROOT, "dist", "web"),
     skillPath: options.skillPath
       ?? environment.CODEX_TASKBOARD_SKILL_PATH
@@ -2344,6 +2425,26 @@ export function createTaskboardServer(options = {}) {
           return sendEmpty(response, 204);
         }
         return methodNotAllowed(response, ["GET", "PATCH"]);
+      }
+
+      if (pathname === "/api/local/claude-desktop-session") {
+        if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+        if ([...url.searchParams.keys()].some((key) => key !== "cliSessionId")) {
+          throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Only 'cliSessionId' is supported");
+        }
+        const cliSessionId = url.searchParams.get("cliSessionId")?.trim() ?? "";
+        if (!CLAUDE_CLI_SESSION_ID_PATTERN.test(cliSessionId)) {
+          throw new ApiError(400, "INVALID_FIELD", "'cliSessionId' must be a Claude CLI session ID");
+        }
+        const sessionId = await findClaudeDesktopSession(resolved.claudeSessionsDirectory, cliSessionId);
+        if (!sessionId) {
+          throw new ApiError(
+            404,
+            "CLAUDE_DESKTOP_SESSION_NOT_FOUND",
+            "The matching Claude Desktop session is not available on this device",
+          );
+        }
+        return sendJson(response, 200, { sessionId });
       }
 
       if (pathname === "/api/local/codex-thread-progress") {

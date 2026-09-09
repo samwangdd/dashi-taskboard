@@ -25,6 +25,7 @@ import {
   deleteProjectLabel as deleteProjectLabelRequest,
   deleteProject as deleteProjectRequest,
   getAiChatCatalog,
+  getClaudeDesktopSession,
   getCodexThreadProgress,
   getHostRuntime,
   getJiraConnection,
@@ -3245,11 +3246,21 @@ export function App() {
         ? task.developmentContext.path
         : deviceWorkspacePaths[task.projectId] ?? taskboardProject?.workspacePath ?? undefined;
     const instruction = buildTaskPrompt(task.identifier);
+    let resolvedConversationId = conversationId;
+    if (harness === "claude-desktop" && conversationId) {
+      setActionError(null);
+      try {
+        resolvedConversationId = await getClaudeDesktopSession(conversationId);
+      } catch (error) {
+        setActionError(errorMessage(error));
+        return;
+      }
+    }
 
     if (!embedded || window.parent === window) {
       if (harness === "claude-desktop") {
-        if (conversationId) {
-          window.location.assign(claudeDesktopConversationUrl(conversationId));
+        if (resolvedConversationId) {
+          window.location.assign(claudeDesktopConversationUrl(resolvedConversationId));
           return;
         }
         const deepLink = new URL("claude://code/new");
@@ -3283,7 +3294,7 @@ export function App() {
         title: task.title,
         instruction,
         workspacePath,
-        conversationId,
+        conversationId: resolvedConversationId,
       },
     });
   }
