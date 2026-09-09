@@ -138,7 +138,7 @@ interface TaskDetailProps {
   ) => Promise<RelationMutationResult>;
   onOpenThread: (binding: CodexThreadBinding) => void;
   onOpenLegacyLocalThread: (threadId: string) => void;
-  onOpenInHarness: (task: Task, harness: AgentHarness) => void;
+  onOpenInHarness: (task: Task, harness: AgentHarness, conversationId?: string) => void;
   onCopy: (text: string, announcement: string) => void;
   onCopyPrompt: (task: Task) => void;
   openingThread: boolean;
@@ -391,7 +391,7 @@ function ConversationLink({
 }: {
   threadId: string;
   agentKind: AgentKind | null;
-  onOpen: () => void;
+  onOpen: (threadId: string) => void;
   onCopy: (text: string, announcement: string) => void;
 }) {
   const { text } = useTaskboardI18n();
@@ -413,7 +413,7 @@ function ConversationLink({
           className="issue-conversation-link"
           type="button"
           title={text(`在 ${openLabel} 中打开`, `Open in ${openLabel}`)}
-          onClick={onOpen}
+          onClick={() => onOpen(threadId)}
         >
           <ActorAvatar className="issue-conversation-agent-icon" actor={actor} />
           <strong>{text(`打开 ${openLabel}`, `Open ${openLabel}`)}</strong>
@@ -1317,8 +1317,8 @@ export function TaskDetail({
                     <ConversationLink
                       threadId={currentTask.threadBinding?.threadId ?? currentTask.legacyLocalThreadId!}
                       agentKind={currentTask.threadAgentKind}
-                      onOpen={() => currentTask.threadAgentKind === "claude-code"
-                        ? onOpenInHarness(currentTask, "claude-desktop")
+                      onOpen={(threadId) => currentTask.threadAgentKind === "claude-code"
+                        ? onOpenInHarness(currentTask, "claude-desktop", threadId)
                         : currentTask.threadBinding
                           ? onOpenThread(currentTask.threadBinding)
                           : onOpenLegacyLocalThread(currentTask.legacyLocalThreadId!)}
@@ -1623,8 +1623,8 @@ export function TaskDetail({
                           <ConversationLink
                             threadId={comment.threadBinding?.threadId ?? comment.legacyLocalThreadId!}
                             agentKind={comment.authorAgentKind}
-                            onOpen={() => comment.authorAgentKind === "claude-code"
-                              ? onOpenInHarness(currentTask, "claude-desktop")
+                            onOpen={(threadId) => comment.authorAgentKind === "claude-code"
+                              ? onOpenInHarness(currentTask, "claude-desktop", threadId)
                               : comment.threadBinding
                                 ? onOpenThread(comment.threadBinding)
                                 : onOpenLegacyLocalThread(comment.legacyLocalThreadId!)}

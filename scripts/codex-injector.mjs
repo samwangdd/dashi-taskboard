@@ -21,6 +21,7 @@ import {
   taskboardAutomationPolicyOperation,
 } from "../shared/taskboard-automation.mjs";
 import {
+  buildClaudeDesktopConversationUrl,
   buildKiroOrcaArgs,
   findResidentInjectorPids,
   handleHostBindingPayload,
@@ -1108,6 +1109,10 @@ async function runAgentHarnessCommand(executable, args) {
 
 async function openAgentHarness(request) {
   if (request.harness === "claude-desktop") {
+    if (request.conversationId) {
+      await openWithDefaultApplication(buildClaudeDesktopConversationUrl(request.conversationId));
+      return { opened: true, label: "Claude Desktop" };
+    }
     const deepLink = new URL("claude://code/new");
     deepLink.searchParams.set("q", request.instruction);
     if (request.workspacePath) deepLink.searchParams.set("folder", request.workspacePath);

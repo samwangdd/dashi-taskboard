@@ -22,6 +22,12 @@ export function buildKiroOrcaArgs(request) {
   ];
 }
 
+export function buildClaudeDesktopConversationUrl(conversationId) {
+  const deepLink = new URL("claude://resume");
+  deepLink.searchParams.set("session", conversationId);
+  return deepLink.toString();
+}
+
 function parseHostRequest(payload, parseAutomationRequest) {
   if (typeof payload !== "string" || payload.length > 4_194_304) {
     return { id: null, request: null, error: HOST_REQUEST_ERROR };
@@ -78,6 +84,16 @@ function parseHostRequest(payload, parseAutomationRequest) {
         && request.workspacePath.length > 0
         && request.workspacePath.length <= 4_096
         && !/[\u0000-\u001f\u007f]/.test(request.workspacePath)
+      )
+    )
+    && (
+      request.conversationId === undefined
+      || (
+        request.harness === "claude-desktop"
+        && typeof request.conversationId === "string"
+        && request.conversationId.length > 0
+        && request.conversationId.length <= 128
+        && !/[\u0000-\u001f\u007f]/.test(request.conversationId)
       )
     )
   ) return { id, request, error: null };

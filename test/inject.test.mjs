@@ -257,6 +257,10 @@ test("HTTP and HTTPS links are opened by the authenticated host instead of a san
   assert.match(source, /url\.protocol !== "http:" && url\.protocol !== "https:"/);
 });
 
+test("Claude conversation ids cross the injected agent harness bridge", () => {
+  assert.match(source, /conversationId: payload\?\.conversationId/);
+});
+
 test("the iframe automation contract is forwarded through the fixed host binding", () => {
   assert.match(source, /message\.type === "taskboard:automation-request"/);
   assert.match(source, /function handleAutomationRequest\(payload\)/);

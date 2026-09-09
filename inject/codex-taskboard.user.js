@@ -1286,6 +1286,7 @@
         title: payload?.title,
         instruction: payload?.instruction,
         workspacePath: payload?.workspacePath,
+        conversationId: payload?.conversationId,
       });
       postToFrame({
         type: "taskboard:agent-harness-opened",
