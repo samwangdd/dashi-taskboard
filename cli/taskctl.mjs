@@ -7,6 +7,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
+import { runIntegrationPlan, runIntegrationExecute } from "../server/integration-runtime.mjs";
+
 import { normalizeCloudUrl } from "../server/cloud-config.mjs";
 import {
   DEFAULT_PROJECT_ID,
@@ -30,6 +32,8 @@ const BOOLEAN_OPTIONS = new Set(["json", "clear-binding-thread", "help"]);
 const GLOBAL_OPTIONS = new Set(["runtime-file"]);
 
 const COMMAND_OPTIONS = new Map([
+  ["integration plan", new Set(["project", "target", "json"])],
+  ["integration execute", new Set(["project", "target", "revision", "json"])],
   ["project list", new Set(["json"])],
   ["project create", new Set(["id", "name", "workspace-path", "json"])],
   ["project map", new Set(["workspace-path", "json"])],
@@ -123,6 +127,8 @@ const HELP_TEXT = new Map([
   ["", `Usage: taskctl RESOURCE ACTION [options]
 
 Commands:
+  integration plan --project PROJECT_ID [--target BRANCH] [--json]
+  integration execute --project PROJECT_ID [--target BRANCH] --revision REVISION [--json]
   context current [--cwd PATH] [--json]
   project list
   project create --name NAME [--id ID] [--workspace-path PATH]
@@ -325,6 +331,12 @@ async function execute(parsed, overrides) {
       : await resolveTaskboardBaseUrl(env, overrides);
   const api = createApiClient(overrides, target);
   switch (command) {
+    case "integration plan":
+      expectOperandCount(parsed, 0);
+      return runIntegrationPlan(api, requiredOption(parsed.options, "project"), parsed.options.target, { readPolicy: overrides.readIntegrationPolicy });
+    case "integration execute":
+      expectOperandCount(parsed, 0);
+      return runIntegrationExecute(api, requiredOption(parsed.options, "project"), parsed.options.target, requiredOption(parsed.options, "revision"), { readPolicy: overrides.readIntegrationPolicy });
     case "project list":
       expectOperandCount(parsed, 0);
       return api.request("GET", "/api/projects");
