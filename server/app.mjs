@@ -120,33 +120,57 @@ function defaultClaudeSessionsDirectory(environment, platform = process.platform
 
 async function findClaudeDesktopSession(sessionsDirectory, cliSessionId) {
   const matches = [];
-  const accounts = await readdir(sessionsDirectory, { withFileTypes: true }).catch(() => []);
+  const readDirectory = async (directory) => {
+    try {
+      return await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if (error?.code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  const accounts = await readDirectory(sessionsDirectory);
   for (const account of accounts) {
     if (!account.isDirectory()) continue;
     const accountDirectory = path.join(sessionsDirectory, account.name);
-    const organizations = await readdir(accountDirectory, { withFileTypes: true }).catch(() => []);
+    const organizations = await readDirectory(accountDirectory);
     for (const organization of organizations) {
       if (!organization.isDirectory()) continue;
       const organizationDirectory = path.join(accountDirectory, organization.name);
-      const entries = await readdir(organizationDirectory, { withFileTypes: true }).catch(() => []);
+      const entries = await readDirectory(organizationDirectory);
       for (const entry of entries) {
         if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
         const entryPath = path.join(organizationDirectory, entry.name);
-        const entryStat = await stat(entryPath).catch(() => null);
-        if (!entryStat || entryStat.size > 1024 * 1024) continue;
+        let entryStat;
         try {
-          const metadata = JSON.parse(await readFile(entryPath, "utf8"));
-          if (
-            metadata?.cliSessionId === cliSessionId
-            && typeof metadata.sessionId === "string"
-            && CLAUDE_DESKTOP_SESSION_ID_PATTERN.test(metadata.sessionId)
-          ) {
-            matches.push({
-              sessionId: metadata.sessionId,
-              createdAt: Number.isFinite(metadata.createdAt) ? metadata.createdAt : Number.MAX_SAFE_INTEGER,
-            });
-          }
-        } catch {}
+          entryStat = await stat(entryPath);
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
+        if (!entryStat || entryStat.size > 1024 * 1024) continue;
+        let rawMetadata;
+        try {
+          rawMetadata = await readFile(entryPath, "utf8");
+        } catch (error) {
+          if (error?.code === "ENOENT") continue;
+          throw error;
+        }
+        let metadata;
+        try {
+          metadata = JSON.parse(rawMetadata);
+        } catch {
+          continue;
+        }
+        if (
+          metadata?.cliSessionId === cliSessionId
+          && typeof metadata.sessionId === "string"
+          && CLAUDE_DESKTOP_SESSION_ID_PATTERN.test(metadata.sessionId)
+        ) {
+          matches.push({
+            sessionId: metadata.sessionId,
+            createdAt: Number.isFinite(metadata.createdAt) ? metadata.createdAt : Number.MAX_SAFE_INTEGER,
+          });
+        }
       }
     }
   }

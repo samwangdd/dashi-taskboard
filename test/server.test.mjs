@@ -107,6 +107,18 @@ test("the local companion resolves a CLI transcript to its original Claude Deskt
   );
   assert.equal(missing.response.status, 404);
   assert.equal(missing.body.error.code, "CLAUDE_DESKTOP_SESSION_NOT_FOUND");
+
+  const failedBaseUrl = await startServer(async (directory) => {
+    const sessionsPath = path.join(directory, "not-a-directory");
+    await writeFile(sessionsPath, "invalid session storage");
+    return { claudeSessionsDirectory: sessionsPath };
+  });
+  const failed = await request(
+    failedBaseUrl,
+    `/api/local/claude-desktop-session?cliSessionId=${cliSessionId}`,
+  );
+  assert.equal(failed.response.status, 500);
+  assert.equal(failed.body.error.code, "INTERNAL_ERROR");
 });
 
 async function openEventStream(baseUrl, headers) {
