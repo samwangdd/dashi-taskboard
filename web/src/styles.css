@@ -3205,10 +3205,11 @@ kbd {
   list-style: none;
 }
 
+/* 别把这里改回 grid/flex：紧凑列表的 li 里正文是裸文本节点，`<code>`、`<a>` 等 inline 元素
+   会各自成为独立的 grid/flex item 落进 14px 的复选框列，配合 overflow-wrap: anywhere 整段竖排。
+   编辑器侧（InlineMediaComposer.css）有 .inline-media-task-content 包裹节点才可以用 grid。 */
 .issue-description-document .task-list-item {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr);
-  column-gap: 7px;
+  padding-left: 21px;
   list-style: none;
 }
 
@@ -3218,6 +3219,13 @@ kbd {
   margin: 4px 0 0;
   accent-color: var(--accent);
   pointer-events: none;
+}
+
+/* 复选框浮到 padding 让出的槽位里（-21px = 14px 框宽 + 7px 间距）。别改成 inline + 负 margin：
+   正文首个文本节点带一个前导空格，只有浮动把它挤到行首才会被折叠，否则首行比折行多缩进约 4px。 */
+.issue-description-document .task-list-item input[type="checkbox"] {
+  float: left;
+  margin: 4px 0 0 -21px;
 }
 
 .issue-description-document blockquote {
