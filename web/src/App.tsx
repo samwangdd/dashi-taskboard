@@ -383,6 +383,7 @@ const EVENT_NAMES = [
   "attachment.created",
   "attachment.deleted",
   "project.created",
+  "project.updated",
   "project.labels.updated",
   "project.readme.updated",
   "client-storage.updated",
@@ -649,7 +650,7 @@ function LocalRealtimeSync({
           || !eventProjectId
           || eventProjectId === selectedProjectId
         );
-      if (event.type === "project.created") {
+      if (event.type === "project.created" || event.type === "project.updated") {
         scheduleRefresh({ projects: true });
         return;
       }

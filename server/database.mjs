@@ -1396,6 +1396,16 @@ export class TaskboardDatabase {
     }
   }
 
+  renameProject(id, name) {
+    const result = this.database.prepare(`
+      UPDATE projects SET name = ?, updated_at = ? WHERE id = ?
+    `).run(name, now(), id);
+    if (result.changes !== 1) {
+      throw new ApiError(404, "PROJECT_NOT_FOUND", `Project '${id}' does not exist`);
+    }
+    return this.getProject(id);
+  }
+
   deleteProject(id) {
     const project = this.getProject(id);
     if (!project) {
