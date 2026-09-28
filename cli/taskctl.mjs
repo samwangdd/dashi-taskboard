@@ -32,6 +32,7 @@ const GLOBAL_OPTIONS = new Set(["runtime-file"]);
 const COMMAND_OPTIONS = new Map([
   ["project list", new Set(["json"])],
   ["project create", new Set(["id", "name", "workspace-path", "json"])],
+  ["project rename", new Set(["name", "json"])],
   ["project map", new Set(["workspace-path", "json"])],
   ["project readme", new Set(["content", "file", "if-version", "json"])],
   ["cloud login", new Set(["url", "actor-name", "json"])],
@@ -126,6 +127,7 @@ Commands:
   context current [--cwd PATH] [--json]
   project list
   project create --name NAME [--id ID] [--workspace-path PATH]
+  project rename PROJECT_ID --name NAME
   project map PROJECT_ID --workspace-path PATH
   project readme get [PROJECT_ID]
   project readme set [PROJECT_ID] (--content TEXT | --file FILE) [--if-version N]
@@ -339,6 +341,11 @@ async function execute(parsed, overrides) {
             ? undefined
             : resolveInputPath(parsed.options["workspace-path"], overrides),
         ),
+      });
+    case "project rename":
+      expectOperandCount(parsed, 1);
+      return api.request("PATCH", `/api/projects/${encodeURIComponent(parsed.operands[0])}`, {
+        name: requiredOption(parsed.options, "name"),
       });
     case "project map":
       expectOperandCount(parsed, 1);

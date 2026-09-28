@@ -674,6 +674,12 @@ function parseProjectCreate(body) {
   return { id, name, workspacePath };
 }
 
+function parseProjectRename(body) {
+  assertPlainObject(body);
+  assertAllowedKeys(body, new Set(["name"]));
+  return stringField(body.name, "name", { required: true, maxLength: 120 });
+}
+
 function parseProjectLabel(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set(["label"]));
@@ -2902,11 +2908,20 @@ export function createTaskboardServer(options = {}) {
           throw new ApiError(400, "INVALID_PATH", "Project id contains invalid encoding");
         }
         validateProjectId(projectId);
+        if (request.method === "PATCH") {
+          const renamed = database.renameProject(projectId, parseProjectRename(await readJson(request)));
+          const project = {
+            ...renamed,
+            workspacePath: currentCloudConfig?.projectMappings[renamed.id] ?? renamed.workspacePath,
+          };
+          events.emit("project.updated", { project });
+          return sendJson(response, 200, { project });
+        }
         if (request.method === "DELETE") {
           database.deleteProject(projectId);
           return sendEmpty(response, 204);
         }
-        return methodNotAllowed(response, ["DELETE"]);
+        return methodNotAllowed(response, ["PATCH", "DELETE"]);
       }
 
       const projectLabelsRoute = pathname.match(/^\/api\/projects\/([^/]+)\/labels$/);
