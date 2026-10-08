@@ -35,10 +35,14 @@ function referencedTask(
 }
 
 function referencedAttachment(href: string, attachments: Attachment[]): Attachment | null {
-  const match = new URL(href, document.baseURI).pathname.match(/\/api\/attachments\/([^/]+)\/download$/);
-  if (!match) return null;
-  const id = decodeURIComponent(match[1]);
-  return attachments.find((attachment) => attachment.id === id) ?? null;
+  try {
+    const match = new URL(href, document.baseURI).pathname.match(/\/api\/attachments\/([^/]+)\/download$/);
+    if (!match) return null;
+    const id = decodeURIComponent(match[1]);
+    return attachments.find((attachment) => attachment.id === id) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 function fileSize(value: number): string {
