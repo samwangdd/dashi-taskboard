@@ -48,7 +48,7 @@ test("task list activity queries project metadata while detail routes retain ful
   for (const listQuery of [localListQuery, cloudListQuery]) {
     assert.match(
       listQuery,
-      /SELECT\s+id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, created_at\s+FROM task_activities/s,
+      /SELECT\s+id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, (?:actor_agent_kind, )?created_at\s+FROM task_activities/s,
     );
     assert.doesNotMatch(listQuery, /SELECT \* FROM task_activities/);
     assert.doesNotMatch(listQuery, /\bchanges\b/);
