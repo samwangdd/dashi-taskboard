@@ -1304,17 +1304,31 @@
 
   async function handleAttachmentOpen(payload) {
     try {
-      await requestHost("open-attachment", {
+      const result = await requestHost("open-attachment", {
         attachmentId: payload?.attachmentId,
         filename: payload?.filename,
+        operation: payload?.operation,
+      });
+      postToFrame({
+        type: "taskboard:attachment-local-path",
+        payload: {
+          attachmentId: payload?.attachmentId,
+          filename: payload?.filename,
+          localPath: result.localPath ?? null,
+        },
       });
     } catch (_) {
+      postToFrame({
+        type: "taskboard:attachment-local-path",
+        payload: { attachmentId: payload?.attachmentId, filename: payload?.filename, localPath: null },
+      });
+      if (payload?.operation === "local-path") return;
       postToFrame({
         type: "taskboard:attachment-open-error",
         payload: {
           error: hostText(
-            "无法在 Finder 中显示附件，请重试。",
-            "Could not reveal the attachment in Finder. Try again.",
+            "无法显示附件所在位置，请重新打开附件后重试。",
+            "Could not show the attachment location. Open the attachment again and retry.",
           ),
         },
       });
@@ -1875,6 +1889,9 @@
   }
 
   function isNativePageNavigation(target) {
+    const settingsControl = target?.closest?.("button,a,[role='button'],[role='menuitem']");
+    if (buttonMatches(settingsControl, ["设置", "settings"])) return true;
+
     const clickable = target?.closest?.("button,a,[role='button'],[data-app-action-sidebar-thread-id]");
     if (!clickable || clickable === entry || clickable.closest(`#${ENTRY_ID}`)) return false;
     if (!clickable.closest("aside nav[role='navigation']")) return false;
