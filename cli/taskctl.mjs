@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { createHash } from "node:crypto";
 import { execFile, spawn } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
@@ -112,6 +113,7 @@ const COMMAND_OPTIONS = new Map([
     "clear-binding-thread",
     "json",
   ])],
+  ["comment publish", new Set(["body-file", "file", "thread-id", "comment", "if-version", "json"])],
   ["comment update", new Set(["body", "thread-id", "if-version", "json"])],
   ["comment delete", new Set(["thread-id", "if-version", "json"])],
   ["attachment list", new Set(["task", "comment", "after", "json"])],
@@ -136,6 +138,7 @@ Commands:
   issue list|get|create|update|move|archive|restore|tree|relation
   comment list ISSUE_ID [--after CURSOR]
   comment add ISSUE_ID (--body TEXT | --body-file FILE) [--thread-id ID]
+  comment publish ISSUE_ID --body-file FILE --file IMAGE --thread-id ID [--comment ID --if-version N]
   comment update COMMENT_ID --body TEXT --if-version N [--thread-id ID]
   comment delete COMMENT_ID --if-version N [--thread-id ID]
   attachment list (--task ISSUE_ID | --comment COMMENT_ID) [--after CURSOR]
@@ -190,6 +193,16 @@ Priorities: none, urgent, high, medium, low
 
 Example:
   taskctl issue get LOCAL-275 --json`],
+  ["comment publish", `Usage: taskctl comment publish ISSUE_ID --body-file FILE --file IMAGE --thread-id ID [--comment ID --if-version N] [--json]
+
+Publish one image at the single {{evidence}} marker in the UTF-8 body file.
+The session id must be explicit. To resume a failed publish, pass the returned
+commentId with its current --if-version; only that session's comment can be reused.
+A retry reuses a matching image already attached to that comment.
+Success returns verified issue/comment ownership, inline reference, SHA-256 and size
+only after fresh comment/attachment reads and a matching content download.
+Failures return nonzero and error.details.commentId when a comment exists.
+No automatic retry creates another comment.`],
   ["comment list", `Usage: taskctl comment list ISSUE_ID [--after CURSOR] [--json]
 
 Options:
@@ -282,7 +295,7 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
       const scope = `${parsed.resource ?? ""} ${parsed.action ?? ""}`.trim();
       const help = HELP_TEXT.get(scope);
       if (!help || parsed.operands.length > 0 || Object.keys(parsed.options).length !== 1) {
-        throw usageError("Help is available for taskctl, taskctl issue, and taskctl comment list");
+        throw usageError("Help is available for taskctl, taskctl issue, taskctl comment list, and taskctl comment publish");
       }
       stdout.write(`${help}\n`);
       return 0;
@@ -312,7 +325,7 @@ async function execute(parsed, overrides) {
   const allowedOptions = COMMAND_OPTIONS.get(command);
   if (!allowedOptions) {
     throw usageError(
-      "Expected one of: project list/create/map/readme, cloud login/status/logout, issue list/get/create/update/move/archive/restore/tree/relation, comment list/add/update/delete, attachment list/download/upload, context current",
+      "Expected one of: project list/create/map/readme, cloud login/status/logout, issue list/get/create/update/move/archive/restore/tree/relation, comment list/add/publish/update/delete, attachment list/download/upload, context current",
     );
   }
   validateOptions(parsed.options, allowedOptions);
@@ -441,6 +454,9 @@ async function execute(parsed, overrides) {
         ...optionalField("threadBinding", threadBindingFromOptions(parsed.options)),
       });
     }
+    case "comment publish":
+      expectOperandCount(parsed, 1);
+      return publishEvidence(api, parsed.operands[0], parsed.options, overrides);
     case "comment update":
       expectOperandCount(parsed, 1);
       return api.request("PATCH", commentPath(parsed.operands[0]), {
@@ -626,6 +642,115 @@ function taskctlAgentKind(env) {
   return ["codex", "claude-code", "unknown"].includes(env.TASKBOARD_AGENT)
     ? env.TASKBOARD_AGENT
     : "unknown";
+}
+
+async function publishEvidence(api, issueId, options, overrides) {
+  let commentId = options.comment ?? null;
+  let attachmentId = null;
+  try {
+    const threadId = requiredOption(options, "thread-id");
+    const bodyFile = resolveInputPath(requiredOption(options, "body-file"), overrides);
+    const imageFile = resolveInputPath(requiredOption(options, "file"), overrides);
+    const read = overrides.readFile ?? readFile;
+    let template;
+    let bytes;
+    try {
+      template = await read(bodyFile, "utf8");
+      bytes = await read(imageFile);
+    } catch (error) {
+      throw new TaskctlError("Cannot read evidence input files", {
+        code: "FILE_READ_FAILED", details: error.message,
+      });
+    }
+    if (template.split("{{evidence}}").length !== 2) {
+      throw usageError("Body file must contain exactly one {{evidence}} marker");
+    }
+    const filename = path.basename(imageFile);
+    const contentType = guessContentType(filename);
+    if (!contentType.startsWith("image/")) throw usageError("Evidence file must be an image");
+    if (!options.comment && options["if-version"] !== undefined) {
+      throw usageError("--if-version requires --comment");
+    }
+    const version = options.comment ? explicitVersion(options["if-version"]) : undefined;
+    const sha256 = createHash("sha256").update(bytes).digest("hex");
+    const { task } = await api.request("GET", taskPath(issueId));
+    const commentsPath = `${taskPath(issueId)}/comments`;
+    let comment;
+    if (commentId) {
+      const listed = await api.request("GET", commentsPath);
+      comment = listed.comments.find((entry) => entry.id === commentId);
+      if (!comment || comment.taskId !== task.id || comment.threadId !== threadId) {
+        throw usageError("Comment does not belong to this issue and session");
+      }
+      if (comment.version !== version) {
+        throw new TaskctlError("Comment version has changed; read it before retrying", {
+          code: "VERSION_CONFLICT", exitCode: 5,
+        });
+      }
+    } else {
+      ({ comment } = await api.request("POST", commentsPath, { body: template, threadId }));
+      commentId = comment.id;
+    }
+    const attachmentsPath = `${commentPath(commentId)}/attachments`;
+    const existing = await api.request("GET", attachmentsPath);
+    let attachment;
+    for (const candidate of existing.attachments) {
+      if (candidate.filename !== filename || candidate.size !== bytes.byteLength || candidate.kind !== "inline") continue;
+      const downloaded = await api.download(attachmentContentPath(candidate.id));
+      if (createHash("sha256").update(downloaded.bytes).digest("hex") === sha256) {
+        attachment = candidate;
+        break;
+      }
+    }
+    if (!attachment) {
+      ({ attachment } = await api.upload(attachmentsPath, {
+        body: bytes, contentType, filename, kind: "inline",
+      }));
+    }
+    attachmentId = attachment.id;
+    const reference = `api/attachments/${attachmentId}/content`;
+    const body = template.replace("{{evidence}}", `![Evidence](${reference})`);
+    if (comment.body !== body) {
+      await api.request("PATCH", commentPath(commentId), {
+        body, threadId, version: comment.version,
+      });
+    }
+    const readback = await api.request("GET", commentsPath);
+    const saved = readback.comments.find((entry) => entry.id === commentId);
+    const attached = await api.request("GET", attachmentsPath);
+    const savedAttachment = attached.attachments.find((entry) => entry.id === attachmentId);
+    const downloaded = await api.download(attachmentContentPath(attachmentId));
+    const downloadedSha256 = createHash("sha256").update(downloaded.bytes).digest("hex");
+    if (!saved || saved.taskId !== task.id || saved.threadId !== threadId
+      || saved.body !== body || !saved.attachments.some((entry) => entry.id === attachmentId)
+      || !savedAttachment || savedAttachment.taskId !== task.id
+      || savedAttachment.commentId !== commentId || savedAttachment.kind !== "inline"
+      || savedAttachment.size !== bytes.byteLength || downloaded.bytes.byteLength !== bytes.byteLength
+      || downloadedSha256 !== sha256) {
+      throw new TaskctlError("Evidence readback did not match the published image and comment", {
+        code: "EVIDENCE_VERIFICATION_FAILED", exitCode: 4,
+      });
+    }
+    return {
+      verified: true,
+      issueId: task.id,
+      identifier: task.identifier,
+      commentId,
+      commentVersion: saved.version,
+      threadId: saved.threadId,
+      attachmentId,
+      reference,
+      sha256,
+      downloadedSha256,
+      size: bytes.byteLength,
+    };
+  } catch (error) {
+    const normalized = normalizeError(error);
+    throw new TaskctlError(normalized.message, {
+      code: normalized.code, exitCode: normalized.exitCode,
+      details: { issueId, commentId, attachmentId, cause: normalized.details },
+    });
+  }
 }
 
 async function downloadAttachment(api, attachmentId, options, overrides) {
