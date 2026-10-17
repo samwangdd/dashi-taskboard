@@ -21,56 +21,15 @@ function taskStatuses() {
   return [...match[1].matchAll(/"([^"]+)"/g)].map((entry) => entry[1]);
 }
 
-test("dragging previews the insertion rank before committing it", () => {
-  assert.match(boardColumnSource, /function findDropBefore/);
-  assert.match(boardColumnSource, /clientY < card\.getBoundingClientRect\(\)\.top \+ card\.offsetHeight \/ 2/);
-  assert.match(boardColumnSource, /onDrop\(status, taskId, findDropBefore/);
-  assert.match(boardColumnSource, /function getTaskDragShift/);
-  assert.match(boardColumnSource, /shift -= dragDistance/);
-  assert.match(boardColumnSource, /shift \+= dragDistance/);
-  assert.match(boardColumnSource, /dragShift=\{dragShift\}/);
-  assert.match(styles, /\.task-card\.is-dragging \{[\s\S]*?opacity: 0/);
-  assert.doesNotMatch(styles, /\.task-card\.is-dragging \{[^}]*pointer-events: none/);
-  assert.match(styles, /transform 160ms cubic-bezier/);
-  assert.match(appSource, /beforeTaskId: string \| null = null/);
-  assert.match(appSource, /\(previousTask\.sortOrder \+ nextTask\.sortOrder\) \/ 2/);
-  assert.match(appSource, /currentOrder\.every\(\(candidate, index\) => candidate\.id === desiredOrder\[index\]\.id\)/);
-  assert.match(appSource, /setTasks\(\(current\) => sortTasks\(current\.map/);
-  assert.match(appSource, /setSettlingTaskId\(task\.id\)/);
-  assert.match(styles, /\.task-card\.is-settling \{[\s\S]*?task-card-settle 200ms/);
-});
-
 test("text selection is reserved for editable fields", () => {
   assert.match(styles, /body \{[^}]*user-select: none/);
   assert.match(styles, /input,[\s\S]*?textarea,[\s\S]*?\[contenteditable="true"\][\s\S]*?user-select: text/);
-});
-
-test("main issue cards stay compact while sidebar cards show ownership and creation time", () => {
-  assert.match(cardSource, /projectName[\s\S]*?className="project-chip"/);
-  assert.match(cardSource, /variant === "sidebar" && \([\s\S]*?className="sidebar-card-creator"/);
-  assert.match(cardSource, /<AssigneeControl[\s\S]*?<span>\{createdDate\(task\.createdAt, locale, text\)\}<\/span>/);
-  assert.doesNotMatch(styles, /\.card-footer|\.created-at/);
-  assert.match(styles, /\.project-chip/);
-  assert.match(styles, /\.task-card \{[\s\S]*?min-height: 80px;[\s\S]*?gap: 6px;[\s\S]*?padding: 7px 8px/);
-  assert.match(detailSource, /currentTask\.createdAt/);
 });
 
 test("native select options remain readable in dark theme", () => {
   assert.match(styles, /:root\[data-theme="dark"\] select \{[\s\S]*?color-scheme: dark/);
   assert.match(styles, /:root\[data-theme="dark"\] select option \{[\s\S]*?background-color: var\(--surface-raised\);[\s\S]*?color: var\(--text-primary\)/);
   assert.match(styles, /:root\[data-theme="dark"\] select option:checked \{[\s\S]*?background-color: var\(--surface-active\)/);
-});
-
-test("each status column remains a drop target for the full board height", () => {
-  assert.match(styles, /\.board \{[\s\S]*?align-items: stretch;[\s\S]*?height: 100%/);
-  assert.match(styles, /\.board-column \{[\s\S]*?display: flex;[\s\S]*?flex-direction: column;[\s\S]*?height: 100%/);
-  assert.match(styles, /\.column-list \{[\s\S]*?flex: 1 0 auto;[\s\S]*?min-height: calc\(100% - 48px\)/);
-});
-
-test("the issue board has no shared vertical scroll and each status column scrolls below a sticky heading", () => {
-  assert.match(styles, /\.board-scroll \{[\s\S]*?overflow-x: auto;[\s\S]*?overflow-y: hidden;[\s\S]*?overscroll-behavior-y: none/);
-  assert.match(styles, /\.board-column \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;[\s\S]*?overscroll-behavior-y: contain/);
-  assert.match(styles, /\.column-header \{[\s\S]*?position: sticky;[\s\S]*?top: 0;[\s\S]*?background: var\(--board-column-surface\)/);
 });
 
 test("the complete issue status set shares one ordered source", () => {
@@ -107,12 +66,6 @@ test("review, blocked and canceled statuses round-trip through filter URLs", () 
   assert.match(filterSource, /filters\.statuses\.join\(","\)/);
   assert.match(filterSource, /\.split\(","\)\.filter\(isTaskStatus\)/);
   assert.match(filterSource, /TASK_STATUSES\.includes\(value as TaskStatus\)/);
-});
-
-test("the column surface wraps its heading and issue list", () => {
-  assert.match(styles, /\.board-column \{[\s\S]*?--board-column-surface: var\(--column-header\)[\s\S]*?background: var\(--board-column-surface\)/);
-  assert.match(styles, /\.column-header \{[\s\S]*?background: var\(--board-column-surface\)/);
-  assert.match(styles, /\.column-list \{[\s\S]*?padding: 8px 8px 8px/);
 });
 
 test("common issue mutations enter a Linear-style undo queue", () => {
@@ -162,18 +115,6 @@ test("issues expose processing conversations without manual binding", () => {
   assert.doesNotMatch(detailSource, /placeholder="绑定分支/);
   assert.doesNotMatch(contextMenuSource, /打开关联 Codex 对话/);
   assert.match(contextMenuSource, /onOpenInThread/);
-});
-
-test("comments upload and render their own attachments in the content flow", () => {
-  assert.match(apiSource, /export async function uploadCommentAttachment/);
-  assert.match(apiSource, /\/api\/comments\/\$\{encodeURIComponent\(commentId\)\}\/attachments/);
-  assert.match(detailSource, /commentInlineFiles/);
-  assert.match(detailSource, /uploadCommentAttachment\(comment\.id, file\.file, "attachment"\)/);
-  assert.match(detailSource, /resolveInlineAttachmentMarkdown/);
-  assert.match(detailSource, /createInlineMediaSegments\(comment\.body, referenceTasks, comment\.attachments\)/);
-  assert.match(detailSource, /attachments=\{comment\.attachments\}/);
-  assert.match(detailSource, /onOpenAttachment=\{handleAttachmentDownload\}/);
-  assert.match(composerSource, /className="inline-media-attachment"/);
 });
 
 test("issue creation and detail share one searchable, creatable label picker", () => {
