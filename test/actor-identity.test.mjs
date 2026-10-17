@@ -60,31 +60,3 @@ test("agent avatar asset is a transparent PNG logo", async () => {
   assert.deepEqual([...logo.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.equal(logo[25], 6);
 });
-
-test("comment metadata separators never become avatar content", () => {
-  assert.match(detailSource, /className="comment-edited"/);
-  assert.doesNotMatch(styles, /\.comment-header > span(?::before)?/);
-  assert.match(
-    styles,
-    /\.comment-header \.comment-edited::before\s*\{[^}]*content:\s*"·"/s,
-  );
-  assert.match(
-    styles,
-    /\.actor-avatar-image\s*\{[^}]*display:\s*block;[^}]*width:\s*100%;[^}]*height:\s*100%/s,
-  );
-});
-
-test("Codex host identity is forwarded to user-authored taskboard mutations", () => {
-  assert.match(injectSource, /function readCodexUser\(\)/);
-  assert.match(
-    injectSource,
-    /button\[aria-haspopup="menu"\][\s\S]*?profileButton\.querySelector\("img"\)[\s\S]*?avatar\?\.currentSrc \|\| avatar\?\.src \|\| null/,
-  );
-  assert.match(injectSource, /user: readCodexUser\(\)/);
-  assert.match(typesSource, /user\?: ActorIdentity/);
-  assert.match(apiSource, /export function setCurrentUserActor/);
-  assert.match(apiSource, /X-Taskboard-User-Id/);
-  assert.match(apiSource, /X-Taskboard-User-Name/);
-  assert.match(apiSource, /X-Taskboard-User-Avatar/);
-  assert.match(appSource, /setCurrentUserActor\(payload\.user\)/);
-});

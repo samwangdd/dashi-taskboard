@@ -20,6 +20,7 @@ it("still renders and opens a valid attachment link", () => {
   const attachment = {
     id: "file-1", taskId: "task-1", commentId: null, kind: "attachment" as const,
     filename: "report.pdf", contentType: "application/pdf", size: 1024, createdAt: "2026-10-08T00:00:00Z",
+    bodyFallback: false,
   };
   const onOpenAttachment = vi.fn();
   render(<DescriptionDocument
