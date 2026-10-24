@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+import { cloudExecutionOwner } from "../shared/cloud-execution.mjs";
 import path from "node:path";
 
 import { DEFAULT_PROJECT_ID } from "../shared/domain.mjs";
@@ -106,29 +108,31 @@ async function prepareRequest(request, {
       const threadBinding = resolveThreadBinding(payload.threadId);
       if (threadBinding) payload.threadBinding = threadBinding;
     }
+    const fingerprint = value => "sha256:" + createHash("sha256").update(value).digest("hex");
+    if (url.pathname.endsWith("/execution") && payload.owner) payload.owner = cloudExecutionOwner(payload.owner, fingerprint);
+    if (payload.execution?.owner) payload.execution.owner = cloudExecutionOwner(payload.execution.owner, fingerprint);
     body = JSON.stringify(payload);
   }
 
   return { body, projectWorkspace };
 }
 
-async function localizeTask(task, resolveDevelopmentContext) {
-  if (!task || typeof task !== "object" || task.developmentContext?.type !== "worktree") {
-    return task;
+async function localizeTask(task, resolveDevelopmentContext, projectWorkspace) {
+  if (!task || typeof task !== "object") return task;
+  let localized = task;
+  if (task.developmentContext?.type === "worktree") {
+    const cloudContext = { type: "worktree", ...(task.developmentContext.branch === undefined ? {} : { branch: task.developmentContext.branch }) };
+    const localContext = resolveDevelopmentContext ? await resolveDevelopmentContext(task.projectId, cloudContext) : null;
+    localized = { ...task, developmentContext: localContext ?? { ...cloudContext, path: null } };
   }
-  const cloudContext = {
-    type: "worktree",
-    ...(task.developmentContext.branch === undefined
-      ? {}
-      : { branch: task.developmentContext.branch }),
-  };
-  const localContext = resolveDevelopmentContext
-    ? await resolveDevelopmentContext(task.projectId, cloudContext)
-    : null;
-  return {
-    ...task,
-    developmentContext: localContext ?? { ...cloudContext, path: null },
-  };
+  const active = task.executionState?.active;
+  const workspaceKey = active?.owner?.workspaceKey;
+  if (workspaceKey) {
+    const candidates = [localized.developmentContext?.path, projectWorkspace].filter(value => typeof value === "string");
+    const workspacePath = candidates.find(value => "sha256:" + createHash("sha256").update(value).digest("hex") === workspaceKey) ?? null;
+    localized = { ...localized, executionWorkspace: { claimId: active.id, workspaceKey, workspacePath, resolved: workspacePath !== null } };
+  }
+  return localized;
 }
 
 async function localizeResponse(
@@ -175,11 +179,11 @@ async function localizeResponse(
     }
     : null;
   if (payload.task) {
-    payload.task = await localizeTask(payload.task, resolveOnce);
+    payload.task = await localizeTask(payload.task, resolveOnce, config.projectMappings[payload.task.projectId]);
   }
   if (Array.isArray(payload.tasks)) {
     payload.tasks = await Promise.all(
-      payload.tasks.map((task) => localizeTask(task, resolveOnce)),
+      payload.tasks.map((task) => localizeTask(task, resolveOnce, config.projectMappings[task.projectId])),
     );
   }
 

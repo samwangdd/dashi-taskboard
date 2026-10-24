@@ -1,3 +1,5 @@
+import { cloudExecutionOwner, cloudExecutionState, executionPathValues } from "../../shared/cloud-execution.mjs";
+import { executionStateFromRow, executionEligibility, transitionExecution, assertExecutionWrite, parseExecutionInput, claimRelationGuard, DEFAULT_EXECUTION_POLICY, parseExecutionPolicy, parseCloudExecutionOwner } from "../../shared/execution-claim.mjs";
 import {
   parseMove, parseVersionMutation, parseRelationMutation,
   parseCommentCreate, parseCommentPatch, parseTaskCreate,
@@ -515,6 +517,7 @@ function taskFromRow(row) {
     threadBinding: threadBindingFromRow(row),
     legacyLocalThreadId: legacyLocalThreadIdFromRow(row),
     agentSession: agentSessionFromRow(row),
+    executionState: executionStateFromRow(row),
     creatorType: row.creator_type,
     creatorId: row.creator_id,
     creatorName: row.creator_name,
@@ -603,13 +606,13 @@ function changed(result) {
   return result.meta.changes > 0;
 }
 
-function taskActivityStatement(env, taskId, actor, changes, timestamp, version) {
+function taskActivityStatement(env, taskId, actor, changes, timestamp, version, requirePreviousChange = false) {
   return env.DB.prepare(`
     INSERT INTO task_activities (
       id, task_id, actor_type, actor_id, actor_name, actor_avatar_url, actor_agent_kind, changes, created_at
     )
     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
-    WHERE EXISTS (
+    WHERE ${requirePreviousChange ? "changes() = 1 AND" : ""} EXISTS (
       SELECT 1 FROM tasks WHERE id = ? AND version = ? AND updated_at = ?
     )
   `).bind(
@@ -1123,6 +1126,7 @@ async function listTasks(env, filters) {
 }
 
 async function createTask(env, input, actor) {
+    if (input.status === "in_progress") throw new ApiError(426, "EXECUTION_PROTOCOL_REQUIRED", "Create todo then use issue claim with execution protocol 1");
   const project = await env.DB.prepare(`
     SELECT
       projects.id,
@@ -1272,10 +1276,61 @@ async function createTask(env, input, actor) {
   return getTask(env, id);
 }
 
+async function sanitizeCloudExecution(value, transform) {
+  const entries = await Promise.all(executionPathValues(value).map(async value => {
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    return [value, "sha256:" + [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, "0")).join("")];
+  }));
+  const keys = new Map(entries);
+  return transform(value, path => keys.get(path));
+}
+async function cloudExecutionProof(proof) {
+  if (!proof) return proof;
+  const owner = parseCloudExecutionOwner(proof.owner);
+  return { ...proof, owner: await sanitizeCloudExecution(owner, cloudExecutionOwner) };
+}
+
+async function executionPolicy(env, projectId) {
+  const project = await requireProject(env, projectId);
+  return { policy: project.execution_policy ? JSON.parse(project.execution_policy) : DEFAULT_EXECUTION_POLICY, version: project.execution_policy_version };
+}
+
+async function mutateExecution(env, id, input, actor) {
+  const task = await getTask(env, id);
+  input = { ...input, owner: await sanitizeCloudExecution(input.owner, cloudExecutionOwner) };
+  if (!task) throw new ApiError(404, "TASK_NOT_FOUND", "Task does not exist");
+  const timestamp = now();
+  const { policy, version: policyVersion } = await executionPolicy(env, task.projectId);
+  const transition = transitionExecution(task, input, crypto.randomUUID(), timestamp, policy, policyVersion);
+  transition.state = await sanitizeCloudExecution(transition.state, cloudExecutionState);
+  if (transition.idempotent) return task;
+  const statements = [env.DB.prepare(`
+    UPDATE tasks SET execution_state = ?, status = ?, version = version + 1, updated_at = ?
+    WHERE id = ? AND version = ? ${input.action === "claim" ? claimRelationGuard(policy) : ""}
+      AND EXISTS (SELECT 1 FROM projects WHERE id = tasks.project_id AND execution_policy_version = ?)
+  `).bind(JSON.stringify(transition.state), transition.status, timestamp, task.id, input.version, policyVersion),
+  taskActivityStatement(env, task.id, actor, [
+    ...taskFieldChanges(task, { status: transition.status }),
+    { field: "execution", before: task.executionState?.active?.id ?? null, after: transition.state.active?.id ?? null },
+  ], timestamp, input.version + 1, true)];
+  const results = await env.DB.batch(statements);
+  if (!changed(results[0])) {
+    const latest = await getTask(env, task.id);
+    if (input.action === "claim" && latest.executionState?.active?.requestId === input.requestId) {
+      const replay = transitionExecution(latest, input, crypto.randomUUID(), timestamp, policy, policyVersion);
+      if (replay.idempotent) return latest;
+    }
+    throw new ApiError(409, "EXECUTION_CONFLICT", "Eligibility changed; refresh before retrying");
+  }
+  return getTask(env, task.id);
+}
+
 async function updateTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
   assertTaskVersion(current, input.version);
   const currentTask = taskFromRow(current);
+  assertExecutionWrite(currentTask, await cloudExecutionProof(input.execution), input.changes.status);
+  if (currentTask.executionState?.active && input.changes.projectId && input.changes.projectId !== currentTask.projectId) throw new ApiError(409, "EXECUTION_RELEASE_REQUIRED", "Release execution before moving projects");
   const targetProject = Object.hasOwn(input.changes, "projectId")
     ? await requireProject(env, input.changes.projectId)
     : null;
@@ -1507,6 +1562,7 @@ async function updateTask(env, id, input, actor) {
 
 async function moveTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
+  assertExecutionWrite(taskFromRow(current), await cloudExecutionProof(input.execution), input.status);
   assertTaskVersion(current, input.version);
   if (current.archived_at !== null) {
     throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
@@ -1578,6 +1634,7 @@ async function moveTask(env, id, input, actor) {
 
 async function archiveTask(env, id, input, actor) {
   const current = await requireTaskRow(env, id);
+  if (executionStateFromRow(current)?.active) throw new ApiError(409, "EXECUTION_RELEASE_REQUIRED", "Release execution before archiving");
   assertTaskVersion(current, input.version);
   const timestamp = now();
   const storedBinding = storedThreadBindingForExisting(current, input.threadBinding, input.threadId);
@@ -2809,6 +2866,34 @@ async function routeApi(request, env, actor, url) {
       decodePathPart(attachmentMatch[1], "Attachment id"),
     );
     return empty(204);
+  }
+
+  const executionPolicyRoute = pathname.match(/^\/api\/projects\/([^/]+)\/execution-policy$/);
+  if (executionPolicyRoute) {
+    const projectId = decodePathPart(executionPolicyRoute[1], "Project id");
+    if (request.method === "GET") return json(200, await executionPolicy(env, projectId));
+    if (request.method !== "PUT") methodNotAllowed(["GET", "PUT"]);
+    const input = parseExecutionPolicy(await readJson(request));
+    const result = await env.DB.prepare("UPDATE projects SET execution_policy = ?, execution_policy_version = execution_policy_version + 1, updated_at = ? WHERE id = ? AND execution_policy_version = ?").bind(JSON.stringify(input.policy), now(), projectId, input.version).run();
+    if (!changed(result)) throw new ApiError(409, "EXECUTION_POLICY_CONFLICT", "Project execution policy changed");
+    return json(200, await executionPolicy(env, projectId));
+  }
+
+  const executionRoute = pathname.match(/^\/api\/tasks\/([^/]+)\/(eligibility|execution)$/);
+  if (executionRoute) {
+    const id = decodePathPart(executionRoute[1], "Task id");
+    if (executionRoute[2] === "eligibility") {
+      if (request.method !== "GET") methodNotAllowed(["GET"]);
+      if ([...url.searchParams.keys()].some(key => key !== "projectId")) throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Only projectId is accepted");
+      const projectId = url.searchParams.get("projectId");
+      if (!projectId) throw new ApiError(400, "INVALID_FIELD", "projectId is required");
+      const task = await getTask(env, id);
+      if (!task) throw new ApiError(404, "TASK_NOT_FOUND", "Task does not exist");
+      const { policy, version } = await executionPolicy(env, projectId);
+      return json(200, { eligibility: executionEligibility(task, projectId, policy, version) });
+    }
+    if (request.method !== "POST") methodNotAllowed(["POST"]);
+    return json(200, { task: await mutateExecution(env, id, parseExecutionInput(await readJson(request), parseCloudExecutionOwner), actor), protocol: 1 });
   }
 
   const taskMatch = pathname.match(

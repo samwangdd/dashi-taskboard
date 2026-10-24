@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { cloudExecutionState } from "../shared/cloud-execution.mjs";
 import { createHash } from "node:crypto";
 import {
   chmod,
@@ -344,6 +345,7 @@ export async function createCloudMigrationBundle({
   tables.tasks = tables.tasks.map((task) => ({
     ...task,
     worktree_path: null,
+    execution_state: cloudExecutionJson(task.execution_state),
   }));
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -358,7 +360,7 @@ export async function createCloudMigrationBundle({
 
 const CLOUD_COLUMNS = {
   projects: [
-    "id", "name", "workspace_path", "labels", "next_task_number", "created_at", "updated_at",
+    "id", "name", "workspace_path", "labels", "next_task_number", "created_at", "updated_at", "execution_policy", "execution_policy_version",
   ],
   project_readmes: ["project_id", "content", "version", "created_at", "updated_at"],
   tasks: [
@@ -368,7 +370,7 @@ const CLOUD_COLUMNS = {
     "creator_avatar_url", "assignee_type", "assignee_id", "assignee_name",
     "assignee_avatar_url", "development_context_type", "development_branch",
     "due_date", "recurrence_interval", "recurrence_unit", "archived_at", "version",
-    "created_at", "updated_at",
+    "created_at", "updated_at", "execution_state",
   ],
   comments: [
     "id", "task_id", "body", "thread_id", "thread_codex_project_id",
@@ -383,10 +385,16 @@ const CLOUD_COLUMNS = {
   ],
 };
 
+function cloudExecutionJson(value) {
+  if (value == null) return null;
+  return JSON.stringify(cloudExecutionState(JSON.parse(value), path => "sha256:" + createHash("sha256").update(path).digest("hex")));
+}
+
 function cloudTaskRow(task) {
   const isWorktree = task.worktree_branch != null;
   return {
     ...task,
+    execution_state: cloudExecutionJson(task.execution_state),
     development_context_type: isWorktree
       ? "worktree"
       : task.git_branch != null
@@ -415,7 +423,7 @@ export function createCloudD1ImportPlan(tables) {
     const values = cloudRows(table, tables).map((row) => (
       Object.fromEntries(columns.map((column) => [
         column,
-        column === "change_revision" ? row[column] ?? 0 : row[column] ?? null,
+        column === "execution_policy_version" ? row[column] ?? 1 : column === "change_revision" ? row[column] ?? 0 : row[column] ?? null,
       ]))
     ));
     return { table, sql: insertTableSql(table), json: JSON.stringify(values) };

@@ -198,6 +198,8 @@ Each device keeps its own project checkout mapping and continues to use a local 
 
 See [Cloud collaboration](docs/cloud-collaboration.md) for owner deployment, existing GitHub installation setup, password rotation, local path mapping, and the one-time local-data migration flow.
 
+See [Execution claims](docs/execution-claims.md) for authoritative eligibility, atomic claim/resume/release, project policy, and the read-only legacy-data preview.
+
 ## Verify
 
 ```bash

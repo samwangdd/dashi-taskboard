@@ -134,7 +134,7 @@ Commands:
   project readme set [PROJECT_ID] (--content TEXT | --file FILE) [--if-version N]
   cloud login --url URL --actor-name NAME
   cloud status|logout
-  issue list|get|create|update|move|archive|restore|tree|relation
+  issue list|get|create|update|move|archive|restore|tree|relation|eligibility|execution-preview|claim|resume|release
   comment list ISSUE_ID [--after CURSOR]
   comment add ISSUE_ID (--body TEXT | --body-file FILE) [--thread-id ID]
   comment update COMMENT_ID --body TEXT --if-version N [--thread-id ID]
@@ -241,6 +241,15 @@ class TaskctlError extends Error {
     this.exitCode = exitCode;
     this.details = details;
   }
+}
+
+const executionOptions = ["project", "if-version", "claim-id", "request-id", "policy-version", "status", "thread-id", "agent-platform", "session-id", "binding-thread-id", "binding-codex-project-id", "binding-codex-project-kind", "binding-codex-host-id", "binding-workspace-path", "json"];
+for (const action of ["claim", "resume", "release"]) COMMAND_OPTIONS.set(`issue ${action}`, new Set(executionOptions));
+COMMAND_OPTIONS.set("issue eligibility", new Set(["project", "json"]));
+COMMAND_OPTIONS.set("project execution-policy", new Set(["policy-file", "if-version", "json"]));
+COMMAND_OPTIONS.set("issue execution-preview", new Set(["project", "json"]));
+for (const command of ["issue update", "issue move"]) {
+  for (const option of executionOptions.filter(option => option === "claim-id" || option.startsWith("binding-"))) COMMAND_OPTIONS.get(command).add(option);
 }
 
 export function parseArgs(argv) {
@@ -357,6 +366,15 @@ async function execute(parsed, overrides) {
       : await resolveTaskboardBaseUrl(env, overrides);
   const api = createApiClient(overrides, target);
   switch (command) {
+    case "project execution-policy": {
+      expectOperandCount(parsed, 2);
+      const [action, projectId] = parsed.operands;
+      const route = `/api/projects/${encodeURIComponent(projectId)}/execution-policy`;
+      if (action === "get") return api.request("GET", route);
+      if (action !== "set") throw usageError("project execution-policy requires get or set");
+      const policy = JSON.parse(await readFile(requiredOption(parsed.options, "policy-file"), "utf8"));
+      return api.request("PUT", route, { policy, version: Number(requiredOption(parsed.options, "if-version")) });
+    }
     case "project list":
       expectOperandCount(parsed, 0);
       return api.request("GET", "/api/projects");
@@ -411,6 +429,30 @@ async function execute(parsed, overrides) {
     case "issue get":
       expectOperandCount(parsed, 1);
       return api.request("GET", taskPath(parsed.operands[0]));
+    case "issue execution-preview": {
+      expectOperandCount(parsed, 0);
+      const projectId = requiredOption(parsed.options, "project");
+      const listing = await listIssues(api, { project: projectId, archived: "all" });
+      const preview = [];
+      for (const task of listing.tasks) {
+        const result = await executionRequest(api, "GET", `${taskPath(task.id)}/eligibility?projectId=${encodeURIComponent(projectId)}`);
+        if (result.eligibility?.protocol !== 1) throw usageError("Upgrade server: execution protocol 1 is required");
+        preview.push({ identifier: task.identifier, ...result.eligibility });
+      }
+      return { protocol: 1, readOnly: true, projectId, preview };
+    }
+    case "issue eligibility": {
+      expectOperandCount(parsed, 1);
+      const projectId = requiredOption(parsed.options, "project");
+      const result = await executionRequest(api, "GET", `${taskPath(parsed.operands[0])}/eligibility?projectId=${encodeURIComponent(projectId)}`);
+      if (result.eligibility?.protocol !== 1) throw usageError("Server does not support execution protocol 1; upgrade the server");
+      return result;
+    }
+    case "issue claim":
+    case "issue resume":
+    case "issue release":
+      expectOperandCount(parsed, 1);
+      return mutateExecutionIssue(api, command.split(" ")[1], parsed.operands[0], parsed.options, overrides);
     case "issue create":
       expectOperandCount(parsed, 0);
       return createIssue(api, parsed.options, overrides);
@@ -924,9 +966,41 @@ async function updateIssue(api, taskId, options, overrides) {
   if (Object.keys(patch).length === 0 && attribution.agentSession === undefined) {
     throw usageError("issue update requires at least one field to update");
   }
-  Object.assign(patch, attribution);
+  Object.assign(patch, attribution, executionProofFromOptions(options, overrides));
   patch.version = await resolveVersion(api, taskId, options["if-version"]);
   return api.request("PATCH", taskPath(taskId), patch);
+}
+
+async function executionRequest(api, method, route, body) {
+  try {
+    return await api.request(method, route, body);
+  } catch (error) {
+    if (error.code === "NOT_FOUND") throw new TaskctlError("Server does not support execution protocol 1; upgrade the server and taskctl together", { code: "EXECUTION_PROTOCOL_REQUIRED", exitCode: 4 });
+    throw error;
+  }
+}
+
+function executionOwnerFromOptions(options, overrides) {
+  const attribution = resolveConversationAttribution(options, overrides);
+  if (attribution.agentSession) return attribution.agentSession;
+  const binding = threadBindingFromOptions(options);
+  if (!binding?.codexProjectId || binding.threadId !== attribution.threadId) throw usageError("Execution requires all five Codex binding fields matching the current thread");
+  return { platform: "codex", ...binding };
+}
+function executionProofFromOptions(options, overrides) {
+  return options["claim-id"] === undefined ? {} : { execution: { claimId: options["claim-id"], owner: executionOwnerFromOptions(options, overrides) } };
+}
+async function mutateExecutionIssue(api, action, taskId, options, overrides) {
+  const body = { protocol: 1, action, owner: executionOwnerFromOptions(options, overrides), version: await resolveVersion(api, taskId, options["if-version"]) };
+  if (action === "claim") Object.assign(body, { projectId: requiredOption(options, "project"), requestId: requiredOption(options, "request-id"), policyVersion: Number(requiredOption(options, "policy-version")) });
+  else body.claimId = requiredOption(options, "claim-id");
+  if (action === "release") {
+    body.status = requiredOption(options, "status");
+
+  }
+  const result = await executionRequest(api, "POST", `${taskPath(taskId)}/execution`, body);
+  if (result.protocol !== 1 || !result.task?.executionState) throw usageError("Server does not support execution protocol 1; upgrade the server");
+  return result;
 }
 
 async function moveIssue(api, taskId, options, overrides) {
@@ -936,6 +1010,7 @@ async function moveIssue(api, taskId, options, overrides) {
   const threadBinding = threadBindingFromOptions(options);
   return api.request("POST", `${taskPath(taskId)}/move`, {
     status,
+    ...executionProofFromOptions(options, overrides),
     ...attribution,
     ...optionalField("threadBinding", threadBinding),
     version: await resolveVersion(api, taskId, options["if-version"]),

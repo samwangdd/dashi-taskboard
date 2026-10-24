@@ -20,6 +20,7 @@ import { Miniflare } from "miniflare";
 import {
   createCloudBindingMigrationAdapters,
   createCloudD1ImportSql,
+  createCloudD1ImportPlan,
   createCloudMigrationBundle,
   importCloudMigrationBundle,
   readCloudMigrationBundle,
@@ -1221,4 +1222,34 @@ test("one-time Wrangler adapter migrates and verifies local persistence without 
   } finally {
     await failureAdapters.cleanup();
   }
+});
+
+test("execution migration preserves occupancy and policy in real D1 without device paths", async () => {
+  const fixture = await createMigrationFixture();
+  fixture.database.exec("ALTER TABLE tasks ADD COLUMN execution_state TEXT; ALTER TABLE projects ADD COLUMN execution_policy TEXT; ALTER TABLE projects ADD COLUMN execution_policy_version INTEGER NOT NULL DEFAULT 1;");
+  const owner = { platform: "codex", threadId: "fixture-owner", codexProjectId: "alpha", codexProjectKind: "local", codexHostId: "local", workspacePath: "/Users/fixture/private-worktree" };
+  const state = { active: { id: "active-claim", requestId: "request", owner, startedAt: timestamp, progressAt: timestamp }, history: [{ id: "prior-claim", owner, endedAt: timestamp, outcome: "todo" }], origins: { threadBinding: { ...owner, platform: undefined }, agentSession: null, legacyLocalThreadId: null }, hold: false };
+  const policy = { dependencyUnlockStatuses: ["in_review", "done"], holdLabels: ["hold"], excludeParentSummaries: true };
+  fixture.database.prepare("UPDATE projects SET execution_policy = ?, execution_policy_version = 7 WHERE id = 'alpha'").run(JSON.stringify(policy));
+  fixture.database.prepare("UPDATE tasks SET status = 'in_progress', execution_state = ? WHERE id = 'task-a1'").run(JSON.stringify(state));
+  const bundle = await createCloudMigrationBundle({ databasePath: fixture.databasePath, attachmentsDirectory: fixture.attachmentsDirectory });
+  const plan = createCloudD1ImportPlan(bundle.tables);
+  assert.equal(JSON.parse(plan.find(item => item.table === "projects").json).find(row => row.id === "alpha").execution_policy_version, 7);
+  const exported = JSON.parse(plan.find(item => item.table === "tasks").json).find(row => row.id === "task-a1");
+  assert.equal(JSON.parse(exported.execution_state).active.id, "active-claim");
+  assert.equal(JSON.parse(exported.execution_state).history[0].id, "prior-claim");
+  assert.doesNotMatch(JSON.stringify(bundle), /\/Users\/fixture/);
+  const cloud = await createCloudWorkerHarness();
+  try {
+    await cloud.db.prepare("DELETE FROM projects WHERE id = 'local'").run();
+    await importCloudMigrationBundle(bundle, createCloudBindingMigrationAdapters({ d1: cloud.db, r2: cloud.attachments }));
+    const stored = await cloud.db.prepare("SELECT execution_state FROM tasks WHERE id = 'task-a1'").first();
+    assert.equal(JSON.parse(stored.execution_state).active.id, "active-claim");
+    assert.doesNotMatch(stored.execution_state, /\/Users\/fixture/);
+    const response = await cloud.request("/api/tasks/task-a1", { actorName: "Agent" });
+    assert.equal(response.body.task.executionState.history.length, 1);
+    const project = await cloud.request("/api/projects/alpha/execution-policy", { actorName: "Agent" });
+    assert.equal(project.body.version, 7);
+    assert.deepEqual(project.body.policy, policy);
+  } finally { await cloud.dispose(); }
 });

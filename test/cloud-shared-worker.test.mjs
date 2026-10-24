@@ -709,11 +709,11 @@ test("task lifecycle keeps optimistic versions and never persists a worktree pat
     actorName: alice,
     json: {
       version: created.body.task.version,
-      status: "in_progress",
+      status: "in_review",
     },
   });
   assert.equal(moved.response.status, 200);
-  assert.equal(moved.body.task.status, "in_progress");
+  assert.equal(moved.body.task.status, "in_review");
 
   const archived = await cloud.request(`/api/tasks/${created.body.task.id}/archive`, {
     method: "POST",

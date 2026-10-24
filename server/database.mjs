@@ -1,3 +1,4 @@
+import { executionStateFromRow, executionEligibility, transitionExecution, assertExecutionWrite, claimRelationGuard, DEFAULT_EXECUTION_POLICY } from "../shared/execution-claim.mjs";
 import { ApiError } from "../shared/api-fields.mjs";
 import { taskRelationsQuery, taskRelationsFromRows } from "../shared/task-relations.mjs";
 import {
@@ -92,6 +93,7 @@ function taskFromRow(row) {
     threadBinding: threadBindingFromRow(row),
     legacyLocalThreadId: legacyLocalThreadIdFromRow(row),
     agentSession: agentSessionFromRow(row),
+    executionState: executionStateFromRow(row),
     creatorType: row.creator_type,
     creatorId: row.creator_id,
     creatorName: row.creator_name,
@@ -486,6 +488,8 @@ export class TaskboardDatabase {
     `);
 
     const projectColumns = this.database.prepare("PRAGMA table_info(projects)").all();
+    if (!projectColumns.some(column => column.name === "execution_policy")) this.database.exec("ALTER TABLE projects ADD COLUMN execution_policy TEXT");
+    if (!projectColumns.some(column => column.name === "execution_policy_version")) this.database.exec("ALTER TABLE projects ADD COLUMN execution_policy_version INTEGER NOT NULL DEFAULT 1");
     if (!projectColumns.some((column) => column.name === "workspace_path")) {
       this.database.exec("ALTER TABLE projects ADD COLUMN workspace_path TEXT");
     }
@@ -556,6 +560,9 @@ export class TaskboardDatabase {
     }
     this.#migrateTaskStatuses();
     const migratedTaskColumns = this.database.prepare("PRAGMA table_info(tasks)").all();
+    if (!migratedTaskColumns.some((column) => column.name === "execution_state")) {
+      this.database.exec("ALTER TABLE tasks ADD COLUMN execution_state TEXT");
+    }
     if (!migratedTaskColumns.some((column) => column.name === "agent_session")) {
       this.database.exec("ALTER TABLE tasks ADD COLUMN agent_session TEXT");
     }
@@ -1862,6 +1869,7 @@ export class TaskboardDatabase {
   }
 
   createTask(input) {
+    if (input.status === "in_progress") throw new ApiError(426, "EXECUTION_PROTOCOL_REQUIRED", "Create todo then use issue claim with execution protocol 1");
     this.database.exec("BEGIN IMMEDIATE");
     try {
       const project = this.database.prepare(`
@@ -1963,9 +1971,54 @@ export class TaskboardDatabase {
     }
   }
 
-  updateTask(id, version, changes, threadId, threadBinding, actor, agentSession) {
+  executionPolicy(projectId) {
+    const project = this.database.prepare("SELECT execution_policy, execution_policy_version FROM projects WHERE id = ?").get(projectId);
+    if (!project) throw new ApiError(404, "PROJECT_NOT_FOUND", "Project does not exist");
+    return { policy: project.execution_policy ? JSON.parse(project.execution_policy) : DEFAULT_EXECUTION_POLICY, version: project.execution_policy_version };
+  }
+
+  setExecutionPolicy(projectId, input) {
+    const result = this.database.prepare("UPDATE projects SET execution_policy = ?, execution_policy_version = execution_policy_version + 1, updated_at = ? WHERE id = ? AND execution_policy_version = ?").run(JSON.stringify(input.policy), now(), projectId, input.version);
+    if (result.changes !== 1) throw new ApiError(409, "EXECUTION_POLICY_CONFLICT", "Project execution policy changed");
+    return this.executionPolicy(projectId);
+  }
+
+  executionEligibility(id, projectId) {
+    const { policy, version } = this.executionPolicy(projectId);
+    return executionEligibility(this.#requireTask(id), projectId, policy, version);
+  }
+
+  mutateExecution(id, input, actor) {
+    this.database.exec("BEGIN IMMEDIATE");
+    try {
+      const task = this.#requireTask(id);
+      const timestamp = now();
+      const { policy, version: policyVersion } = this.executionPolicy(task.projectId);
+      const transition = transitionExecution(task, input, randomUUID(), timestamp, policy, policyVersion);
+      if (!transition.idempotent) {
+        const result = this.database.prepare(`
+          UPDATE tasks SET execution_state = ?, status = ?, version = version + 1, updated_at = ?
+          WHERE id = ? AND version = ? ${input.action === "claim" ? claimRelationGuard(policy) : ""}
+        `).run(JSON.stringify(transition.state), transition.status, timestamp, task.id, input.version);
+        if (result.changes !== 1) throw new ApiError(409, "EXECUTION_CONFLICT", "Eligibility changed; refresh before retrying");
+        this.#recordTaskActivity(task.id, actor, [
+          ...taskFieldChanges(task, { status: transition.status }),
+          { field: "execution", before: task.executionState?.active?.id ?? null, after: transition.state.active?.id ?? null },
+        ], timestamp);
+      }
+      this.database.exec("COMMIT");
+      return this.#announceStatusChange(this.getTask(task.id), task.status);
+    } catch (error) {
+      this.database.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  updateTask(id, version, changes, threadId, threadBinding, actor, agentSession, execution) {
     const current = this.#requireTaskRecord(id);
     this.#requireVersion(current, version);
+    assertExecutionWrite(current, execution, changes.status);
+    if (current.executionState?.active && changes.projectId && changes.projectId !== current.projectId) throw new ApiError(409, "EXECUTION_RELEASE_REQUIRED", "Release execution before moving projects");
     const activityChanges = taskFieldChanges(current, changes);
     const targetProject = Object.hasOwn(changes, "projectId")
       ? this.database.prepare("SELECT id, name, workspace_path, labels FROM projects WHERE id = ?").get(changes.projectId)
@@ -2109,8 +2162,9 @@ export class TaskboardDatabase {
     return this.#announceStatusChange(this.getTask(current.id), current.status);
   }
 
-  moveTask(id, version, status, sortOrder, threadId, threadBinding, actor, agentSession) {
+  moveTask(id, version, status, sortOrder, threadId, threadBinding, actor, agentSession, execution) {
     const current = this.#requireTask(id);
+    assertExecutionWrite(current, execution, status);
     this.#requireVersion(current, version);
     if (current.archivedAt !== null) {
       throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
@@ -2165,6 +2219,7 @@ export class TaskboardDatabase {
 
   archiveTask(id, version, threadId, threadBinding, actor, agentSession) {
     const current = this.#requireTask(id);
+    if (current.executionState?.active) throw new ApiError(409, "EXECUTION_RELEASE_REQUIRED", "Release execution before archiving");
     this.#requireVersion(current, version);
     const timestamp = now();
     const storedBinding = storedThreadBindingForExisting(current, threadBinding, threadId);

@@ -89,10 +89,11 @@ export function parseThreadBinding(value) {
 
 export function parseMove(body) {
   assertPlainObject(body);
-  assertAllowedKeys(body, new Set(["version", "status", "sortOrder", "threadId", "threadBinding", "agentSession"]));
+  assertAllowedKeys(body, new Set(["version", "status", "sortOrder", "threadId", "threadBinding", "agentSession", "execution"]));
   return {
     version: parseVersion(body.version),
     status: parseStatus(body.status),
+    execution: body.execution,
     sortOrder: body.sortOrder === undefined ? undefined : parseSortOrder(body.sortOrder),
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
@@ -184,7 +185,7 @@ function assertTaskPatchBody(body) {
   assertPlainObject(body);
   assertAllowedKeys(body, new Set([
     "version", "projectId", "title", "description", "status", "priority", "labels", "threadId", "threadBinding", "agentSession",
-    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence",
+    "assigneeTarget", "developmentContext", "startDate", "dueDate", "recurrence", "execution",
   ]));
 }
 
@@ -221,7 +222,7 @@ export function parseTaskPatch(body, parseDevelopmentContext) {
     throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires 'dueDate'");
   }
   assertTaskPatchFields(changes, assigneeTarget, agentSession);
-  return { version, changes, threadId, threadBinding, agentSession, assigneeTarget };
+  return { version, changes, threadId, threadBinding, agentSession, assigneeTarget, execution: body.execution };
 }
 
 export function parseCloudTaskPatch(body, parseDevelopmentContext) {
@@ -233,6 +234,7 @@ export function parseCloudTaskPatch(body, parseDevelopmentContext) {
   return {
     version: parseVersion(body.version),
     changes,
+    execution: body.execution,
     threadId: parseThreadId(body.threadId),
     threadBinding: parseThreadBinding(body.threadBinding),
     agentSession,

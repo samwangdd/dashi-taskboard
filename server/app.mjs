@@ -1,3 +1,4 @@
+import { parseExecutionInput, parseExecutionPolicy, assertExecutionWrite } from "../shared/execution-claim.mjs";
 import {
   parseMove, parseVersionMutation, parseRelationMutation,
   parseCommentCreate, parseCommentPatch, parseTaskCreate,
@@ -3089,6 +3090,30 @@ export function createTaskboardServer(options = {}) {
         return sendEmpty(response, 204);
       }
 
+      const executionPolicyRoute = pathname.match(/^\/api\/projects\/([^/]+)\/execution-policy$/);
+      if (executionPolicyRoute) {
+        const projectId = decodeURIComponent(executionPolicyRoute[1]);
+        if (request.method === "GET") return sendJson(response, 200, database.executionPolicy(projectId));
+        if (request.method !== "PUT") return methodNotAllowed(response, ["GET", "PUT"]);
+        return sendJson(response, 200, database.setExecutionPolicy(projectId, parseExecutionPolicy(await readJson(request))));
+      }
+
+      const executionRoute = pathname.match(/^\/api\/tasks\/([^/]+)\/(eligibility|execution)$/);
+      if (executionRoute) {
+        const id = decodeURIComponent(executionRoute[1]);
+        if (executionRoute[2] === "eligibility") {
+          if (request.method !== "GET") return methodNotAllowed(response, ["GET"]);
+          if ([...url.searchParams.keys()].some(key => key !== "projectId")) throw new ApiError(400, "UNKNOWN_QUERY_PARAMETER", "Only projectId is accepted");
+          const projectId = url.searchParams.get("projectId");
+          if (!projectId) throw new ApiError(400, "INVALID_FIELD", "projectId is required");
+          return sendJson(response, 200, { eligibility: database.executionEligibility(id, projectId) });
+        }
+        if (request.method !== "POST") return methodNotAllowed(response, ["POST"]);
+        const task = database.mutateExecution(id, parseExecutionInput(await readJson(request)), actorFromRequest(request));
+        events.emit("task.updated", { task });
+        return sendJson(response, 200, { task, protocol: 1 });
+      }
+
       const taskTreeRoute = pathname.match(/^\/api\/tasks\/([^/]+)\/tree$/);
       if (taskTreeRoute) {
         let id;
@@ -3133,7 +3158,7 @@ export function createTaskboardServer(options = {}) {
             threadId,
             threadBinding,
             agentSession,
-            assigneeTarget,
+            assigneeTarget, execution,
           } = resolveInputThreadBinding(parseTaskPatch(await readJson(request), parseDevelopmentContext));
           const source = database.getTaskSource(id);
           if (!source) throw new ApiError(404, "TASK_NOT_FOUND", `Task '${id}' does not exist`);
@@ -3169,6 +3194,7 @@ export function createTaskboardServer(options = {}) {
             if (recurrence && !dueDate) {
               throw new ApiError(400, "INVALID_FIELD", "A recurring issue requires a due date");
             }
+            assertExecutionWrite(current, execution, changes.status);
             jiraChanged = await jira.updateTask(current, changes);
           }
           if (assigneeTarget !== undefined) {
@@ -3176,7 +3202,7 @@ export function createTaskboardServer(options = {}) {
           }
           let task;
           try {
-            task = database.updateTask(id, version, changes, threadId, threadBinding, actor, agentSession);
+            task = database.updateTask(id, version, changes, threadId, threadBinding, actor, agentSession, execution);
           } catch (error) {
             if (jiraChanged) {
               try {
@@ -3225,6 +3251,7 @@ export function createTaskboardServer(options = {}) {
             if (current.archivedAt !== null) {
               throw new ApiError(409, "TASK_ARCHIVED", "Archived tasks cannot be moved");
             }
+            assertExecutionWrite(current, move.execution, move.status);
             await jira.moveTask(current, move.status);
           }
           const task = database.moveTask(
@@ -3235,7 +3262,7 @@ export function createTaskboardServer(options = {}) {
             move.threadId,
             move.threadBinding,
             actorFromRequest(request),
-            move.agentSession,
+            move.agentSession, move.execution,
           );
           events.emit("task.moved", { task });
           return sendJson(response, 200, { task });

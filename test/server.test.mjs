@@ -1098,10 +1098,10 @@ test("moving a task updates its status and sort order", async () => {
 
   const moveResult = await request(baseUrl, `/api/tasks/${task.id}/move`, {
     method: "POST",
-    body: { version: task.version, status: "in_progress", sortOrder: 2500.5, threadId: "thread-move" },
+    body: { version: task.version, status: "in_review", sortOrder: 2500.5, threadId: "thread-move" },
   });
   assert.equal(moveResult.response.status, 200);
-  assert.equal(moveResult.body.task.status, "in_progress");
+  assert.equal(moveResult.body.task.status, "in_review");
   assert.equal(moveResult.body.task.sortOrder, 2500.5);
   assert.equal(moveResult.body.task.threadId, "thread-move");
   assert.equal(moveResult.body.task.version, 2);
@@ -1138,7 +1138,7 @@ test("remote task bindings keep their own identity and can be cleared independen
     method: "POST",
     body: {
       version: created.version,
-      status: "in_progress",
+      status: "todo",
       threadId: binding.threadId,
     },
   })).body.task;
@@ -1237,7 +1237,7 @@ test("issues support parent, sub-issue, blocking, and related issue relationship
   const parent = await createIssue("Parent issue");
   const child = await createIssue("Child issue", "done");
   const grandchild = await createIssue("Grandchild issue", "canceled");
-  const blocker = await createIssue("Blocking issue", "in_progress");
+  const blocker = await createIssue("Blocking issue", "todo");
   const related = await createIssue("Related issue");
 
   const parentAdded = await mutateRelation("POST", child, "parent", parent);
@@ -1504,10 +1504,14 @@ test("all task statuses are accepted, filtered, and listed in workflow order", a
   for (const status of statuses) {
     const createResult = await request(baseUrl, "/api/tasks", {
       method: "POST",
-      body: { title: status, status },
+      body: { title: status, status: status === "in_progress" ? "todo" : status },
     });
     assert.equal(createResult.response.status, 201);
-    assert.equal(createResult.body.task.status, status);
+    if (status === "in_progress") {
+      const claimed = await request(baseUrl, `/api/tasks/${createResult.body.task.id}/execution`, { method: "POST", body: { protocol: 1, action: "claim", projectId: "local", policyVersion: 1, requestId: "status-matrix", owner: { platform: "claude", sessionId: "status-matrix" }, version: 1 } });
+      assert.equal(claimed.response.status, 200);
+      assert.equal(claimed.body.task.status, status);
+    } else assert.equal(createResult.body.task.status, status);
   }
 
   const listResult = await request(baseUrl, "/api/tasks");

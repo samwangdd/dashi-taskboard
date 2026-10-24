@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import os from "node:os";
@@ -935,4 +936,29 @@ test("without cloud configuration taskctl keeps using the local companion", asyn
     projects: [{ id: "local", name: "Local" }],
     schemaVersion: 2,
   });
+});
+
+test("cloud execution workspace keys resolve only through device-local mappings", async () => {
+  const { createCloudProxy } = await importCloudProxy();
+  const workspacePath = "/Users/fixture/private-worktree";
+  const workspaceKey = "sha256:" + createHash("sha256").update(workspacePath).digest("hex");
+  for (const mapped of [true, false]) {
+    const proxy = createCloudProxy({ configStore: memoryConfigStore({ projectMappings: mapped ? { fixture: workspacePath } : {} }), fetch: async () => jsonResponse({ task: { id: "claim-task", projectId: "fixture", executionState: { active: { id: "claim", owner: { platform: "codex", workspaceKey } }, history: [] } } }) });
+    const response = await proxy.forward(new Request("http://127.0.0.1:47823/api/tasks/claim-task"));
+    const task = (await response.json()).task;
+    assert.deepEqual(task.executionWorkspace, { claimId: "claim", workspaceKey, workspacePath: mapped ? workspacePath : null, resolved: mapped });
+    assert.doesNotMatch(JSON.stringify(task.executionState), /\/Users\/fixture/);
+  }
+});
+
+test("companion strips device owner paths before execution requests leave the device", async () => {
+  const { createCloudProxy } = await importCloudProxy();
+  const payloads = [];
+  const proxy = createCloudProxy({ configStore: memoryConfigStore(), fetch: async (_url, init) => { payloads.push(JSON.parse(init.body)); return jsonResponse({ protocol: 1, task: { id: "fixture", projectId: "fixture" } }); } });
+  const owner = { platform: "codex", threadId: "current", codexProjectId: "fixture", codexProjectKind: "local", codexHostId: "local", workspacePath: "/Users/fixture/private-worktree" };
+  await proxy.forward(new Request("http://127.0.0.1:47823/api/tasks/fixture/execution", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ protocol: 1, action: "claim", owner, version: 1 }) }));
+  await proxy.forward(new Request("http://127.0.0.1:47823/api/tasks/fixture", { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ title: "Current owner", version: 2, execution: { owner, claimId: "fixture" } }) }));
+  assert.doesNotMatch(JSON.stringify(payloads), /\/Users\/fixture/);
+  assert.match(payloads[0].owner.workspaceKey, /^sha256:[a-f0-9]{64}$/);
+  assert.equal(payloads[1].execution.owner.workspaceKey, payloads[0].owner.workspaceKey);
 });
