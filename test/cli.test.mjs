@@ -47,6 +47,46 @@ test("parseArgs supports equals syntax and boolean --json", () => {
   });
 });
 
+async function runHelp(argv) {
+  let stdout = "";
+  let stderr = "";
+  const exitCode = await main(argv, {
+    fetch: async () => { throw new Error("help must not call the API"); },
+    stdout: { write(chunk) { stdout += chunk; } },
+    stderr: { write(chunk) { stderr += chunk; } },
+    env: {},
+  });
+  return { exitCode, stdout, stderr };
+}
+
+test("action --help falls back to the resource help", async () => {
+  for (const argv of [["issue", "move", "--help"], ["issue", "get", "--help"]]) {
+    const result = await runHelp(argv);
+    assert.equal(result.exitCode, 0, argv.join(" "));
+    assert.match(result.stdout, /^Usage: taskctl issue ACTION/);
+    assert.match(result.stdout, /move ISSUE_ID --status STATUS/);
+  }
+});
+
+test("--help ignores trailing operands", async () => {
+  const result = await runHelp(["issue", "move", "WEB-1", "--help"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /^Usage: taskctl issue ACTION/);
+});
+
+test("comment --help prints comment resource help", async () => {
+  const result = await runHelp(["comment", "--help"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /^Usage: taskctl comment ACTION/);
+  assert.match(result.stdout, /add ISSUE_ID/);
+});
+
+test("exact action help still wins over the resource help", async () => {
+  const result = await runHelp(["comment", "list", "--help"]);
+  assert.equal(result.exitCode, 0);
+  assert.match(result.stdout, /^Usage: taskctl comment list ISSUE_ID/);
+});
+
 test("project list uses the default local service and adds schemaVersion", async () => {
   const calls = [];
   const result = await run(["project", "list"], async (url, init) => {
