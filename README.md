@@ -50,6 +50,29 @@ npm run taskctl -- issue create \
 
 Use `npm link` if you want `taskctl` on your shell path. Set `CODEX_TASKBOARD_URL` to point the CLI at another local or LAN service. Cloud deployments are configured through the **loopback companion** (device-local loopback service for auth and path mapping—not a chat persona) with `taskctl cloud login`.
 
+### Publish image evidence
+
+Put a single `{{evidence}}` marker at the image position in a UTF-8 Markdown file,
+then publish the original image with explicit conversation attribution:
+
+```bash
+taskctl comment publish ISSUE_ID --body-file evidence.md --file screenshot.png --thread-id CONVERSATION_ID --json
+```
+
+This creates one comment, uploads the image to that comment, replaces the marker
+with an inline attachment reference, and reads back the comment and attachment.
+It downloads the saved image and compares SHA-256 and byte size with the original.
+Only verified delivery returns exit code zero and `verified: true`, along with
+`issueId`, `identifier`, `commentId`, `commentVersion`, `threadId`, `attachmentId`,
+`reference`, `sha256`, `downloadedSha256`, and `size` (`schemaVersion: 2`).
+
+A failed operation returns nonzero and `error.details.commentId` if a comment was
+created. Read that comment, then explicitly resume with `--comment COMMENT_ID
+--if-version CURRENT_VERSION` and the same inputs. The command verifies the issue,
+session, and version before reusing the comment, and reuses an already attached
+image when its downloaded hash matches. It never retries by creating a second
+comment automatically. Starting again without `--comment` creates a new comment.
+
 ## Install the Codex Skill
 
 Copy or symlink `skills/manage-taskboard` into the Codex skills directory, then start a new Codex task:
