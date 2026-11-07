@@ -8,7 +8,7 @@
 
 ## 系统要求
 
-- Node.js 22.5 或更高版本
+- Node.js 22.22.3 或更高的 22.x 版本，或 24.8 或更高版本
 - 构建 macOS App 和 DMG：Xcode Command Line Tools、Rust 1.88 或更高版本，以及 `aarch64-apple-darwin` 和 `x86_64-apple-darwin` target。`npm install` 会安装本项目使用的 Tauri CLI。
 - 构建 Windows NSIS：Microsoft Store 版 Codex App、Rust 1.88 或更高版本，以及带 C++ 工作负载和 Windows SDK 的 Visual Studio Build Tools。
 
@@ -165,8 +165,8 @@ npm run codex:inject -- --port 9229 --open
 该命令也会保持驻留，因此服务退出后，注入的标签页可以重新启动 Taskboard。使用 `Ctrl-C` 停止该命令。
 
 Windows 上如果自行启动的 Codex 没有任务面板，通常是该实例没有 CDP 调试端口。仓库在
-[`tools/windows/`](tools/windows/README.md) 下提供只读面板诊断脚本，
-以及托管窗口不会重新激活这一问题的说明。
+[`tools/windows/`](tools/windows/README.md) 下提供只读面板诊断脚本，以及托管窗口
+激活与诊断的说明。
 
 该脚本会在 Codex 侧边栏添加 Taskboard 入口，并在 Codex 的整个主工作区渲染 iframe，包括上下文标题栏区域，因此 Taskboard 自己的页眉不会留下空白条。这个完整的矩形页眉位于 Electron 可拖动层之上，并标记为 `no-drag`；由于 Taskboard 活动时会隐藏原生上下文操作，它自己的操作可以使用正常的边缘内边距，不会产生人为的右侧空隙。原生侧边栏保持挂载，此前页面的选中状态和上下文页眉会暂时隐藏；选择另一个 Codex 页面会恢复它们。
 

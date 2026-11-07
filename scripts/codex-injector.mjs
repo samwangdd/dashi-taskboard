@@ -566,11 +566,11 @@ async function stopManagedCodex(record) {
   }
 }
 
-function activateCodexApp(pid, appPath) {
+function activateCodexApp(pid) {
   if (process.platform === "win32") {
     try {
       activateWindowsCodexWindow(
-        appPath,
+        pid,
         withoutTaskboardLauncherEnvironment(process.env),
       );
     } catch (error) {
@@ -3136,7 +3136,7 @@ async function main() {
         throw new Error("Taskboard injection is not ready");
       }
       await connection.send("Page.bringToFront");
-      activateCodexApp(codexAppPid, options.appPath);
+      activateCodexApp(codexAppPid);
       openedRequestGeneration = Math.max(openedRequestGeneration, generation);
       return true;
     } catch (error) {
@@ -3534,7 +3534,7 @@ async function main() {
     if (firstResults.length > 0) {
       if (shouldOpenFirstTarget) {
         openedRequestGeneration = Math.max(openedRequestGeneration, firstOpenGeneration);
-        activateCodexApp(codexAppPid, options.appPath);
+        activateCodexApp(codexAppPid);
       }
       console.log(JSON.stringify({ injected: firstResults }, null, 2));
       emitLauncherEvent("injected");
