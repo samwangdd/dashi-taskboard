@@ -202,6 +202,18 @@ Priorities: none, urgent, high, medium, low
 
 Example:
   taskctl issue get LOCAL-275 --json`],
+  ["comment", `Usage: taskctl comment ACTION [arguments] [options]
+
+Actions:
+  list ISSUE_ID [--after CURSOR] [--json]
+  add ISSUE_ID (--body TEXT | --body-file FILE) [--thread-id ID] [--json]
+  update COMMENT_ID --body TEXT --if-version N [--thread-id ID] [--json]
+  delete COMMENT_ID --if-version N [--thread-id ID] [--json]
+
+All comment writes accept --agent-platform claude|pi|agy|grok --session-id ID
+instead of Codex --thread-id / CODEX_THREAD_ID.
+
+Run taskctl comment ACTION --help for the options of one action.`],
   ["comment add", `Usage: taskctl comment add ISSUE_ID (--body TEXT | --body-file FILE)
   [--thread-id ID | --agent-platform claude|pi|agy|grok --session-id ID]
   [--binding-thread-id ID
@@ -310,9 +322,9 @@ export async function main(argv = process.argv.slice(2), overrides = {}) {
     const parsed = parseArgs(argv);
     if (parsed.options.help) {
       const scope = `${parsed.resource ?? ""} ${parsed.action ?? ""}`.trim();
-      const help = HELP_TEXT.get(scope);
-      if (!help || parsed.operands.length > 0 || Object.keys(parsed.options).length !== 1) {
-        throw usageError("Help is available for taskctl, taskctl issue, and taskctl comment list");
+      const help = HELP_TEXT.get(scope) ?? HELP_TEXT.get(parsed.resource ?? "") ?? HELP_TEXT.get("");
+      if (Object.keys(parsed.options).length !== 1) {
+        throw usageError("--help cannot be combined with other options");
       }
       stdout.write(`${help}\n`);
       return 0;
